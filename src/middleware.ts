@@ -6,6 +6,7 @@ import {
 	csrfCookieName,
 	isValidCsrfToken,
 	MutationSecurityError,
+	PRODUCTION_EDITORIAL_ORIGIN,
 	verifySameOriginMutation,
 } from './security/csrf';
 
@@ -36,7 +37,8 @@ export const onRequest = defineMiddleware(async (context, next) => {
 		const cookieName = csrfCookieName(context.url);
 		let csrfToken = context.cookies.get(cookieName)?.value;
 		if (context.request.method === 'POST') {
-			await verifySameOriginMutation(context.request, csrfToken);
+			const expectedOrigin = import.meta.env.DEV ? context.url.origin : PRODUCTION_EDITORIAL_ORIGIN;
+			await verifySameOriginMutation(context.request, csrfToken, expectedOrigin);
 		} else if (!isValidCsrfToken(csrfToken)) {
 			csrfToken = createCsrfToken();
 			context.cookies.set(cookieName, csrfToken, {

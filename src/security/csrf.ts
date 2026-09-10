@@ -1,5 +1,6 @@
 export const PRODUCTION_CSRF_COOKIE = '__Host-tomorrowish-csrf';
 export const LOCAL_CSRF_COOKIE = 'tomorrowish-local-csrf';
+export const PRODUCTION_EDITORIAL_ORIGIN = 'https://tomorrow-ish.news';
 
 export class MutationSecurityError extends Error {
 	constructor(message = 'The request could not be verified.') {
@@ -36,10 +37,10 @@ export function tokensEqual(left: string, right: string): boolean {
 export async function verifySameOriginMutation(
 	request: Request,
 	cookieToken: string | undefined,
+	expectedOrigin = new URL(request.url).origin,
 ): Promise<void> {
 	if (request.method !== 'POST') throw new MutationSecurityError();
-	const requestUrl = new URL(request.url);
-	if (request.headers.get('Origin') !== requestUrl.origin) throw new MutationSecurityError();
+	if (request.headers.get('Origin') !== expectedOrigin) throw new MutationSecurityError();
 	if (!isValidCsrfToken(cookieToken)) throw new MutationSecurityError();
 
 	let form: FormData;
