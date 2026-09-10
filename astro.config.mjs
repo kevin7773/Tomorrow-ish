@@ -1,5 +1,5 @@
 // @ts-check
-import { defineConfig, sessionDrivers } from 'astro/config';
+import { defineConfig } from 'astro/config';
 import cloudflare from '@astrojs/cloudflare';
 
 export default defineConfig({
@@ -7,8 +7,8 @@ export default defineConfig({
 	output: 'server',
 	site: 'https://tomorrow-ish.news',
 	trailingSlash: 'never',
-	// M0 has no sessions. This prevents the adapter from provisioning an unused KV namespace.
-	session: {
-		driver: sessionDrivers.lruCache(),
-	},
+	// Preserve Astro 6's HTML whitespace behavior during the v7 migration.
+	compressHTML: true,
+	// M0 has no sessions. Keep the session runtime and KV binding out of the Worker.
+	session: false,
 });

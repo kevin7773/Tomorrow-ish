@@ -59,9 +59,7 @@ npm run preview
 
 ## Security status
 
-M0 is pinned to Astro 6.4.8 as required. As of September 10, 2026, `npm audit` reports advisories against the Astro 6 dependency line and offers only a breaking upgrade to Astro 7 as remediation. M0 does not use view transitions, hydrated islands, AVIF optimization, or a custom base path, but the dependency audit is not clean.
-
-Do not enable production deployment until an Astro 7 upgrade has been reviewed, implemented, and validated. This restriction is separate from the explicit production D1 migration procedure below.
+The project is pinned to Astro 7.3.2 and the matching official Cloudflare adapter. Run `npm audit` with the validation suite and review any new findings before production deployment.
 
 ## Data layout
 
