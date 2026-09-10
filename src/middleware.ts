@@ -50,7 +50,10 @@ export const onRequest = defineMiddleware(async (context, next) => {
 		}
 		context.locals.csrfToken = csrfToken;
 	} catch (error) {
-		if (error instanceof MutationSecurityError) return forbidden();
+		if (error instanceof MutationSecurityError) {
+			console.warn(`[editorial-security] mutation rejected: ${error.reason}`);
+			return forbidden();
+		}
 		return forbidden();
 	}
 

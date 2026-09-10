@@ -2,9 +2,16 @@ export const PRODUCTION_CSRF_COOKIE = '__Host-tomorrowish-csrf';
 export const LOCAL_CSRF_COOKIE = 'tomorrowish-local-csrf';
 export const PRODUCTION_EDITORIAL_ORIGIN = 'https://tomorrow-ish.news';
 
+export type MutationSecurityReason =
+	| 'invalid-method'
+	| 'origin-mismatch'
+	| 'invalid-cookie-token'
+	| 'invalid-form-data'
+	| 'token-mismatch';
+
 export class MutationSecurityError extends Error {
-	constructor(message = 'The request could not be verified.') {
-		super(message);
+	constructor(public readonly reason: MutationSecurityReason) {
+		super('The request could not be verified.');
 		this.name = 'MutationSecurityError';
 	}
 }
@@ -39,18 +46,20 @@ export async function verifySameOriginMutation(
 	cookieToken: string | undefined,
 	expectedOrigin = new URL(request.url).origin,
 ): Promise<void> {
-	if (request.method !== 'POST') throw new MutationSecurityError();
-	if (request.headers.get('Origin') !== expectedOrigin) throw new MutationSecurityError();
-	if (!isValidCsrfToken(cookieToken)) throw new MutationSecurityError();
+	if (request.method !== 'POST') throw new MutationSecurityError('invalid-method');
+	if (request.headers.get('Origin') !== expectedOrigin) {
+		throw new MutationSecurityError('origin-mismatch');
+	}
+	if (!isValidCsrfToken(cookieToken)) throw new MutationSecurityError('invalid-cookie-token');
 
 	let form: FormData;
 	try {
 		form = await request.clone().formData();
 	} catch {
-		throw new MutationSecurityError();
+		throw new MutationSecurityError('invalid-form-data');
 	}
 	const submittedToken = form.get('csrf_token');
 	if (typeof submittedToken !== 'string' || !tokensEqual(cookieToken, submittedToken)) {
-		throw new MutationSecurityError();
+		throw new MutationSecurityError('token-mismatch');
 	}
 }

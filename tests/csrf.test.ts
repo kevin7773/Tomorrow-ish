@@ -46,12 +46,12 @@ describe('editorial mutation protection', () => {
 		const token = createCsrfToken();
 		await expect(
 			verifySameOriginMutation(mutationRequest(token, 'https://attacker.example'), token),
-		).rejects.toBeInstanceOf(MutationSecurityError);
-		await expect(verifySameOriginMutation(mutationRequest(token), undefined)).rejects.toBeInstanceOf(
-			MutationSecurityError,
-		);
+		).rejects.toMatchObject({ reason: 'origin-mismatch' });
+		await expect(verifySameOriginMutation(mutationRequest(token), undefined)).rejects.toMatchObject({
+			reason: 'invalid-cookie-token',
+		});
 		await expect(
 			verifySameOriginMutation(mutationRequest(createCsrfToken()), token),
-		).rejects.toBeInstanceOf(MutationSecurityError);
+		).rejects.toMatchObject({ reason: 'token-mismatch' });
 	});
 });
