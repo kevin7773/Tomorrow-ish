@@ -94,11 +94,13 @@ When production infrastructure is authorized and configured:
 
 6. Verify the applied migrations before deploying application code.
 
-Do not run `seed.sql` against production.
+`seed.sql` may be loaded into production only as the explicitly reviewed optional demo-content step in the production runbook. Never include it in an automatic build, migration, or deployment command.
 
 ## Production deployment model
 
 Production deployment configuration remains deferred until the M1 build has been validated and the Cloudflare resources exist.
+
+Follow the reviewed [production deployment runbook](./docs/production-deployment.md) to create and bind D1, apply migrations explicitly, configure domains and redirects, and perform the first deployment. The committed D1 database ID is intentionally a fail-closed placeholder until the production database is created.
 
 When configured, connect the existing GitHub repository to **Cloudflare Workers Builds**:
 

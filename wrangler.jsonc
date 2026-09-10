@@ -3,6 +3,14 @@
   "name": "tomorrow-ish",
   "compatibility_date": "2026-09-10",
   "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "tomorrow-ish.news",
+      "custom_domain": true
+    }
+  ],
   "assets": {
     "binding": "ASSETS",
     "directory": "./dist",
@@ -11,8 +19,10 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "tomorrow-ish",
-      "database_id": "local"
+      "database_name": "tomorrow-ish-production",
+      // Replace this fail-closed placeholder with the UUID returned by `wrangler d1 create`.
+      // Commands that include `--local` continue to use Wrangler's isolated local database.
+      "database_id": "REPLACE_WITH_PRODUCTION_D1_DATABASE_ID"
     }
   ],
   "observability": {
