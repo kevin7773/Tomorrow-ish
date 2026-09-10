@@ -100,7 +100,7 @@ When production infrastructure is authorized and configured:
 
 Production deployment configuration remains deferred until the M1 build has been validated and the Cloudflare resources exist.
 
-Follow the reviewed [production deployment runbook](./docs/production-deployment.md) to create and bind D1, apply migrations explicitly, configure domains and redirects, and perform the first deployment. The committed D1 database ID is intentionally a fail-closed placeholder until the production database is created.
+Follow the reviewed [production deployment runbook](./docs/production-deployment.md) to verify the bound production D1 database, apply migrations explicitly, configure domains and redirects, and perform the first deployment. The production database UUID is recorded in `wrangler.jsonc`; migrations and deployment remain separate reviewed actions.
 
 When configured, connect the existing GitHub repository to **Cloudflare Workers Builds**:
 

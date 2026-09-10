@@ -20,9 +20,7 @@
     {
       "binding": "DB",
       "database_name": "tomorrow-ish-production",
-      // Replace this fail-closed placeholder with the UUID returned by `wrangler d1 create`.
-      // Commands that include `--local` continue to use Wrangler's isolated local database.
-      "database_id": "REPLACE_WITH_PRODUCTION_D1_DATABASE_ID"
+      "database_id": "96f4a86d-1d60-47b1-a240-86552d001191"
     }
   ],
   "observability": {

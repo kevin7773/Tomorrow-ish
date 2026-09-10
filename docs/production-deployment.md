@@ -13,7 +13,7 @@ This runbook prepares the existing Astro application for its first Cloudflare Wo
 - `workers.dev`: disabled for the production Worker
 - Preview URLs: disabled until a separate preview D1 database and preview Worker configuration are reviewed
 
-Wrangler's `--local` mode stores D1 state under `.wrangler/` and never contacts the production database. The committed production UUID placeholder prevents an accidental remote deployment from using an unknown database.
+Wrangler's `--local` mode stores D1 state under `.wrangler/` and never contacts the production database. The production UUID is recorded in `wrangler.jsonc`; remote access still requires an explicit `--remote` command.
 
 ## One-time Cloudflare prerequisites
 
@@ -26,16 +26,18 @@ Complete these account-level steps in the Cloudflare dashboard:
 
 ## Create and bind production D1
 
-From the repository root:
+Current status: `tomorrow-ish-production` has been created and its UUID is bound to `DB` in `wrangler.jsonc`. Do not run the create command again for the current production environment.
+
+The one-time creation command used from the repository root was:
 
 ```powershell
 npx wrangler d1 create tomorrow-ish-production
 ```
 
-Wrangler returns a `database_id` UUID and may offer to edit the configuration. Decline that automatic edit because the `DB` binding already exists. Copy the UUID, then replace exactly this value in `wrangler.jsonc`:
+Wrangler returns a `database_id` UUID and may offer to edit the configuration. If the database ever has to be recreated in a different Cloudflare account, decline the automatic edit because the `DB` binding already exists, then replace the existing UUID manually and review the diff.
 
 ```jsonc
-"database_id": "REPLACE_WITH_PRODUCTION_D1_DATABASE_ID"
+"database_id": "96f4a86d-1d60-47b1-a240-86552d001191"
 ```
 
 Do not change the binding name `DB` or the database name `tomorrow-ish-production`. Review the resulting diff and confirm that `database_id` is the only value populated from the command output.
@@ -94,7 +96,7 @@ npx wrangler d1 execute DB --remote --command "SELECT status, COUNT(*) AS story_
 
 ## First production deployment
 
-Run the complete local gate from a clean `main` checkout after the real D1 UUID has been committed:
+Run the complete local gate from a clean `main` checkout after confirming the committed D1 UUID:
 
 ```powershell
 npm ci
