@@ -47,7 +47,13 @@ export async function verifySameOriginMutation(
 	expectedOrigin = new URL(request.url).origin,
 ): Promise<void> {
 	if (request.method !== 'POST') throw new MutationSecurityError('invalid-method');
-	if (request.headers.get('Origin') !== expectedOrigin) {
+	const receivedOrigin = request.headers.get('Origin');
+	const isCanonicalOrigin = receivedOrigin === expectedOrigin;
+	const isOpaqueSameOriginRequest =
+		receivedOrigin === 'null' &&
+		request.headers.get('Sec-Fetch-Site') === 'same-origin' &&
+		new URL(request.url).origin === expectedOrigin;
+	if (!isCanonicalOrigin && !isOpaqueSameOriginRequest) {
 		throw new MutationSecurityError('origin-mismatch');
 	}
 	if (!isValidCsrfToken(cookieToken)) throw new MutationSecurityError('invalid-cookie-token');
