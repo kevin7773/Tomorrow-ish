@@ -1,0 +1,97 @@
+---
+import EditorialMessage from '../../../../components/EditorialMessage.astro';
+import { SATIRE_SUITABILITIES } from '../../../../domain/editorial';
+import { GUARDRAIL_FLAGS, displaySuitability } from '../../../../domain/generation';
+import { getGenerationRepository } from '../../../../data/runtime-generation-repository';
+import EditorialLayout from '../../../../layouts/EditorialLayout.astro';
+
+const intakeId = Astro.params.id ?? '';
+const repository = getGenerationRepository();
+const [intake, versions] = await Promise.all([
+	repository.findIntakeForGeneration(intakeId),
+	repository.listNormalizedVersions(intakeId),
+]);
+if (!intake) return Astro.redirect('/editorial/intakes?error=not-found');
+const csrfToken = Astro.locals.csrfToken;
+const returnPath = `/editorial/intakes/${intake.id}/normalize`;
+const selectedId = Astro.url.searchParams.get('version');
+const selected = versions.find((version) => version.id === selectedId) ?? versions[0];
+const sourceById = new Map(intake.references.map((source) => [source.id, source]));
+const assertionsJson = selected ? JSON.stringify(selected.assertions.map(({ kind, statement, sources }) => ({ kind, statement, sources })), null, 2) : '[]';
+const modelGenerationAvailable = import.meta.env.DEV;
+---
+
+<EditorialLayout title={`Normalize ${intake.title}`}>
+	<div class="editorial-page-header">
+		<div>
+			<p class="section-kicker">Governed normalization</p>
+			<h1>{intake.title}</h1>
+			<p>Model output is a proposal. An authenticated editor must accept a version before generation is available.</p>
+		</div>
+		<a class="editorial-button editorial-button--quiet" href={`/editorial/intakes/${intake.id}`}>Back to intake</a>
+	</div>
+	<EditorialMessage message={Astro.url.searchParams.get('message')} error={Astro.url.searchParams.get('error')} />
+
+	<section class="editorial-panel" aria-labelledby="propose-heading">
+		<h2 id="propose-heading">Propose a normalized event</h2>
+		<p>The deterministic fake provider is available in local development only. It performs no network request.</p>
+		<form method="post" action="/editorial/actions/generation">
+			<input type="hidden" name="csrf_token" value={csrfToken} />
+			<input type="hidden" name="action" value="normalize" />
+			<input type="hidden" name="intakeId" value={intake.id} />
+			<input type="hidden" name="idempotencyKey" value={`normalize:${intake.id}:${crypto.randomUUID()}`} />
+			<input type="hidden" name="returnPath" value={returnPath} />
+			<button class="editorial-button" type="submit" disabled={!modelGenerationAvailable}>Create normalization proposal</button>
+		</form>
+		{!modelGenerationAvailable && <p class="editorial-form__help">No production provider is configured; model normalization is disabled.</p>}
+	</section>
+
+	<section class="editorial-panel" aria-labelledby="history-heading">
+		<h2 id="history-heading">Immutable version history</h2>
+		{versions.length === 0 ? <p class="editorial-empty">No normalized-event versions exist.</p> : (
+			<ul class="editorial-list">
+				{versions.map((version) => <li class="editorial-list-item">
+					<div><h3><a href={`${returnPath}?version=${version.id}`}>Version {version.versionNumber}</a></h3><p>{version.origin} · {version.reviewState} · {new Date(version.createdAt).toLocaleString('en-US')}</p></div>
+					<span class:list={['editorial-badge', { 'editorial-badge--approved': version.reviewState === 'ACCEPTED' }]}>{version.reviewState}</span>
+				</li>)}
+			</ul>
+		)}
+	</section>
+
+	{selected && <>
+		<section class="editorial-panel" aria-labelledby="version-heading">
+			<div class="editorial-page-header"><div><p class="section-kicker">Version {selected.versionNumber} · {selected.origin}</p><h2 id="version-heading">{selected.eventStatement}</h2></div><span class="editorial-badge">{selected.reviewState}</span></div>
+			<p><strong>Proposed assessment:</strong> significance {selected.proposedSignificanceScore}/5 · satire potential {selected.proposedSatirePotentialScore}/5 · {displaySuitability(selected.proposedSuitability)}</p>
+			<p>{selected.suitabilityReason}</p>
+			<p><strong>Guardrails:</strong> {selected.guardrailFlags.length ? selected.guardrailFlags.join(', ') : 'None proposed or deterministically detected'}</p>
+			<h3>Assertions and provenance</h3>
+			<ol class="editorial-assertions">
+				{selected.assertions.map((assertion) => <li><span class="editorial-badge">{assertion.kind}</span><p>{assertion.statement}</p><ul>{assertion.sources.map((link) => { const source = sourceById.get(link.sourceReferenceId); return <li>{link.relationship}: {source ? <a href={source.sourceUrl} rel="noreferrer">{source.sourceTitle}</a> : link.sourceReferenceId} {source && `(${source.sourceTier})`}</li>; })}</ul></li>)}
+			</ol>
+			{selected.modelRunId && <p><a href={`/editorial/model-runs/${selected.modelRunId}`}>Open model-run provenance</a></p>}
+			{selected.reviewReason && <p><strong>Review reason:</strong> {selected.reviewReason}</p>}
+		</section>
+
+		{selected.reviewState === 'PROPOSED' && <section class="editorial-grid">
+			<form class="editorial-form editorial-panel" method="post" action="/editorial/actions/generation">
+				<input type="hidden" name="csrf_token" value={csrfToken} /><input type="hidden" name="action" value="review" /><input type="hidden" name="versionId" value={selected.id} /><input type="hidden" name="returnPath" value={`${returnPath}?version=${selected.id}`} />
+				<h2>Review proposal</h2><label><span>Required editorial reason</span><textarea name="reason" maxlength="2000" required></textarea></label>
+				<div class="editorial-form__actions"><button class="editorial-button" name="decision" value="ACCEPTED" type="submit">Accept version</button><button class="editorial-button editorial-button--danger" name="decision" value="REJECTED" type="submit">Reject version</button></div>
+			</form>
+
+			<form class="editorial-form editorial-panel" method="post" action="/editorial/actions/generation">
+				<input type="hidden" name="csrf_token" value={csrfToken} /><input type="hidden" name="action" value="revise" /><input type="hidden" name="parentVersionId" value={selected.id} /><input type="hidden" name="returnPath" value={returnPath} />
+				<h2>Edit into a new version</h2>
+				<label><span>Event statement</span><textarea name="eventStatement" maxlength="2000" required>{selected.eventStatement}</textarea></label>
+				<div class="editorial-form__row"><label><span>Significance</span><select name="proposedSignificanceScore">{[1,2,3,4,5].map((value) => <option value={value} selected={value === selected.proposedSignificanceScore}>{value}</option>)}</select></label><label><span>Satire potential</span><select name="proposedSatirePotentialScore">{[1,2,3,4,5].map((value) => <option value={value} selected={value === selected.proposedSatirePotentialScore}>{value}</option>)}</select></label></div>
+				<label><span>Suitability</span><select name="proposedSuitability">{SATIRE_SUITABILITIES.map((value) => <option value={value} selected={value === selected.proposedSuitability}>{displaySuitability(value)}</option>)}</select></label>
+				<label><span>Suitability reason</span><textarea name="suitabilityReason" maxlength="4000" required>{selected.suitabilityReason}</textarea></label>
+				<label><span>Required revision reason</span><textarea name="revisionReason" maxlength="2000" required></textarea></label>
+				<fieldset><legend>Guardrail flags</legend><div class="editorial-checklist">{GUARDRAIL_FLAGS.map((flag) => <label><input type="checkbox" name="guardrailFlags" value={flag} checked={selected.guardrailFlags.includes(flag)} /> {flag.replaceAll('_', ' ')}</label>)}</div></fieldset>
+				<label><span>Assertions JSON</span><textarea class="editorial-form__body" name="assertionsJson" required>{assertionsJson}</textarea><small class="editorial-form__help">Each assertion requires kind, statement, and source links. Accepted versions are never edited in place.</small></label>
+				<button class="editorial-button" type="submit">Create editor version</button>
+			</form>
+		</section>}
+		{selected.reviewState === 'ACCEPTED' && <section class="editorial-panel"><h2>Accepted-version actions</h2><div class="editorial-form__actions"><a class="editorial-button" href={`/editorial/intakes/${intake.id}/generate`}>Generate five DRAFT candidates</a></div><form class="editorial-form" method="post" action="/editorial/actions/generation"><input type="hidden" name="csrf_token" value={csrfToken} /><input type="hidden" name="action" value="supersede" /><input type="hidden" name="versionId" value={selected.id} /><input type="hidden" name="returnPath" value={`${returnPath}?version=${selected.id}`} /><label><span>Reason to supersede without a replacement</span><textarea name="reason" maxlength="2000" required></textarea></label><button class="editorial-button editorial-button--danger" type="submit">Supersede accepted version</button></form></section>}
+	</>}
+</EditorialLayout>

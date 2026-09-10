@@ -35,6 +35,11 @@ interface IntakeRow {
 	satire_potential_score: number;
 	satire_suitability: SatireSuitability;
 	editorial_notes: string;
+	suitability_reason: string;
+	guardrail_flags_json: string;
+	assessment_reviewed_by_email: string | null;
+	assessment_reviewed_at: string | null;
+	accepted_model_run_id: string | null;
 	created_by_email: string;
 	updated_by_email: string;
 	created_at: string;
@@ -71,6 +76,12 @@ interface CandidateRow {
 	created_at: string;
 	updated_at: string;
 	converted_story_id: string | null;
+	origin_model_run_id: string | null;
+	normalized_event_version_id: string | null;
+	generation_ordinal: number | null;
+	rationale: string;
+	satirical_mechanism: string;
+	origin_kind: 'MANUAL' | 'MODEL';
 }
 
 interface EditorialStoryRow {
@@ -99,6 +110,7 @@ interface AuditRow {
 	action: string;
 	from_status: string | null;
 	to_status: string | null;
+	reason: string | null;
 	created_at: string;
 }
 
@@ -119,7 +131,13 @@ const CANDIDATE_SELECT = `
 		candidate.updated_by_email,
 		candidate.created_at,
 		candidate.updated_at,
-		story.id AS converted_story_id
+		story.id AS converted_story_id,
+		candidate.origin_model_run_id,
+		candidate.normalized_event_version_id,
+		candidate.generation_ordinal,
+		candidate.rationale,
+		candidate.satirical_mechanism,
+		candidate.origin_kind
 	FROM satire_candidates AS candidate
 	JOIN source_intakes AS intake ON intake.id = candidate.source_intake_id
 	JOIN categories AS category ON category.id = candidate.category_id
@@ -167,6 +185,13 @@ function mapReference(row: ReferenceRow): SourceReference {
 }
 
 function mapIntake(row: IntakeRow, references: SourceReference[] = []): SourceIntake {
+	let guardrailFlags: SourceIntake['guardrailFlags'] = [];
+	try {
+		const parsed: unknown = JSON.parse(row.guardrail_flags_json);
+		if (Array.isArray(parsed)) guardrailFlags = parsed as SourceIntake['guardrailFlags'];
+	} catch {
+		// Invalid legacy JSON is displayed empty and corrected on normalization acceptance.
+	}
 	return {
 		id: row.id,
 		title: row.title,
@@ -175,6 +200,11 @@ function mapIntake(row: IntakeRow, references: SourceReference[] = []): SourceIn
 		satirePotentialScore: row.satire_potential_score,
 		satireSuitability: row.satire_suitability,
 		editorialNotes: row.editorial_notes,
+		suitabilityReason: row.suitability_reason,
+		guardrailFlags,
+		assessmentReviewedByEmail: row.assessment_reviewed_by_email,
+		assessmentReviewedAt: row.assessment_reviewed_at,
+		acceptedModelRunId: row.accepted_model_run_id,
 		createdByEmail: row.created_by_email,
 		updatedByEmail: row.updated_by_email,
 		createdAt: row.created_at,
@@ -203,6 +233,12 @@ function mapCandidate(row: CandidateRow): SatireCandidate {
 		createdAt: row.created_at,
 		updatedAt: row.updated_at,
 		convertedStoryId: row.converted_story_id,
+		originModelRunId: row.origin_model_run_id,
+		normalizedEventVersionId: row.normalized_event_version_id,
+		generationOrdinal: row.generation_ordinal,
+		rationale: row.rationale,
+		satiricalMechanism: row.satirical_mechanism,
+		originKind: row.origin_kind,
 	};
 }
 
@@ -245,6 +281,7 @@ function mapAudit(row: AuditRow): AuditEntry {
 		action: row.action,
 		fromStatus: row.from_status,
 		toStatus: row.to_status,
+		reason: row.reason,
 		createdAt: row.created_at,
 	};
 }

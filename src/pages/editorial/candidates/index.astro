@@ -20,7 +20,7 @@ const candidates = await getEditorialRepository().listCandidates();
 				<li class="editorial-list-item">
 					<div>
 						<h2><a href={`/editorial/candidates/${candidate.id}`}>{candidate.proposedHeadline}</a></h2>
-						<p>{candidate.category.name} · From {candidate.sourceIntakeTitle}{candidate.convertedStoryId ? ' · Converted to story' : ''}</p>
+						<p>{candidate.category.name} · {candidate.originKind === 'MODEL' ? 'Generated' : 'Manual'} · From {candidate.sourceIntakeTitle}{candidate.convertedStoryId ? ' · Converted to story' : ''}</p>
 					</div>
 					<span class:list={['editorial-badge', { 'editorial-badge--approved': candidate.status === 'APPROVED' }]}>{candidate.status}</span>
 				</li>

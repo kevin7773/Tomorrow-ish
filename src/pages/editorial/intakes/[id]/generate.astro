@@ -1,0 +1,38 @@
+---
+import EditorialMessage from '../../../../components/EditorialMessage.astro';
+import { getEditorialRepository } from '../../../../data/runtime-editorial-repository';
+import { getGenerationRepository } from '../../../../data/runtime-generation-repository';
+import { displaySuitability } from '../../../../domain/generation';
+import EditorialLayout from '../../../../layouts/EditorialLayout.astro';
+
+const intakeId = Astro.params.id ?? '';
+const generationRepository = getGenerationRepository();
+const [intake, version, categories] = await Promise.all([
+	generationRepository.findIntakeForGeneration(intakeId),
+	generationRepository.findAcceptedNormalizedVersion(intakeId),
+	getEditorialRepository().listCategories(),
+]);
+if (!intake) return Astro.redirect('/editorial/intakes?error=not-found');
+const priorRuns = version ? await generationRepository.countSuccessfulGenerationRuns(version.id) : 0;
+const csrfToken = Astro.locals.csrfToken;
+const returnPath = `/editorial/intakes/${intake.id}/generate`;
+const modelGenerationAvailable = import.meta.env.DEV;
+---
+
+<EditorialLayout title={`Generate candidates for ${intake.title}`}>
+	<div class="editorial-page-header"><div><p class="section-kicker">Governed candidate generation</p><h1>{intake.title}</h1><p>Generation creates exactly five DRAFT candidates and grants no review, conversion, or publication authority.</p></div><a class="editorial-button editorial-button--quiet" href={`/editorial/intakes/${intake.id}/normalize`}>Normalization history</a></div>
+	<EditorialMessage message={Astro.url.searchParams.get('message')} error={Astro.url.searchParams.get('error')} />
+	{!version ? <p class="editorial-empty">Accept a normalized-event version before generating candidates.</p> : <>
+		<section class="editorial-panel"><h2>Accepted version {version.versionNumber}</h2><p>{version.eventStatement}</p><p><strong>Suitability:</strong> {displaySuitability(version.proposedSuitability)} · <strong>Guardrails:</strong> {version.guardrailFlags.length ? version.guardrailFlags.join(', ') : 'None'}</p><p>{version.suitabilityReason}</p></section>
+		{version.proposedSuitability === 'UNSUITABLE' || version.proposedSuitability === 'UNREVIEWED' ? <p class="editorial-alert editorial-alert--error">Generation is disabled for this suitability state.</p> : <form class="editorial-form editorial-panel" method="post" action="/editorial/actions/generation">
+			<input type="hidden" name="csrf_token" value={csrfToken} /><input type="hidden" name="action" value="generate" /><input type="hidden" name="intakeId" value={intake.id} /><input type="hidden" name="normalizedEventVersionId" value={version.id} /><input type="hidden" name="idempotencyKey" value={`generate:${version.id}:${crypto.randomUUID()}`} /><input type="hidden" name="returnPath" value={returnPath} />
+			<h2>Generate candidate batch</h2>
+			<label><span>Category</span><select name="categoryId" required>{categories.map((category) => <option value={category.id}>{category.name}</option>)}</select></label>
+			{version.proposedSuitability === 'SENSITIVE' && <label><span>Caution acknowledgement</span><input name="cautionAcknowledgement" required placeholder="Type ACKNOWLEDGE CAUTION" /></label>}
+			{priorRuns > 0 && <><p class="editorial-alert editorial-alert--error">This accepted version already has {priorRuns} successful generation run(s). A rerun must be deliberate.</p><label><input type="checkbox" name="deliberateRerun" value="yes" required /> Deliberate rerun</label></>}
+			{(version.proposedSuitability === 'SENSITIVE' || priorRuns > 0) && <label><span>Required editorial reason</span><textarea name="editorialReason" maxlength="2000" required></textarea></label>}
+			<button class="editorial-button" type="submit" disabled={!modelGenerationAvailable}>Generate five DRAFT candidates</button>
+			{!modelGenerationAvailable && <p class="editorial-form__help">No production provider is configured; candidate generation is disabled.</p>}
+		</form>}
+	</>}
+</EditorialLayout>

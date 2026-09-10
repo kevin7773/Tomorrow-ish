@@ -1,0 +1,23 @@
+---
+import EditorialMessage from '../../../components/EditorialMessage.astro';
+import { getGenerationRepository } from '../../../data/runtime-generation-repository';
+import EditorialLayout from '../../../layouts/EditorialLayout.astro';
+
+const id = Astro.params.id ?? '';
+const repository = getGenerationRepository();
+const run = await repository.findModelRun(id);
+if (!run) return Astro.redirect('/editorial?error=not-found');
+const candidateCount = await repository.countGeneratedCandidates(run.id);
+const cost = (run.estimatedCostMicrousd / 1_000_000).toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 6 });
+---
+
+<EditorialLayout title={`Model run ${run.id}`}>
+	<div class="editorial-page-header"><div><p class="section-kicker">Model-run provenance</p><h1>{run.operation}</h1><p>{run.provider} · {run.model} · {run.providerRevision ?? 'revision unavailable'}</p></div><span class:list={['editorial-badge', { 'editorial-badge--approved': run.status === 'SUCCEEDED' }]}>{run.status}</span></div>
+	<EditorialMessage message={Astro.url.searchParams.get('message')} error={Astro.url.searchParams.get('error')} />
+	<section class="editorial-panel"><h2>Execution record</h2><dl class="editorial-details">
+		<div><dt>Run ID</dt><dd>{run.id}</dd></div><div><dt>Requested by</dt><dd>{run.requestedByEmail}</dd></div><div><dt>Started</dt><dd>{new Date(run.createdAt).toLocaleString('en-US')}</dd></div><div><dt>Completed</dt><dd>{new Date(run.completedAt).toLocaleString('en-US')}</dd></div>
+		<div><dt>Prompt version</dt><dd>{run.promptVersion}</dd></div><div><dt>Input hash</dt><dd><code>{run.inputHash}</code></dd></div><div><dt>Validated output hash</dt><dd><code>{run.outputHash ?? '—'}</code></dd></div><div><dt>Idempotency key</dt><dd><code>{run.idempotencyKey}</code></dd></div>
+		<div><dt>Tokens</dt><dd>{run.inputTokens ?? '—'} in / {run.outputTokens ?? '—'} out</dd></div><div><dt>Characters</dt><dd>{run.inputCharacters} in / {run.outputCharacters} out</dd></div><div><dt>Latency / retries</dt><dd>{run.latencyMs} ms / {run.retryCount}</dd></div><div><dt>Estimated cost</dt><dd>{cost}</dd></div><div><dt>Candidates</dt><dd>{candidateCount}</dd></div><div><dt>Failure classification</dt><dd>{run.failureClassification ?? '—'}</dd></div>
+	</dl></section>
+	<p><a class="editorial-button editorial-button--quiet" href={`/editorial/intakes/${run.sourceIntakeId}`}>Open source intake</a></p>
+</EditorialLayout>

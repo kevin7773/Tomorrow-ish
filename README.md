@@ -46,6 +46,18 @@ Astro runs against Cloudflare's local Workers runtime and the local `DB` binding
 
 The private editorial workspace is available at `http://localhost:4321/editorial`. Localhost uses a fixed development-only editor identity; non-local requests always require a valid Cloudflare Access assertion and complete Access configuration.
 
+M3 adds a governed, manual normalization and candidate-generation path. In local development, the normalization and generation screens use a deterministic fake provider that requires no network access, API key, or new Cloudflare binding:
+
+```text
+source intake
+  -> model normalization proposal
+  -> editor-accepted immutable normalized-event version
+  -> five model-authored DRAFT candidates
+  -> existing human review and publication workflow
+```
+
+Open an intake and choose **Normalize event**. The fake provider is deliberately unavailable outside development; a production provider must be separately reviewed and configured before real model generation can be enabled.
+
 ## Validate
 
 ```powershell
@@ -73,9 +85,9 @@ The project is pinned to Astro 7.3.2 and the matching official Cloudflare adapte
 - `src/data/` owns the repository interface and D1 implementation.
 - Routes and components depend on the repository boundary rather than issuing D1 queries directly.
 
-M2 adds protected source intake, normalized source references, human-reviewed satire candidates, immutable candidate-to-story provenance, and an append-only audit log. Candidate conversion creates only a `DRAFT` story. `publishStory()` is the sole operation that can assign `PUBLISHED`, and it atomically records the authenticated editor and publication time.
+M2 adds protected source intake, normalized source references, human-reviewed satire candidates, immutable candidate-to-story provenance, and an append-only audit log. M3 adds immutable normalized-event versions, assertion-level source provenance, model-run cost/usage records, and idempotent DRAFT-candidate generation behind a narrow repository boundary. Candidate conversion creates only a `DRAFT` story. `publishStory()` is the sole operation that can assign `PUBLISHED`, and it atomically records the authenticated editor and publication time.
 
-Automated ingestion, scraping, AI generation, generation-run tables, R2, scheduled triggers, queues, workflows, social automation, advertising vendors, analytics vendors, public accounts, comments, and submissions remain intentionally out of scope.
+Automated discovery/ingestion, scraping, production model enablement, full-article generation, R2, scheduled triggers, queues, workflows, social automation, advertising vendors, analytics vendors, public accounts, comments, and submissions remain intentionally out of scope.
 
 ## Production D1 migrations
 
@@ -108,7 +120,11 @@ Production deployment configuration remains deferred until the M1 build has been
 
 Follow the reviewed [production deployment runbook](./docs/production-deployment.md) to verify the bound production D1 database, apply migrations explicitly, configure domains and redirects, and perform the first deployment. The production database UUID is recorded in `wrangler.jsonc`; migrations and deployment remain separate reviewed actions.
 
-For the not-yet-authorized M2 rollout, follow the separate [M2 production onboarding runbook](./docs/m2-production-onboarding.md). It documents the exact Cloudflare Access application, Worker variables, reviewed `0002` migration, and category reference-data procedure. None of those production actions run during local development or deployment builds.
+The [M2 production onboarding runbook](./docs/m2-production-onboarding.md) records the explicit Cloudflare Access, `0002` migration, and category reference-data procedure. None of those production actions run during local development or deployment builds.
+
+Migration `0003_governed_generation.sql` is not applied by deployment. Before any future M3 production rollout, review the migration, confirm `0001` and `0002` are already applied and `0003` is the only pending migration, back up/verify production data, then use the same explicit `wrangler d1 migrations apply DB --remote` operator action. Do not configure or deploy a production model adapter as part of that schema action.
+
+The separate [M3 provider review](./docs/m3-provider-review.md) recommends a future adapter and records its cost/privacy assumptions. It is documentation only; fake-provider mode remains the only implemented provider.
 
 When configured, connect the existing GitHub repository to **Cloudflare Workers Builds**:
 

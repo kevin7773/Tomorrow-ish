@@ -223,6 +223,11 @@ export class EditorialService {
 		if (!canTransitionCandidate(candidate.status, to)) {
 			throw new EditorialValidationError(`Cannot move ${candidate.status} to ${to}.`);
 		}
+		if (to === 'REVIEW') {
+			requiredText(candidate.proposedHeadline, 'Headline', 300);
+			requiredText(candidate.proposedDeck, 'Deck', 1_000);
+			requiredText(candidate.draftBodyMarkdown, 'Draft body', 50_000);
+		}
 		const changed = await this.repository.transitionCandidate({
 			id,
 			from: candidate.status,

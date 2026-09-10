@@ -1,5 +1,6 @@
 import type { PublicationStatus } from './publication-status';
 import type { StoryCategory } from './story';
+import type { GuardrailFlag } from './generation';
 
 export const SOURCE_TIERS = ['TIER_1', 'TIER_2', 'CONTEXT_ONLY'] as const;
 export type SourceTier = (typeof SOURCE_TIERS)[number];
@@ -53,6 +54,11 @@ export interface SourceIntake {
 	satirePotentialScore: number;
 	satireSuitability: SatireSuitability;
 	editorialNotes: string;
+	suitabilityReason: string;
+	guardrailFlags: GuardrailFlag[];
+	assessmentReviewedByEmail: string | null;
+	assessmentReviewedAt: string | null;
+	acceptedModelRunId: string | null;
 	createdByEmail: string;
 	updatedByEmail: string;
 	createdAt: string;
@@ -75,6 +81,12 @@ export interface SatireCandidate {
 	createdAt: string;
 	updatedAt: string;
 	convertedStoryId: string | null;
+	originModelRunId: string | null;
+	normalizedEventVersionId: string | null;
+	generationOrdinal: number | null;
+	rationale: string;
+	satiricalMechanism: string;
+	originKind: 'MANUAL' | 'MODEL';
 }
 
 export interface EditorialStory {
@@ -108,6 +120,7 @@ export interface AuditEntry {
 	action: string;
 	fromStatus: string | null;
 	toStatus: string | null;
+	reason: string | null;
 	createdAt: string;
 }
 

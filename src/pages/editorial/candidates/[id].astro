@@ -35,6 +35,13 @@ tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
 		<span class:list={['editorial-badge', { 'editorial-badge--approved': candidate.status === 'APPROVED' }]}>{candidate.status}</span>
 	</div>
 	<EditorialMessage message={Astro.url.searchParams.get('message')} error={Astro.url.searchParams.get('error')} />
+	<section class="editorial-provenance" aria-label="Candidate provenance">
+		<p><strong>{candidate.originKind === 'MODEL' ? 'Model-generated' : 'Editor-authored'} candidate</strong>{candidate.generationOrdinal ? ` · Alternative ${candidate.generationOrdinal}` : ''}</p>
+		{candidate.rationale && <p><strong>Rationale:</strong> {candidate.rationale}</p>}
+		{candidate.satiricalMechanism && <p><strong>Satirical mechanism:</strong> {candidate.satiricalMechanism}</p>}
+		{candidate.originModelRunId && <p><a href={`/editorial/model-runs/${candidate.originModelRunId}`}>Open provider, cost, and generation provenance</a></p>}
+		{candidate.normalizedEventVersionId && <p>Normalized-event version: <code>{candidate.normalizedEventVersionId}</code></p>}
+	</section>
 
 	{candidate.convertedStoryId ? (
 		<div class="editorial-alert editorial-alert--success">
@@ -93,6 +100,6 @@ tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
 
 	<section class="editorial-panel" aria-labelledby="audit-heading">
 		<h2 id="audit-heading">Audit history</h2>
-		<table class="editorial-audit"><thead><tr><th>Time</th><th>Action</th><th>Actor</th><th>State</th></tr></thead><tbody>{auditEntries.map((entry) => <tr><td>{new Date(entry.createdAt).toLocaleString('en-US')}</td><td>{entry.action}</td><td>{entry.actorEmail}</td><td>{entry.fromStatus && entry.toStatus ? `${entry.fromStatus} → ${entry.toStatus}` : entry.toStatus ?? '—'}</td></tr>)}</tbody></table>
+		<table class="editorial-audit"><thead><tr><th>Time</th><th>Action</th><th>Actor</th><th>State</th><th>Reason</th></tr></thead><tbody>{auditEntries.map((entry) => <tr><td>{new Date(entry.createdAt).toLocaleString('en-US')}</td><td>{entry.action}</td><td>{entry.actorEmail}</td><td>{entry.fromStatus && entry.toStatus ? `${entry.fromStatus} → ${entry.toStatus}` : entry.toStatus ?? '—'}</td><td>{entry.reason ?? '—'}</td></tr>)}</tbody></table>
 	</section>
 </EditorialLayout>

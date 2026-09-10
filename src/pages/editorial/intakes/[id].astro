@@ -2,12 +2,15 @@
 import EditorialMessage from '../../../components/EditorialMessage.astro';
 import { SATIRE_SUITABILITIES, SOURCE_TIERS, SOURCE_TYPES } from '../../../domain/editorial';
 import { getEditorialRepository } from '../../../data/runtime-editorial-repository';
+import { getGenerationRepository } from '../../../data/runtime-generation-repository';
+import { displaySuitability } from '../../../domain/generation';
 import EditorialLayout from '../../../layouts/EditorialLayout.astro';
 
 const id = Astro.params.id ?? '';
 const repository = getEditorialRepository();
 const intake = await repository.findIntakeById(id);
 if (!intake) return Astro.redirect('/editorial/intakes?error=not-found');
+const normalizedVersions = await getGenerationRepository().listNormalizedVersions(intake.id);
 const csrfToken = Astro.locals.csrfToken;
 const returnPath = `/editorial/intakes/${intake.id}`;
 ---
@@ -19,9 +22,14 @@ const returnPath = `/editorial/intakes/${intake.id}`;
 			<h1>{intake.title}</h1>
 			<p>Updated by {intake.updatedByEmail} on {new Date(intake.updatedAt).toLocaleString('en-US')}.</p>
 		</div>
-		<a class="editorial-button" href={`/editorial/intakes/${intake.id}/candidates/new`}>Draft a satire candidate</a>
+		<div class="editorial-form__actions"><a class="editorial-button" href={`/editorial/intakes/${intake.id}/normalize`}>Normalize event</a><a class="editorial-button editorial-button--quiet" href={`/editorial/intakes/${intake.id}/candidates/new`}>Draft manually</a></div>
 	</div>
 	<EditorialMessage message={Astro.url.searchParams.get('message')} error={Astro.url.searchParams.get('error')} />
+
+	<section class="editorial-panel" aria-labelledby="normalization-heading">
+		<h2 id="normalization-heading">Normalized-event history</h2>
+		{normalizedVersions.length === 0 ? <p class="editorial-empty">No normalization proposal exists yet.</p> : <ul class="editorial-list">{normalizedVersions.map((version) => <li class="editorial-list-item"><div><h3><a href={`/editorial/intakes/${intake.id}/normalize?version=${version.id}`}>Version {version.versionNumber}: {version.eventStatement}</a></h3><p>{version.origin} · {displaySuitability(version.proposedSuitability)} · {version.createdByEmail}</p></div><span class:list={['editorial-badge', { 'editorial-badge--approved': version.reviewState === 'ACCEPTED' }]}>{version.reviewState}</span></li>)}</ul>}
+	</section>
 
 	<form class="editorial-form editorial-panel" method="post" action="/editorial/actions/intakes">
 		<input type="hidden" name="csrf_token" value={csrfToken} />

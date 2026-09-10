@@ -23,6 +23,12 @@ function candidate(overrides: Partial<SatireCandidate> = {}): SatireCandidate {
 		createdAt: '2026-09-10T12:00:00.000Z',
 		updatedAt: '2026-09-10T12:00:00.000Z',
 		convertedStoryId: null,
+		originModelRunId: null,
+		normalizedEventVersionId: null,
+		generationOrdinal: null,
+		rationale: '',
+		satiricalMechanism: '',
+		originKind: 'MANUAL',
 		...overrides,
 	};
 }
