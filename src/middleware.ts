@@ -51,7 +51,15 @@ export const onRequest = defineMiddleware(async (context, next) => {
 		context.locals.csrfToken = csrfToken;
 	} catch (error) {
 		if (error instanceof MutationSecurityError) {
-			console.warn(`[editorial-security] mutation rejected: ${error.reason}`);
+			if (error.reason === 'origin-mismatch') {
+				console.warn('[editorial-security] mutation rejected: origin-mismatch', {
+					receivedOrigin: context.request.headers.get('Origin'),
+					expectedOrigin: import.meta.env.DEV ? context.url.origin : PRODUCTION_EDITORIAL_ORIGIN,
+					secFetchSite: context.request.headers.get('Sec-Fetch-Site'),
+				});
+			} else {
+				console.warn(`[editorial-security] mutation rejected: ${error.reason}`);
+			}
 			return forbidden();
 		}
 		return forbidden();
