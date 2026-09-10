@@ -1,0 +1,36 @@
+---
+import EditorialMessage from '../../../components/EditorialMessage.astro';
+import { getEditorialRepository } from '../../../data/runtime-editorial-repository';
+import EditorialLayout from '../../../layouts/EditorialLayout.astro';
+
+const intakes = await getEditorialRepository().listIntakes();
+---
+
+<EditorialLayout title="Source intake">
+	<div class="editorial-page-header">
+		<div>
+			<h1>Source intake</h1>
+			<p>Record the factual event first. Preserve source authority without inheriting its framing.</p>
+		</div>
+		<a class="editorial-button" href="/editorial/intakes/new">New intake</a>
+	</div>
+	<EditorialMessage message={Astro.url.searchParams.get('message')} error={Astro.url.searchParams.get('error')} />
+	{intakes.length ? (
+		<ul class="editorial-list">
+			{intakes.map((intake) => (
+				<li class="editorial-list-item">
+					<div>
+						<h2><a href={`/editorial/intakes/${intake.id}`}>{intake.title}</a></h2>
+						<p>Significance {intake.significanceScore}/5 · Satire potential {intake.satirePotentialScore}/5 · Updated {new Date(intake.updatedAt).toLocaleString('en-US')}</p>
+					</div>
+					<span class="editorial-badge">{intake.satireSuitability}</span>
+				</li>
+			))}
+		</ul>
+	) : (
+		<div class="editorial-empty">
+			<p>No source events have been recorded.</p>
+			<a class="editorial-button" href="/editorial/intakes/new">Create the first intake</a>
+		</div>
+	)}
+</EditorialLayout>

@@ -1,0 +1,31 @@
+---
+interface Props {
+	message?: string | null;
+	error?: string | null;
+}
+
+const { message, error } = Astro.props;
+const messages: Record<string, string> = {
+	'intake-created': 'Source intake created.',
+	'intake-updated': 'Source intake updated.',
+	'reference-added': 'Source reference added.',
+	'reference-updated': 'Source reference updated.',
+	'candidate-created': 'Satire candidate created as a draft.',
+	'candidate-updated': 'Candidate draft updated.',
+	'candidate-transitioned': 'Candidate status updated.',
+	'candidate-converted': 'Approved candidate converted to a draft story.',
+	'story-updated': 'Story draft updated.',
+	'story-transitioned': 'Story status updated.',
+	'story-published': 'Story published by explicit editorial authority.',
+};
+const errors: Record<string, string> = {
+	'invalid-request': 'The request was not valid. Review the fields and try again.',
+	'not-found': 'The requested editorial record was not found.',
+	'duplicate': 'That conversion has already occurred.',
+	'conflict': 'The record changed before this action completed. Reload and try again.',
+	'operation-failed': 'The editorial operation could not be completed.',
+};
+---
+
+{message && messages[message] && <p class="editorial-alert editorial-alert--success" role="status">{messages[message]}</p>}
+{error && errors[error] && <p class="editorial-alert editorial-alert--error" role="alert">{errors[error]}</p>}

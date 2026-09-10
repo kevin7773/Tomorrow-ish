@@ -1,0 +1,40 @@
+---
+import EditorialMessage from '../../components/EditorialMessage.astro';
+import { getEditorialRepository } from '../../data/runtime-editorial-repository';
+import EditorialLayout from '../../layouts/EditorialLayout.astro';
+
+const counts = await getEditorialRepository().getDashboardCounts();
+---
+
+<EditorialLayout title="Editorial desk">
+	<div class="editorial-page-header">
+		<div>
+			<h1>Editorial desk</h1>
+			<p>Human review stands between every fact pattern and every published Tomorrow-ish story.</p>
+		</div>
+		<a class="editorial-button" href="/editorial/intakes/new">Record a source event</a>
+	</div>
+	<EditorialMessage message={Astro.url.searchParams.get('message')} error={Astro.url.searchParams.get('error')} />
+	<section class="editorial-stats" aria-label="Editorial queue summary">
+		<a class="editorial-stat" href="/editorial/intakes">
+			<strong>{counts.intakes}</strong>
+			<span>source intakes</span>
+		</a>
+		<a class="editorial-stat" href="/editorial/candidates">
+			<strong>{counts.candidatesInReview}</strong>
+			<span>candidates in review</span>
+		</a>
+		<a class="editorial-stat" href="/editorial/candidates">
+			<strong>{counts.approvedCandidates}</strong>
+			<span>approved candidates to convert</span>
+		</a>
+		<a class="editorial-stat" href="/editorial/stories">
+			<strong>{counts.storiesAwaitingPublication}</strong>
+			<span>stories awaiting publication</span>
+		</a>
+	</section>
+	<section class="editorial-panel" aria-labelledby="authority-heading">
+		<h2 id="authority-heading">Publication authority</h2>
+		<p>A candidate can become only a draft story. A story must pass review and approval before the separate, confirmed publish operation can assign its publication time.</p>
+	</section>
+</EditorialLayout>

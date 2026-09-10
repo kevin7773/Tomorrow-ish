@@ -20,7 +20,8 @@
   },
   "dependencies": {
     "@astrojs/cloudflare": "14.3.1",
-    "astro": "7.3.2"
+    "astro": "7.3.2",
+    "jose": "6.2.12"
   },
   "devDependencies": {
     "@astrojs/check": "0.9.10",
@@ -28,7 +29,7 @@
     "@types/node": "24.13.4",
     "typescript": "5.9.2",
     "vitest": "4.1.11",
-    "wrangler": "4.130.0"
+    "wrangler": "4.131.0"
   },
   "allowScripts": {
     "esbuild": true

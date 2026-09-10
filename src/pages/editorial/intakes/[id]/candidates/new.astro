@@ -1,0 +1,42 @@
+---
+import { getEditorialRepository } from '../../../../../data/runtime-editorial-repository';
+import EditorialLayout from '../../../../../layouts/EditorialLayout.astro';
+
+const intakeId = Astro.params.id ?? '';
+const repository = getEditorialRepository();
+const [intake, categories] = await Promise.all([
+	repository.findIntakeById(intakeId),
+	repository.listCategories(),
+]);
+if (!intake) return Astro.redirect('/editorial/intakes?error=not-found');
+const csrfToken = Astro.locals.csrfToken;
+---
+
+<EditorialLayout title="New satire candidate">
+	<div class="editorial-page-header">
+		<div>
+			<p class="section-kicker">Satire candidate</p>
+			<h1>Draft from the facts</h1>
+			<p>Candidate copy remains unpublished and begins in DRAFT.</p>
+		</div>
+	</div>
+	<div class="editorial-provenance">
+		<strong>Source event: {intake.title}</strong>
+		<p>{intake.neutralBrief}</p>
+	</div>
+	<form class="editorial-form editorial-panel" method="post" action="/editorial/actions/candidates">
+		<input type="hidden" name="csrf_token" value={csrfToken} />
+		<input type="hidden" name="action" value="create" />
+		<input type="hidden" name="sourceIntakeId" value={intake.id} />
+		<input type="hidden" name="returnPath" value={`/editorial/intakes/${intake.id}/candidates/new`} />
+		<label><span>Proposed headline</span><input name="proposedHeadline" maxlength="300" required /></label>
+		<label><span>Proposed deck</span><textarea name="proposedDeck" maxlength="1000" required></textarea></label>
+		<label><span>Draft body in Markdown</span><textarea class="editorial-form__body" name="draftBodyMarkdown" maxlength="50000" required></textarea></label>
+		<label><span>Category</span><select name="categoryId" required>{categories.map((category) => <option value={category.id}>{category.name}</option>)}</select></label>
+		<label><span>Editorial notes</span><textarea name="editorialNotes" maxlength="20000"></textarea></label>
+		<div class="editorial-form__actions">
+			<button class="editorial-button" type="submit">Create draft candidate</button>
+			<a href={`/editorial/intakes/${intake.id}`}>Cancel</a>
+		</div>
+	</form>
+</EditorialLayout>

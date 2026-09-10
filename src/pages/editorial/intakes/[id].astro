@@ -1,0 +1,85 @@
+---
+import EditorialMessage from '../../../components/EditorialMessage.astro';
+import { SATIRE_SUITABILITIES, SOURCE_TIERS, SOURCE_TYPES } from '../../../domain/editorial';
+import { getEditorialRepository } from '../../../data/runtime-editorial-repository';
+import EditorialLayout from '../../../layouts/EditorialLayout.astro';
+
+const id = Astro.params.id ?? '';
+const repository = getEditorialRepository();
+const intake = await repository.findIntakeById(id);
+if (!intake) return Astro.redirect('/editorial/intakes?error=not-found');
+const csrfToken = Astro.locals.csrfToken;
+const returnPath = `/editorial/intakes/${intake.id}`;
+---
+
+<EditorialLayout title={intake.title}>
+	<div class="editorial-page-header">
+		<div>
+			<p class="section-kicker">Source intake</p>
+			<h1>{intake.title}</h1>
+			<p>Updated by {intake.updatedByEmail} on {new Date(intake.updatedAt).toLocaleString('en-US')}.</p>
+		</div>
+		<a class="editorial-button" href={`/editorial/intakes/${intake.id}/candidates/new`}>Draft a satire candidate</a>
+	</div>
+	<EditorialMessage message={Astro.url.searchParams.get('message')} error={Astro.url.searchParams.get('error')} />
+
+	<form class="editorial-form editorial-panel" method="post" action="/editorial/actions/intakes">
+		<input type="hidden" name="csrf_token" value={csrfToken} />
+		<input type="hidden" name="action" value="update" />
+		<input type="hidden" name="id" value={intake.id} />
+		<input type="hidden" name="returnPath" value={returnPath} />
+		<label><span>Event title</span><input name="title" value={intake.title} maxlength="240" required /></label>
+		<label><span>Neutral factual brief</span><textarea name="neutralBrief" maxlength="20000" required>{intake.neutralBrief}</textarea></label>
+		<div class="editorial-form__row">
+			<label><span>Significance score</span><select name="significanceScore" required>{[1,2,3,4,5].map((value) => <option value={value} selected={value === intake.significanceScore}>{value}</option>)}</select></label>
+			<label><span>Satire-potential score</span><select name="satirePotentialScore" required>{[1,2,3,4,5].map((value) => <option value={value} selected={value === intake.satirePotentialScore}>{value}</option>)}</select></label>
+		</div>
+		<label><span>Satire suitability</span><select name="satireSuitability" required>{SATIRE_SUITABILITIES.map((value) => <option value={value} selected={value === intake.satireSuitability}>{value}</option>)}</select></label>
+		<label><span>Editorial notes</span><textarea name="editorialNotes" maxlength="20000">{intake.editorialNotes}</textarea></label>
+		<div class="editorial-form__actions"><button class="editorial-button" type="submit">Save intake</button></div>
+	</form>
+
+	<section class="editorial-panel" aria-labelledby="sources-heading">
+		<h2 id="sources-heading">Source authority</h2>
+		<div class="editorial-grid">
+			{intake.references.map((reference) => (
+				<form class="editorial-form" method="post" action="/editorial/actions/intakes">
+					<input type="hidden" name="csrf_token" value={csrfToken} />
+					<input type="hidden" name="action" value="update-reference" />
+					<input type="hidden" name="id" value={reference.id} />
+					<input type="hidden" name="returnPath" value={returnPath} />
+					<label><span>Source title</span><input name="sourceTitle" value={reference.sourceTitle} maxlength="500" required /></label>
+					<label><span>Source URL</span><input type="url" name="sourceUrl" value={reference.sourceUrl} maxlength="2048" required /></label>
+					<label><span>Publisher</span><input name="publisherName" value={reference.publisherName} maxlength="240" required /></label>
+					<div class="editorial-form__row">
+						<label><span>Tier</span><select name="sourceTier" required>{SOURCE_TIERS.map((value) => <option value={value} selected={value === reference.sourceTier}>{value}</option>)}</select></label>
+						<label><span>Type</span><select name="sourceType" required>{SOURCE_TYPES.map((value) => <option value={value} selected={value === reference.sourceType}>{value}</option>)}</select></label>
+					</div>
+					<label><span>Published at</span><input type="datetime-local" name="publishedAt" value={reference.publishedAt?.slice(0, 16)} /></label>
+					<button class="editorial-button editorial-button--quiet" type="submit">Update source</button>
+				</form>
+			))}
+		</div>
+	</section>
+
+	<section class="editorial-panel" aria-labelledby="add-source-heading">
+		<h2 id="add-source-heading">Add another source</h2>
+		<form class="editorial-form" method="post" action="/editorial/actions/intakes">
+			<input type="hidden" name="csrf_token" value={csrfToken} />
+			<input type="hidden" name="action" value="add-reference" />
+			<input type="hidden" name="sourceIntakeId" value={intake.id} />
+			<input type="hidden" name="returnPath" value={returnPath} />
+			<label><span>Source title</span><input name="sourceTitle" maxlength="500" required /></label>
+			<div class="editorial-form__row">
+				<label><span>Source URL</span><input type="url" name="sourceUrl" maxlength="2048" required /></label>
+				<label><span>Publisher or authority</span><input name="publisherName" maxlength="240" required /></label>
+			</div>
+			<div class="editorial-form__row">
+				<label><span>Source tier</span><select name="sourceTier" required>{SOURCE_TIERS.map((value) => <option value={value}>{value}</option>)}</select></label>
+				<label><span>Source type</span><select name="sourceType" required>{SOURCE_TYPES.map((value) => <option value={value}>{value}</option>)}</select></label>
+			</div>
+			<label><span>Source publication time (optional)</span><input type="datetime-local" name="publishedAt" /></label>
+			<button class="editorial-button" type="submit">Add source</button>
+		</form>
+	</section>
+</EditorialLayout>

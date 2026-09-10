@@ -32,6 +32,8 @@ Load the clearly fictional sample edition:
 npm run db:seed:local
 ```
 
+The seed also adds `Florida, Probably` as ordinary category reference data. Production reference data remains a separate reviewed action.
+
 Both commands operate on local state. The seed script is idempotent and does not run as part of a production deployment.
 
 ## Develop
@@ -41,6 +43,8 @@ npm run dev
 ```
 
 Astro runs against Cloudflare's local Workers runtime and the local `DB` binding. The public application reads only stories whose status is `PUBLISHED`.
+
+The private editorial workspace is available at `http://localhost:4321/editorial`. Localhost uses a fixed development-only editor identity; non-local requests always require a valid Cloudflare Access assertion and complete Access configuration.
 
 ## Validate
 
@@ -65,11 +69,13 @@ The project is pinned to Astro 7.3.2 and the matching official Cloudflare adapte
 
 - `migrations/` contains append-only, schema-only D1 migrations using Wrangler's default convention.
 - `seed.sql` contains development-only fictional sample records.
-- `src/domain/` owns publication state and editorial data types.
+- `src/domain/` owns publication and candidate state plus editorial data types.
 - `src/data/` owns the repository interface and D1 implementation.
 - Routes and components depend on the repository boundary rather than issuing D1 queries directly.
 
-The publishable MVP includes only `categories`, `stories`, and `sources`. Editorial UI, automated generation, candidate tables, generation-run tables, R2, scheduled triggers, queues, workflows, social automation, advertising vendors, and analytics vendors are intentionally out of scope.
+M2 adds protected source intake, normalized source references, human-reviewed satire candidates, immutable candidate-to-story provenance, and an append-only audit log. Candidate conversion creates only a `DRAFT` story. `publishStory()` is the sole operation that can assign `PUBLISHED`, and it atomically records the authenticated editor and publication time.
+
+Automated ingestion, scraping, AI generation, generation-run tables, R2, scheduled triggers, queues, workflows, social automation, advertising vendors, analytics vendors, public accounts, comments, and submissions remain intentionally out of scope.
 
 ## Production D1 migrations
 
@@ -102,6 +108,8 @@ Production deployment configuration remains deferred until the M1 build has been
 
 Follow the reviewed [production deployment runbook](./docs/production-deployment.md) to verify the bound production D1 database, apply migrations explicitly, configure domains and redirects, and perform the first deployment. The production database UUID is recorded in `wrangler.jsonc`; migrations and deployment remain separate reviewed actions.
 
+For the not-yet-authorized M2 rollout, follow the separate [M2 production onboarding runbook](./docs/m2-production-onboarding.md). It documents the exact Cloudflare Access application, Worker variables, reviewed `0002` migration, and category reference-data procedure. None of those production actions run during local development or deployment builds.
+
 When configured, connect the existing GitHub repository to **Cloudflare Workers Builds**:
 
 - Use `main` as the production branch.
@@ -119,4 +127,6 @@ The domain model recognizes these states:
 DRAFT → REVIEW → APPROVED → PUBLISHED → ARCHIVED
 ```
 
-Rejection and revision paths are explicit. Generated or draft content has no route that can publish directly. M1 contains no editorial interface or automated publishing mechanism.
+Rejection and revision paths are explicit. Generated or draft content has no route that can publish directly.
+
+M2 preserves the same transition validity but narrows authority: generic story updates and transitions reject `PUBLISHED`; candidate state has no `PUBLISHED` value; conversion inserts a literal `DRAFT`; only the explicit, confirmed publication service can perform `APPROVED → PUBLISHED` with its audit entry in the same D1 transaction.

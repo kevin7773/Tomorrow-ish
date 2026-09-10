@@ -54,6 +54,8 @@ Every local database command includes `--local`; never remove that flag from the
 
 ## Review and apply production migrations
 
+For M2, use the additional approval gates and exact commands in [m2-production-onboarding.md](./m2-production-onboarding.md). In particular, do not apply `0002_editorial_workflow.sql`, its category reference data, Cloudflare Access settings, or an M2 deployment merely because this baseline runbook describes the general production process.
+
 Inspect the migration files and the remote target before applying anything:
 
 ```powershell

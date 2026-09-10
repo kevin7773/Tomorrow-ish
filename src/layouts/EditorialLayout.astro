@@ -1,0 +1,58 @@
+---
+import '../styles/global.css';
+
+interface Props {
+	title: string;
+	description?: string;
+}
+
+const { title, description = 'Private Tomorrow-ish editorial workspace.' } = Astro.props;
+const editor = Astro.locals.editor;
+if (!editor) throw new Error('Editorial identity was not established by middleware.');
+const path = Astro.url.pathname;
+
+const navigation = [
+	{ href: '/editorial', label: 'Desk' },
+	{ href: '/editorial/intakes', label: 'Source intake' },
+	{ href: '/editorial/candidates', label: 'Candidates' },
+	{ href: '/editorial/stories', label: 'Stories' },
+];
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width" />
+		<meta name="robots" content="noindex, nofollow, noarchive" />
+		<meta name="description" content={description} />
+		<title>{title} | Tomorrow-ish Editorial</title>
+	</head>
+	<body class="editorial-body">
+		<a class="skip-link" href="#editorial-main">Skip to editorial workspace</a>
+		<header class="editorial-header">
+			<div class="editorial-header__brand">
+				<a href="/editorial">TOMORROW-ISH</a>
+				<span>Editorial desk</span>
+			</div>
+			<div class="editorial-header__identity">
+				<span>Authorized editor</span>
+				<strong>{editor.email}</strong>
+			</div>
+		</header>
+		<nav class="editorial-nav" aria-label="Editorial navigation">
+			{navigation.map((item) => (
+				<a
+					href={item.href}
+					aria-current={path === item.href || (item.href !== '/editorial' && path.startsWith(`${item.href}/`)) ? 'page' : undefined}
+				>
+					{item.label}
+				</a>
+			))}
+			<a href="/" target="_blank" rel="noopener noreferrer">Public site <span aria-hidden="true">↗</span></a>
+		</nav>
+		<main id="editorial-main" class="editorial-shell">
+			<slot />
+		</main>
+	</body>
+</html>

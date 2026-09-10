@@ -1,0 +1,98 @@
+---
+import EditorialMessage from '../../../components/EditorialMessage.astro';
+import { CANDIDATE_STATUSES, canTransitionCandidate } from '../../../domain/editorial';
+import { getEditorialRepository } from '../../../data/runtime-editorial-repository';
+import EditorialLayout from '../../../layouts/EditorialLayout.astro';
+
+const id = Astro.params.id ?? '';
+const repository = getEditorialRepository();
+const [candidate, categories] = await Promise.all([
+	repository.findCandidateById(id),
+	repository.listCategories(),
+]);
+if (!candidate) return Astro.redirect('/editorial/candidates?error=not-found');
+const auditEntries = await repository.listAuditEntries('SATIRE_CANDIDATE', candidate.id);
+const csrfToken = Astro.locals.csrfToken;
+const returnPath = `/editorial/candidates/${candidate.id}`;
+const nextStatuses = CANDIDATE_STATUSES.filter((status) => canTransitionCandidate(candidate.status, status));
+const suggestedSlug = candidate.proposedHeadline
+	.toLowerCase()
+	.replace(/[^a-z0-9]+/g, '-')
+	.replace(/^-|-$/g, '')
+	.slice(0, 120)
+	.replace(/-$/g, '');
+const tomorrow = new Date();
+tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+---
+
+<EditorialLayout title={candidate.proposedHeadline}>
+	<div class="editorial-page-header">
+		<div>
+			<p class="section-kicker">{candidate.category.name} · Candidate {candidate.status}</p>
+			<h1>{candidate.proposedHeadline}</h1>
+			<p>Derived from <a href={`/editorial/intakes/${candidate.sourceIntakeId}`}>{candidate.sourceIntakeTitle}</a>.</p>
+		</div>
+		<span class:list={['editorial-badge', { 'editorial-badge--approved': candidate.status === 'APPROVED' }]}>{candidate.status}</span>
+	</div>
+	<EditorialMessage message={Astro.url.searchParams.get('message')} error={Astro.url.searchParams.get('error')} />
+
+	{candidate.convertedStoryId ? (
+		<div class="editorial-alert editorial-alert--success">
+			This approved candidate is immutable. <a href={`/editorial/stories/${candidate.convertedStoryId}`}>Open its draft story</a>.
+		</div>
+	) : (
+		<>
+			<form class="editorial-form editorial-panel" method="post" action="/editorial/actions/candidates">
+				<input type="hidden" name="csrf_token" value={csrfToken} />
+				<input type="hidden" name="action" value="update" />
+				<input type="hidden" name="id" value={candidate.id} />
+				<input type="hidden" name="returnPath" value={returnPath} />
+				<label><span>Proposed headline</span><input name="proposedHeadline" value={candidate.proposedHeadline} maxlength="300" required /></label>
+				<label><span>Proposed deck</span><textarea name="proposedDeck" maxlength="1000" required>{candidate.proposedDeck}</textarea></label>
+				<label><span>Draft body in Markdown</span><textarea class="editorial-form__body" name="draftBodyMarkdown" maxlength="50000" required>{candidate.draftBodyMarkdown}</textarea></label>
+				<label><span>Category</span><select name="categoryId" required>{categories.map((category) => <option value={category.id} selected={category.id === candidate.category.id}>{category.name}</option>)}</select></label>
+				<label><span>Editorial notes</span><textarea name="editorialNotes" maxlength="20000">{candidate.editorialNotes}</textarea></label>
+				<button class="editorial-button" type="submit">Save candidate</button>
+			</form>
+
+			{nextStatuses.length > 0 && (
+				<section class="editorial-panel" aria-labelledby="candidate-status-heading">
+					<h2 id="candidate-status-heading">Review state</h2>
+					<div class="editorial-form__actions">
+						{nextStatuses.map((status) => (
+							<form method="post" action="/editorial/actions/candidates">
+								<input type="hidden" name="csrf_token" value={csrfToken} />
+								<input type="hidden" name="action" value="transition" />
+								<input type="hidden" name="id" value={candidate.id} />
+								<input type="hidden" name="to" value={status} />
+								<input type="hidden" name="returnPath" value={returnPath} />
+								<button class="editorial-button editorial-button--quiet" type="submit">Move to {status}</button>
+							</form>
+						))}
+					</div>
+				</section>
+			)}
+
+			{candidate.status === 'APPROVED' && (
+				<section class="editorial-panel" aria-labelledby="convert-heading">
+					<h2 id="convert-heading">Create a draft story</h2>
+					<p>Conversion creates exactly one DRAFT story. It cannot publish.</p>
+					<form class="editorial-form" method="post" action="/editorial/actions/convert">
+						<input type="hidden" name="csrf_token" value={csrfToken} />
+						<input type="hidden" name="candidateId" value={candidate.id} />
+						<input type="hidden" name="returnPath" value={returnPath} />
+						<label><span>Story slug</span><input name="slug" value={suggestedSlug} maxlength="120" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required /></label>
+						<label><span>Edition date</span><input type="date" name="editionDate" value={tomorrow.toISOString().slice(0, 10)} required /></label>
+						<label><span>Social excerpt</span><textarea name="socialExcerpt" maxlength="500" required>{candidate.proposedDeck}</textarea></label>
+						<button class="editorial-button" type="submit">Convert to DRAFT story</button>
+					</form>
+				</section>
+			)}
+		</>
+	)}
+
+	<section class="editorial-panel" aria-labelledby="audit-heading">
+		<h2 id="audit-heading">Audit history</h2>
+		<table class="editorial-audit"><thead><tr><th>Time</th><th>Action</th><th>Actor</th><th>State</th></tr></thead><tbody>{auditEntries.map((entry) => <tr><td>{new Date(entry.createdAt).toLocaleString('en-US')}</td><td>{entry.action}</td><td>{entry.actorEmail}</td><td>{entry.fromStatus && entry.toStatus ? `${entry.fromStatus} → ${entry.toStatus}` : entry.toStatus ?? '—'}</td></tr>)}</tbody></table>
+	</section>
+</EditorialLayout>

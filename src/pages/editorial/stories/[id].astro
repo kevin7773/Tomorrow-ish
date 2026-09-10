@@ -1,0 +1,94 @@
+---
+import EditorialMessage from '../../../components/EditorialMessage.astro';
+import { getEditorialRepository } from '../../../data/runtime-editorial-repository';
+import { PUBLICATION_STATUSES, canTransitionPublication } from '../../../domain/publication-status';
+import EditorialLayout from '../../../layouts/EditorialLayout.astro';
+import { PUBLISH_CONFIRMATION } from '../../../services/publication-service';
+
+const id = Astro.params.id ?? '';
+const repository = getEditorialRepository();
+const [story, categories] = await Promise.all([
+	repository.findEditorialStoryById(id),
+	repository.listCategories(),
+]);
+if (!story) return Astro.redirect('/editorial/stories?error=not-found');
+const auditEntries = await repository.listAuditEntries('STORY', story.id);
+const csrfToken = Astro.locals.csrfToken;
+const returnPath = `/editorial/stories/${story.id}`;
+const nextStatuses = PUBLICATION_STATUSES.filter(
+	(status) => status !== 'PUBLISHED' && canTransitionPublication(story.status, status),
+);
+const contentLocked = story.status === 'PUBLISHED' || story.status === 'ARCHIVED';
+---
+
+<EditorialLayout title={story.headline}>
+	<div class="editorial-page-header">
+		<div>
+			<p class="section-kicker">{story.category.name} · Story {story.status}</p>
+			<h1>{story.headline}</h1>
+			<p>Edition {story.editionDate}{story.publishedAt ? ` · Published ${new Date(story.publishedAt).toLocaleString('en-US')}` : ''}</p>
+		</div>
+		<span class:list={['editorial-badge', { 'editorial-badge--approved': story.status === 'APPROVED', 'editorial-badge--published': story.status === 'PUBLISHED' }]}>{story.status}</span>
+	</div>
+	<EditorialMessage message={Astro.url.searchParams.get('message')} error={Astro.url.searchParams.get('error')} />
+
+	{story.originCandidateId && <div class="editorial-provenance"><strong>Candidate provenance</strong><p>This story originated from <a href={`/editorial/candidates/${story.originCandidateId}`}>candidate {story.originCandidateId}</a>.</p></div>}
+
+	<form class="editorial-form editorial-panel" method="post" action="/editorial/actions/stories">
+		<input type="hidden" name="csrf_token" value={csrfToken} />
+		<input type="hidden" name="action" value="update" />
+		<input type="hidden" name="id" value={story.id} />
+		<input type="hidden" name="returnPath" value={returnPath} />
+		<label><span>Slug</span><input name="slug" value={story.slug} maxlength="120" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required disabled={contentLocked} /></label>
+		<label><span>Headline</span><input name="headline" value={story.headline} maxlength="300" required disabled={contentLocked} /></label>
+		<label><span>Deck</span><textarea name="deck" maxlength="1000" required disabled={contentLocked}>{story.deck}</textarea></label>
+		<label><span>Body in Markdown</span><textarea class="editorial-form__body" name="bodyMarkdown" maxlength="50000" required disabled={contentLocked}>{story.bodyMarkdown}</textarea></label>
+		<div class="editorial-form__row">
+			<label><span>Edition date</span><input type="date" name="editionDate" value={story.editionDate} required disabled={contentLocked} /></label>
+			<label><span>Category</span><select name="categoryId" required disabled={contentLocked}>{categories.map((category) => <option value={category.id} selected={category.id === story.category.id}>{category.name}</option>)}</select></label>
+		</div>
+		<label><span>Social excerpt</span><textarea name="socialExcerpt" maxlength="500" required disabled={contentLocked}>{story.socialExcerpt}</textarea></label>
+		<label><span>Tags, comma separated</span><input name="tags" value={story.tags.join(', ')} disabled={contentLocked} /></label>
+		{!contentLocked && <button class="editorial-button" type="submit">Save story</button>}
+	</form>
+
+	{nextStatuses.length > 0 && (
+		<section class="editorial-panel" aria-labelledby="story-state-heading">
+			<h2 id="story-state-heading">Review state</h2>
+			<div class="editorial-form__actions">
+				{nextStatuses.map((status) => (
+					<form method="post" action="/editorial/actions/stories">
+						<input type="hidden" name="csrf_token" value={csrfToken} />
+						<input type="hidden" name="action" value="transition" />
+						<input type="hidden" name="id" value={story.id} />
+						<input type="hidden" name="to" value={status} />
+						<input type="hidden" name="returnPath" value={returnPath} />
+						<button class="editorial-button editorial-button--quiet" type="submit">Move to {status}</button>
+					</form>
+				))}
+			</div>
+		</section>
+	)}
+
+	{story.status === 'APPROVED' && (
+		<section class="editorial-panel" aria-labelledby="publish-heading">
+			<h2 id="publish-heading">Publication authority</h2>
+			<p>This distinct operation assigns <code>published_at</code> and atomically records the authenticated editor in the audit log.</p>
+			<form class="editorial-form" method="post" action="/editorial/actions/publish">
+				<input type="hidden" name="csrf_token" value={csrfToken} />
+				<input type="hidden" name="storyId" value={story.id} />
+				<input type="hidden" name="returnPath" value={returnPath} />
+				<label>
+					<span>Type {PUBLISH_CONFIRMATION} to confirm</span>
+					<input name="confirmation" autocomplete="off" required />
+				</label>
+				<button class="editorial-button editorial-button--danger" type="submit">Publish story</button>
+			</form>
+		</section>
+	)}
+
+	<section class="editorial-panel" aria-labelledby="story-audit-heading">
+		<h2 id="story-audit-heading">Audit history</h2>
+		<table class="editorial-audit"><thead><tr><th>Time</th><th>Action</th><th>Actor</th><th>State</th></tr></thead><tbody>{auditEntries.map((entry) => <tr><td>{new Date(entry.createdAt).toLocaleString('en-US')}</td><td>{entry.action}</td><td>{entry.actorEmail}</td><td>{entry.fromStatus && entry.toStatus ? `${entry.fromStatus} → ${entry.toStatus}` : entry.toStatus ?? '—'}</td></tr>)}</tbody></table>
+	</section>
+</EditorialLayout>

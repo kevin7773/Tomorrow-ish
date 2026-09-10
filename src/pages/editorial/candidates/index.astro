@@ -1,0 +1,32 @@
+---
+import EditorialMessage from '../../../components/EditorialMessage.astro';
+import { getEditorialRepository } from '../../../data/runtime-editorial-repository';
+import EditorialLayout from '../../../layouts/EditorialLayout.astro';
+
+const candidates = await getEditorialRepository().listCandidates();
+---
+
+<EditorialLayout title="Satire candidates">
+	<div class="editorial-page-header">
+		<div>
+			<h1>Satire candidates</h1>
+			<p>Draft, review, and approve extrapolations. Approval is not publication.</p>
+		</div>
+	</div>
+	<EditorialMessage message={Astro.url.searchParams.get('message')} error={Astro.url.searchParams.get('error')} />
+	{candidates.length ? (
+		<ul class="editorial-list">
+			{candidates.map((candidate) => (
+				<li class="editorial-list-item">
+					<div>
+						<h2><a href={`/editorial/candidates/${candidate.id}`}>{candidate.proposedHeadline}</a></h2>
+						<p>{candidate.category.name} · From {candidate.sourceIntakeTitle}{candidate.convertedStoryId ? ' · Converted to story' : ''}</p>
+					</div>
+					<span class:list={['editorial-badge', { 'editorial-badge--approved': candidate.status === 'APPROVED' }]}>{candidate.status}</span>
+				</li>
+			))}
+		</ul>
+	) : (
+		<div class="editorial-empty"><p>No satire candidates exist. Begin from a reviewed source intake.</p><a class="editorial-button" href="/editorial/intakes">Browse source intake</a></div>
+	)}
+</EditorialLayout>

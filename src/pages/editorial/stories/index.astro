@@ -1,0 +1,32 @@
+---
+import EditorialMessage from '../../../components/EditorialMessage.astro';
+import { getEditorialRepository } from '../../../data/runtime-editorial-repository';
+import EditorialLayout from '../../../layouts/EditorialLayout.astro';
+
+const stories = await getEditorialRepository().listEditorialStories();
+---
+
+<EditorialLayout title="Editorial stories">
+	<div class="editorial-page-header">
+		<div>
+			<h1>Stories</h1>
+			<p>Story review and publication state. Only the separate publish authority can make a story public.</p>
+		</div>
+	</div>
+	<EditorialMessage message={Astro.url.searchParams.get('message')} error={Astro.url.searchParams.get('error')} />
+	{stories.length ? (
+		<ul class="editorial-list">
+			{stories.map((story) => (
+				<li class="editorial-list-item">
+					<div>
+						<h2><a href={`/editorial/stories/${story.id}`}>{story.headline}</a></h2>
+						<p>{story.category.name} · Edition {story.editionDate}{story.originCandidateId ? ' · Candidate provenance retained' : ''}</p>
+					</div>
+					<span class:list={['editorial-badge', { 'editorial-badge--approved': story.status === 'APPROVED', 'editorial-badge--published': story.status === 'PUBLISHED' }]}>{story.status}</span>
+				</li>
+			))}
+		</ul>
+	) : (
+		<div class="editorial-empty"><p>No stories exist.</p></div>
+	)}
+</EditorialLayout>
