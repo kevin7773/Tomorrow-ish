@@ -1,0 +1,29 @@
+---
+import EmptyEdition from '../components/EmptyEdition.astro';
+import StoryCard from '../components/StoryCard.astro';
+import { getStoryRepository } from '../data/runtime-story-repository';
+import SiteLayout from '../layouts/SiteLayout.astro';
+
+const repository = getStoryRepository();
+const stories = await repository.listPublished({ limit: 50 });
+---
+
+<SiteLayout
+	title="Latest headlines"
+	description="The latest fictional headlines from Tomorrow-ish, in reverse chronological order."
+	canonicalPath="/latest"
+>
+	<header class="page-header">
+		<p class="section-kicker">Dispatches from the near future</p>
+		<h1>Latest</h1>
+		<p>The newest developments from a tomorrow with unreliable sources and excellent timing.</p>
+	</header>
+
+	{stories.length ? (
+		<section class="story-list" aria-label="Latest published stories">
+			{stories.map((story) => <StoryCard story={story} />)}
+		</section>
+	) : (
+		<EmptyEdition title="No headlines have escaped yet." />
+	)}
+</SiteLayout>

@@ -1,0 +1,80 @@
+---
+import AdSlot from '../../components/AdSlot.astro';
+import NotFoundContent from '../../components/NotFoundContent.astro';
+import StoryMeta from '../../components/StoryMeta.astro';
+import { getStoryRepository } from '../../data/runtime-story-repository';
+import { storyParagraphs } from '../../domain/story';
+import SiteLayout from '../../layouts/SiteLayout.astro';
+import { absoluteSiteUrl, serializeJsonLd } from '../../lib/metadata';
+
+const slug = Astro.params.slug ?? '';
+const repository = getStoryRepository();
+const story = await repository.findPublishedBySlug(slug);
+
+if (!story) Astro.response.status = 404;
+
+const articleJsonLd = story
+	? serializeJsonLd({
+		'@context': 'https://schema.org',
+		'@type': 'SatiricalArticle',
+		headline: story.headline,
+		description: story.socialExcerpt,
+		datePublished: story.publishedAt,
+		dateModified: story.publishedAt,
+		mainEntityOfPage: absoluteSiteUrl(`/story/${story.slug}`),
+		publisher: {
+			'@type': 'Organization',
+			name: 'Tomorrow-ish',
+			url: absoluteSiteUrl('/'),
+		},
+		isAccessibleForFree: true,
+		genre: 'Satire',
+	})
+	: null;
+---
+
+<SiteLayout
+	title={story?.headline ?? 'Page not found'}
+	description={story?.socialExcerpt ?? 'This Tomorrow-ish page has not happened yet.'}
+	canonicalPath={story ? `/story/${story.slug}` : '/404'}
+	type={story ? 'article' : 'website'}
+	imageUrl={story?.ogImageKey ? `/media/${story.ogImageKey}` : null}
+	noindex={!story}
+>
+	{story && articleJsonLd ? (
+		<>
+			<script is:inline type="application/ld+json" set:html={articleJsonLd} />
+			<article>
+				<header class="article-header">
+					<StoryMeta category={story.category.name} editionDate={story.editionDate} />
+					<h1>{story.headline}</h1>
+					<p class="article-deck">{story.deck}</p>
+				</header>
+
+				<div class="article-body">
+					{storyParagraphs(story.bodyMarkdown).map((paragraph) => <p>{paragraph}</p>)}
+
+					<section class="source-list" aria-labelledby="source-heading">
+						<h2 id="source-heading">Source and context</h2>
+						{story.sources.length ? (
+							<ul>
+								{story.sources.map((source) => (
+									<li>
+										<a href={source.url} rel="noopener noreferrer">{source.title}</a>
+										{source.publisher && ` — ${source.publisher}`}
+									</li>
+								))}
+							</ul>
+						) : (
+							<p>No external sources are attached to this fictional sample.</p>
+						)}
+					</section>
+				</div>
+			</article>
+
+			<AdSlot format="banner" />
+		</>
+	) : (
+		<NotFoundContent />
+	)}
+</SiteLayout>

@@ -1,0 +1,38 @@
+---
+import SiteLayout from '../layouts/SiteLayout.astro';
+
+export const prerender = true;
+---
+
+<SiteLayout
+	title="About"
+	description="About Tomorrow-ish, a clearly labeled satirical newspaper reporting tomorrow's headlines today."
+	canonicalPath="/about"
+>
+	<header class="page-header">
+		<p class="section-kicker">About the paper</p>
+		<h1>Close enough to tomorrow.</h1>
+	</header>
+
+	<article class="prose-page">
+		<p>
+			Tomorrow-ish is a satirical newspaper that follows today’s events one questionable step into the future.
+			Every headline and article on this site is fictional.
+		</p>
+		<h2>The premise</h2>
+		<p>
+			The news already contains the beginnings of its own absurd conclusions. Tomorrow-ish takes those beginnings
+			seriously, extrapolates them irresponsibly, and publishes the result as tomorrow’s news today.
+		</p>
+		<h2>The standard</h2>
+		<p>
+			The aim is dry, intelligent satire presented with the care of a small newspaper—not fabricated reporting,
+			misinformation, or a pile of memes wearing a trench coat.
+		</p>
+		<h2>The important part</h2>
+		<p>
+			Tomorrow-ish is satire. Do not rely on its fictional stories as factual reporting. Source and context links,
+			when present, identify the real-world material that inspired a piece; they do not make the satire itself true.
+		</p>
+	</article>
+</SiteLayout>

@@ -1,0 +1,15 @@
+---
+import NotFoundContent from '../components/NotFoundContent.astro';
+import SiteLayout from '../layouts/SiteLayout.astro';
+
+export const prerender = true;
+---
+
+<SiteLayout
+	title="Page not found"
+	description="This Tomorrow-ish page has not happened yet."
+	canonicalPath="/404"
+	noindex
+>
+	<NotFoundContent />
+</SiteLayout>

@@ -1,0 +1,13 @@
+---
+interface Props {
+	title?: string;
+}
+
+const { title = 'Tomorrow is running late.' } = Astro.props;
+---
+
+<section class="empty-edition">
+	<p class="section-kicker">No published edition</p>
+	<h1>{title}</h1>
+	<p>The presses are quiet. Apply the local migration and seed data to preview the sample edition.</p>
+</section>

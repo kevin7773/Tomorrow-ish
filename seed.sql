@@ -1,0 +1,105 @@
+PRAGMA foreign_keys = ON;
+
+INSERT OR IGNORE INTO categories (id, slug, name, created_at) VALUES
+    ('cat-civic-life', 'civic-life', 'Civic Life', '2026-09-10T12:00:00Z'),
+    ('cat-science', 'science', 'Science', '2026-09-10T12:00:00Z'),
+    ('cat-business', 'business', 'Business', '2026-09-10T12:00:00Z');
+
+INSERT OR IGNORE INTO stories (
+    id,
+    slug,
+    headline,
+    deck,
+    body_markdown,
+    edition_date,
+    published_at,
+    category_id,
+    status,
+    social_excerpt,
+    og_image_key,
+    tags_json,
+    created_at,
+    updated_at
+) VALUES
+    (
+        'story-moon-meeting',
+        'moon-requests-meeting-about-boundaries',
+        'Moon Requests Meeting About Boundaries',
+        'Satellite cites centuries of staring, several flags, and one particularly personal golf ball.',
+        'THE MOON — Earth’s only natural satellite has formally requested what representatives described as “a short, solutions-oriented conversation about boundaries.”\n\nThe request arrived overnight by reflected light and was addressed to everyone, which officials agreed was administratively inconvenient but emotionally fair.\n\nA preliminary agenda includes nighttime photography, poetry written without consultation, and whether tides constitute unpaid contract work. Earth has asked for two weeks to assemble the correct stakeholders.',
+        '2026-09-11',
+        '2026-09-10T11:30:00Z',
+        'cat-science',
+        'PUBLISHED',
+        'The moon would like a brief word about boundaries, staring, and several centuries of unpaid tidal labor.',
+        NULL,
+        '["moon","workplace","boundaries"]',
+        '2026-09-10T11:00:00Z',
+        '2026-09-10T11:30:00Z'
+    ),
+    (
+        'story-committee-chair',
+        'committee-forms-smaller-committee-to-find-chair',
+        'Committee Forms Smaller Committee to Find Out Who Is Chairing Committee',
+        'Breakthrough expected shortly after everyone returns from a scheduling subcommittee.',
+        'CAPITOL ANNEX — A twelve-member committee convened Tuesday to identify its chair, then voted eleven to one to refer the question to a smaller committee with better calendars.\n\nThe dissenting member later clarified that the vote was not opposition, but an attempt to determine whether voting had begun.\n\nMinutes from the meeting will be approved as soon as a quorum agrees on what occurred.',
+        '2026-09-10',
+        '2026-09-09T15:00:00Z',
+        'cat-civic-life',
+        'PUBLISHED',
+        'A committee has made decisive progress toward scheduling a discussion about who may be running it.',
+        NULL,
+        '["committees","meetings","process"]',
+        '2026-09-09T14:30:00Z',
+        '2026-09-09T15:00:00Z'
+    ),
+    (
+        'story-coffee-plan',
+        'coffee-chain-announces-subscription-for-waiting-in-line',
+        'Coffee Chain Announces Subscription Tier for Waiting in Line',
+        'Premium members may now stand slightly closer to the pastry case.',
+        'SEATTLE-ISH — Beverage startup Morning Queue unveiled a monthly plan that allows subscribers to experience the company’s most popular feature: waiting indoors near coffee.\n\nThe basic tier includes one reusable sigh and access to a rotating selection of unavailable seasonal syrups. Premium customers receive priority uncertainty and a push notification when the person ahead begins a complicated order.\n\nExecutives called the program a natural extension of the modern café relationship.',
+        '2026-09-09',
+        '2026-09-08T16:15:00Z',
+        'cat-business',
+        'PUBLISHED',
+        'The future of coffee may be a recurring payment for standing near it.',
+        NULL,
+        '["coffee","subscriptions","queues"]',
+        '2026-09-08T15:45:00Z',
+        '2026-09-08T16:15:00Z'
+    ),
+    (
+        'story-cloud-apology',
+        'cloud-apologizes-for-looking-like-something',
+        'Cloud Apologizes for Looking Like Something',
+        'Atmospheric formation says resemblance to a rabbit was accidental and regrets the confusion.',
+        'UPPER TROPOSPHERE — A medium-sized cloud issued an apology Monday after several observers independently concluded that it looked “a bit like a rabbit, or possibly a chair.”\n\nThe cloud stressed that it had no intention of representing a terrestrial object and was merely participating in the water cycle.\n\nIt later dispersed before questions could be taken, a move critics called typical.',
+        '2026-09-08',
+        '2026-09-07T18:00:00Z',
+        'cat-science',
+        'PUBLISHED',
+        'A cloud regrets any resemblance it may have caused.',
+        NULL,
+        '["clouds","apologies","weather"]',
+        '2026-09-07T17:30:00Z',
+        '2026-09-07T18:00:00Z'
+    );
+
+INSERT OR IGNORE INTO sources (
+    id,
+    story_id,
+    title,
+    url,
+    publisher,
+    published_at,
+    created_at
+) VALUES (
+    'source-moon-sample',
+    'story-moon-meeting',
+    'Reserved example link — fictional seed content',
+    'https://example.com/',
+    'IANA Example Domain',
+    NULL,
+    '2026-09-10T11:00:00Z'
+);

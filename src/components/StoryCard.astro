@@ -1,0 +1,18 @@
+---
+import type { Story } from '../domain/story';
+import StoryMeta from './StoryMeta.astro';
+
+interface Props {
+	story: Story;
+	prominent?: boolean;
+}
+
+const { story, prominent = false } = Astro.props;
+---
+
+<article class:list={['story-card', { 'story-card--prominent': prominent }]}>
+	<StoryMeta category={story.category.name} editionDate={story.editionDate} />
+	<h2><a href={`/story/${story.slug}`}>{story.headline}</a></h2>
+	<p class="story-card__deck">{story.deck}</p>
+	<a class="story-card__read" href={`/story/${story.slug}`}>Read tomorrow's story <span aria-hidden="true">→</span></a>
+</article>

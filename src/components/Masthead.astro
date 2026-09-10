@@ -1,0 +1,17 @@
+---
+const primaryLinks = [
+	{ href: '/', label: 'Today' },
+	{ href: '/latest', label: 'Latest' },
+	{ href: '/archive', label: 'Archive' },
+	{ href: '/about', label: 'About' },
+];
+---
+
+<header class="masthead">
+	<div class="masthead__eyebrow">An independent satirical newspaper</div>
+	<a class="masthead__brand" href="/" aria-label="Tomorrow-ish home">TOMORROW-ISH</a>
+	<p class="masthead__tagline">Tomorrow's news. Approximately.</p>
+	<nav class="masthead__nav" aria-label="Primary navigation">
+		{primaryLinks.map((link) => <a href={link.href}>{link.label}</a>)}
+	</nav>
+</header>

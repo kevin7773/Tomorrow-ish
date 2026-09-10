@@ -1,0 +1,48 @@
+---
+import AdSlot from '../components/AdSlot.astro';
+import EmptyEdition from '../components/EmptyEdition.astro';
+import StoryCard from '../components/StoryCard.astro';
+import { getStoryRepository } from '../data/runtime-story-repository';
+import SiteLayout from '../layouts/SiteLayout.astro';
+import { formatEditionDate } from '../lib/dates';
+
+const repository = getStoryRepository();
+const leadStory = await repository.getLeadStory();
+const recentStories = leadStory
+	? await repository.listPublished({ excludeId: leadStory.id, limit: 3 })
+	: [];
+---
+
+<SiteLayout canonicalPath="/">
+	{leadStory ? (
+		<>
+			<div class="edition-line">
+				<span>Tomorrow’s edition</span>
+				<time datetime={leadStory.editionDate}>{formatEditionDate(leadStory.editionDate)}</time>
+			</div>
+
+			<section class="lead-grid" aria-labelledby="tomorrows-headline">
+				<h1 id="tomorrows-headline" class="section-kicker">Tomorrow’s headline</h1>
+				<StoryCard story={leadStory} prominent />
+			</section>
+
+			<AdSlot format="banner" />
+
+			{recentStories.length > 0 && (
+				<section aria-labelledby="recent-heading">
+					<div class="section-heading">
+						<h2 id="recent-heading">Recently, tomorrow</h2>
+						<a href="/latest">All headlines</a>
+					</div>
+					<div class="story-grid">
+						{recentStories.map((story) => <StoryCard story={story} />)}
+					</div>
+				</section>
+			)}
+
+			<AdSlot format="in-feed" />
+		</>
+	) : (
+		<EmptyEdition />
+	)}
+</SiteLayout>

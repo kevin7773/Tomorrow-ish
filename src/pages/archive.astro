@@ -1,0 +1,42 @@
+---
+import EmptyEdition from '../components/EmptyEdition.astro';
+import { getStoryRepository } from '../data/runtime-story-repository';
+import { groupStoriesByEdition } from '../domain/story';
+import SiteLayout from '../layouts/SiteLayout.astro';
+import { formatEditionDate } from '../lib/dates';
+
+const repository = getStoryRepository();
+const editions = groupStoriesByEdition(await repository.listPublished({ limit: 100 }));
+---
+
+<SiteLayout
+	title="Archive"
+	description="Browse past fictional editions of Tomorrow-ish by date."
+	canonicalPath="/archive"
+>
+	<header class="page-header">
+		<p class="section-kicker">Yesterday’s tomorrows</p>
+		<h1>Archive</h1>
+		<p>A durable record of futures that briefly seemed inevitable.</p>
+	</header>
+
+	{editions.length ? (
+		<section aria-label="Published editions">
+			{editions.map((edition) => (
+				<section class="archive-edition">
+					<h2><time datetime={edition.editionDate}>{formatEditionDate(edition.editionDate)}</time></h2>
+					<ul>
+						{edition.stories.map((story) => (
+							<li>
+								<a href={`/story/${story.slug}`}>{story.headline}</a>
+								<p>{story.deck}</p>
+							</li>
+						))}
+					</ul>
+				</section>
+			))}
+		</section>
+	) : (
+		<EmptyEdition title="The archive is still in the future." />
+	)}
+</SiteLayout>

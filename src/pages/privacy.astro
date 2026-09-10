@@ -1,0 +1,39 @@
+---
+import SiteLayout from '../layouts/SiteLayout.astro';
+
+export const prerender = true;
+---
+
+<SiteLayout
+	title="Privacy"
+	description="Privacy information for Tomorrow-ish."
+	canonicalPath="/privacy"
+>
+	<header class="page-header">
+		<p class="section-kicker">The less mysterious fine print</p>
+		<h1>Privacy</h1>
+		<p>Effective September 10, 2026</p>
+	</header>
+
+	<article class="prose-page">
+		<p>
+			Tomorrow-ish does not currently offer accounts, comments, subscriptions, or forms, and it does not currently
+			use an analytics or advertising vendor.
+		</p>
+		<h2>Hosting data</h2>
+		<p>
+			Our hosting provider may process standard request information needed to deliver and protect the site, such as
+			IP address, browser information, requested URL, and request time. Its handling of that information is governed
+			by its own terms and policies.
+		</p>
+		<h2>External links</h2>
+		<p>
+			Stories may link to other websites for source or contextual material. Those sites have their own privacy
+			practices, which Tomorrow-ish does not control.
+		</p>
+		<h2>Changes</h2>
+		<p>
+			This notice will be updated before materially different data collection, analytics, or advertising is introduced.
+		</p>
+	</article>
+</SiteLayout>
