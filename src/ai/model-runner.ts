@@ -1,4 +1,5 @@
 import type { ModelResult } from '../domain/generation';
+import { ModelProviderError } from './model-provider';
 
 export const NORMALIZATION_PROMPT_VERSION = 'normalize-v1';
 export const CANDIDATE_PROMPT_VERSION = 'candidates-v1';
@@ -71,6 +72,9 @@ export async function runWithLimits<T>(
 		} catch (error) {
 			finalError = error;
 			if (error instanceof ModelLimitError) throw error;
+			if (error instanceof ModelProviderError && !error.retryable) {
+				throw new ModelExecutionError(error.message, attempt, Math.round(performance.now() - started), error);
+			}
 		} finally {
 			clearTimeout(timeout);
 		}

@@ -56,7 +56,7 @@ source intake
   -> existing human review and publication workflow
 ```
 
-Open an intake and choose **Normalize event**. The fake provider is deliberately unavailable outside development; a production provider must be separately reviewed and configured before real model generation can be enabled.
+Open an intake and choose **Normalize event**. The fake provider is used only in development. The production OpenAI adapter is implemented but remains disabled by `MODEL_GENERATION_ENABLED=false`; builds and fake-provider tests require no API key.
 
 ## Validate
 
@@ -124,7 +124,7 @@ The [M2 production onboarding runbook](./docs/m2-production-onboarding.md) recor
 
 Migration `0003_governed_generation.sql` is not applied by deployment. Before any future M3 production rollout, review the migration, confirm `0001` and `0002` are already applied and `0003` is the only pending migration, back up/verify production data, then use the same explicit `wrangler d1 migrations apply DB --remote` operator action. Do not configure or deploy a production model adapter as part of that schema action.
 
-The separate [M3 provider review](./docs/m3-provider-review.md) recommends a future adapter and records its cost/privacy assumptions. It is documentation only; fake-provider mode remains the only implemented provider.
+The [M3 provider runbook](./docs/m3-provider-review.md) records the prepared OpenAI adapter, request contract, budget, secret command, and separately reviewed enablement steps. Production generation remains disabled, and `OPENAI_API_KEY` must never be committed.
 
 When configured, connect the existing GitHub repository to **Cloudflare Workers Builds**:
 

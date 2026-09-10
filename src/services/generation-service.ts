@@ -1,5 +1,5 @@
 import type { ModelProvider } from '../ai/model-provider';
-import { ModelOutputError } from '../ai/model-provider';
+import { ModelOutputError, ModelProviderError } from '../ai/model-provider';
 import { parseCandidateBatch, parseNormalizationProposal } from '../ai/validation';
 import {
 	CANDIDATE_PROMPT_VERSION,
@@ -18,6 +18,7 @@ import {
 	hasAuthoritativeFactSupport,
 	mergeGuardrailFlags,
 	type ModelResult,
+	type ModelOperation,
 	type NormalizationProposal,
 } from '../domain/generation';
 import { EditorialValidationError, requiredText } from './validation';
@@ -26,6 +27,7 @@ interface GenerationDependencies {
 	now?: () => string;
 	createId?: () => string;
 	limits?: Readonly<ModelLimits>;
+	dailyBudgetMicrousd?: number;
 }
 
 function actor(identity: EditorialIdentity | null | undefined): string {
@@ -40,6 +42,7 @@ function idempotencyKey(value: unknown): string {
 function sanitizedFailure(error: unknown): string {
 	if (error instanceof ModelExecutionError) return sanitizedFailure(error.cause);
 	if (error instanceof ModelOutputError) return 'MALFORMED_OUTPUT';
+	if (error instanceof ModelProviderError) return error.failureClassification;
 	if (error instanceof DOMException && error.name === 'AbortError') return 'TIMEOUT';
 	return 'PROVIDER_FAILURE';
 }
@@ -61,6 +64,7 @@ export class GenerationService {
 	private readonly now: () => string;
 	private readonly createId: () => string;
 	private readonly limits: Readonly<ModelLimits>;
+	private readonly dailyBudgetMicrousd: number;
 
 	constructor(
 		private readonly repository: GenerationRepository,
@@ -70,6 +74,10 @@ export class GenerationService {
 		this.now = dependencies.now ?? (() => new Date().toISOString());
 		this.createId = dependencies.createId ?? (() => crypto.randomUUID());
 		this.limits = dependencies.limits ?? DEFAULT_MODEL_LIMITS;
+		this.dailyBudgetMicrousd = dependencies.dailyBudgetMicrousd ?? 1_000_000;
+		if (!Number.isSafeInteger(this.dailyBudgetMicrousd) || this.dailyBudgetMicrousd <= 0) {
+			throw new EditorialValidationError('The daily model budget is invalid.');
+		}
 	}
 
 	async proposeNormalization(identity: EditorialIdentity, intakeIdValue: unknown, keyValue: unknown): Promise<string> {
@@ -91,6 +99,7 @@ export class GenerationService {
 		const input = { title: intake.title, neutralBrief: intake.neutralBrief, references: intake.references };
 		const inputText = JSON.stringify(input);
 		const createdAt = this.now();
+		const reservedCostMicrousd = await this.requireBudget('NORMALIZE', inputText.length, createdAt);
 		const runId = this.createId();
 		let executed: { result: ModelResult<unknown>; retryCount: number; latencyMs: number } | null = null;
 		try {
@@ -134,7 +143,7 @@ export class GenerationService {
 				inputCharacters: inputText.length, outputCharacters: executed?.result.usage.outputCharacters ?? 0,
 				retryCount: error instanceof ModelExecutionError ? error.retryCount : executed?.retryCount ?? 0,
 				latencyMs: error instanceof ModelExecutionError ? error.latencyMs : executed?.latencyMs ?? 0,
-				estimatedCostMicrousd: executed?.result.usage.estimatedCostMicrousd ?? 0, candidateCount: 0, idempotencyKey: key,
+				estimatedCostMicrousd: executed?.result.usage.estimatedCostMicrousd ?? reservedCostMicrousd, candidateCount: 0, idempotencyKey: key,
 				requestedByEmail, failureClassification: sanitizedFailure(error), createdAt, completedAt,
 			};
 			await this.repository.createModelRun(failed);
@@ -238,6 +247,7 @@ export class GenerationService {
 		const inputText = `${HOUSE_VOICE_CONTRACT}\n${JSON.stringify(modelInput)}`;
 		const runId = this.createId();
 		const createdAt = this.now();
+		const reservedCostMicrousd = await this.requireBudget('GENERATE_CANDIDATES', inputText.length, createdAt);
 		let executed: { result: ModelResult<unknown>; retryCount: number; latencyMs: number } | null = null;
 		try {
 			executed = await runWithLimits((signal) => this.provider.generateCandidates(modelInput, signal), inputText.length, this.limits);
@@ -265,11 +275,24 @@ export class GenerationService {
 				inputTokens: executed?.result.usage.inputTokens ?? null, outputTokens: executed?.result.usage.outputTokens ?? null, inputCharacters: inputText.length,
 				outputCharacters: executed?.result.usage.outputCharacters ?? 0, latencyMs: error instanceof ModelExecutionError ? error.latencyMs : executed?.latencyMs ?? 0,
 				retryCount: error instanceof ModelExecutionError ? error.retryCount : executed?.retryCount ?? 0,
-				estimatedCostMicrousd: executed?.result.usage.estimatedCostMicrousd ?? 0,
+				estimatedCostMicrousd: executed?.result.usage.estimatedCostMicrousd ?? reservedCostMicrousd,
 				candidateCount: 0, idempotencyKey: key, requestedByEmail,
 				failureClassification: sanitizedFailure(error), createdAt, completedAt });
 			throw new EditorialValidationError('The candidate model run failed validation.');
 		}
+	}
+
+	private async requireBudget(operation: ModelOperation, inputCharacters: number, requestedAt: string): Promise<number> {
+		const reserved = this.provider.estimateMaximumCostMicrousd(operation, inputCharacters);
+		if (!Number.isSafeInteger(reserved) || reserved < 0 || reserved > this.limits.maxEstimatedCostMicrousd) {
+			throw new EditorialValidationError('The model request exceeds its configured cost limit.');
+		}
+		const dayStart = `${requestedAt.slice(0, 10)}T00:00:00.000Z`;
+		const spent = await this.repository.sumModelRunCostSince(dayStart);
+		if (!Number.isSafeInteger(spent) || spent < 0 || spent + reserved > this.dailyBudgetMicrousd) {
+			throw new EditorialValidationError('The daily model budget would be exceeded.');
+		}
+		return reserved;
 	}
 
 	private async runRecord(input: {

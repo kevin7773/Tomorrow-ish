@@ -162,6 +162,11 @@ export class D1GenerationRepository implements GenerationRepository {
 		await insertRun(this.db, run).run();
 	}
 
+	async sumModelRunCostSince(createdAt: string): Promise<number> {
+		const row = await this.db.prepare('SELECT COALESCE(SUM(estimated_cost_microusd), 0) AS cost FROM model_runs WHERE created_at >= ?').bind(createdAt).first<{ cost: number }>();
+		return row?.cost ?? 0;
+	}
+
 	async countSuccessfulGenerationRuns(versionId: string): Promise<number> {
 		const row = await this.db.prepare("SELECT COUNT(*) AS count FROM model_runs WHERE normalized_event_version_id = ? AND operation = 'GENERATE_CANDIDATES' AND status = 'SUCCEEDED'").bind(versionId).first<{ count: number }>();
 		return row?.count ?? 0;

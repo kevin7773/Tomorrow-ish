@@ -8,7 +8,11 @@
   "vars": {
     "CF_ACCESS_TEAM_DOMAIN": "https://jolly-glitter-da93.cloudflareaccess.com",
     "CF_ACCESS_AUD": "d7990901bf79388de024fee36a5a8abcd4452ff4c908acfa19189b37856fb30b",
-    "EDITORIAL_ALLOWED_EMAIL": "klsmallwood73@gmail.com"
+    "EDITORIAL_ALLOWED_EMAIL": "klsmallwood73@gmail.com",
+    "MODEL_PROVIDER": "openai",
+    "MODEL_NAME": "gpt-5.6-terra",
+    "MODEL_GENERATION_ENABLED": "false",
+    "MODEL_DAILY_BUDGET_MICRO_USD": "1000000"
   },
   "routes": [
     {

@@ -18,6 +18,9 @@ function usage(input: unknown, output: unknown, cost: number) {
 export class FakeModelProvider implements ModelProvider {
 	readonly providerId = 'fake';
 	readonly modelId = 'tomorrow-ish-deterministic';
+	estimateMaximumCostMicrousd(operation: 'NORMALIZE' | 'GENERATE_CANDIDATES'): number {
+		return operation === 'NORMALIZE' ? 7 : 11;
+	}
 
 	async normalizeEvent(input: NormalizeEventInput, signal: AbortSignal): Promise<ModelResult<NormalizationProposal>> {
 		if (signal.aborted) throw new DOMException('Aborted', 'AbortError');

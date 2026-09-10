@@ -2,6 +2,7 @@
 import EditorialMessage from '../../../../components/EditorialMessage.astro';
 import { getEditorialRepository } from '../../../../data/runtime-editorial-repository';
 import { getGenerationRepository } from '../../../../data/runtime-generation-repository';
+import { isRuntimeModelGenerationAvailable } from '../../../../ai/runtime-model-provider';
 import { displaySuitability } from '../../../../domain/generation';
 import EditorialLayout from '../../../../layouts/EditorialLayout.astro';
 
@@ -16,7 +17,7 @@ if (!intake) return Astro.redirect('/editorial/intakes?error=not-found');
 const priorRuns = version ? await generationRepository.countSuccessfulGenerationRuns(version.id) : 0;
 const csrfToken = Astro.locals.csrfToken;
 const returnPath = `/editorial/intakes/${intake.id}/generate`;
-const modelGenerationAvailable = import.meta.env.DEV;
+const modelGenerationAvailable = isRuntimeModelGenerationAvailable();
 ---
 
 <EditorialLayout title={`Generate candidates for ${intake.title}`}>

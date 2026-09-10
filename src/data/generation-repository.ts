@@ -86,6 +86,7 @@ export interface GenerationRepository {
 	findModelRun(id: string): Promise<ModelRun | null>;
 	findModelRunByIdempotencyKey(key: string): Promise<ModelRun | null>;
 	createModelRun(run: ModelRunRecord): Promise<void>;
+	sumModelRunCostSince(createdAt: string): Promise<number>;
 	countSuccessfulGenerationRuns(versionId: string): Promise<number>;
 	categoryExists(id: string): Promise<boolean>;
 	createNormalization(record: CreateNormalizationRecord): Promise<void>;

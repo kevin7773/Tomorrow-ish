@@ -40,6 +40,7 @@ function repository(version = accepted(), previousRuns = 0) {
 		listNormalizedVersions: vi.fn(async () => []), findNormalizedVersion: vi.fn(async () => version),
 		findAcceptedNormalizedVersion: vi.fn(async () => version), findModelRun: vi.fn(async () => null),
 		findModelRunByIdempotencyKey: vi.fn(async () => prior), createModelRun: vi.fn(async () => undefined),
+		sumModelRunCostSince: vi.fn(async () => 0),
 		countSuccessfulGenerationRuns: vi.fn(async () => previousRuns), categoryExists: vi.fn(async () => true),
 		createNormalization: createdNormalization, createEditorRevision: vi.fn(async () => undefined),
 		reviewNormalization: vi.fn(async () => true), createGeneratedCandidates: createdCandidates,
@@ -114,6 +115,19 @@ describe('generation authority', () => {
 		const base = { intakeId: intake.id, normalizedEventVersionId: 'version-1', categoryId: 'cat-civic-life', idempotencyKey: 'rerun' };
 		await expect(service.generateCandidates(identity, base)).rejects.toThrow(/deliberate rerun/i);
 		await expect(service.generateCandidates(identity, { ...base, deliberateRerun: 'yes' })).rejects.toThrow(/reason/i);
+		expect(createdCandidates).not.toHaveBeenCalled();
+	});
+
+	it('fails closed before provider invocation when the daily budget would be exceeded', async () => {
+		const { repo, createdCandidates } = repository();
+		vi.mocked(repo.sumModelRunCostSince).mockResolvedValue(999_995);
+		const provider = new FakeModelProvider();
+		const invoke = vi.spyOn(provider, 'generateCandidates');
+		const service = new GenerationService(repo, provider, { dailyBudgetMicrousd: 1_000_000 });
+		await expect(service.generateCandidates(identity, {
+			intakeId: intake.id, normalizedEventVersionId: 'version-1', categoryId: 'cat-civic-life', idempotencyKey: 'budget',
+		})).rejects.toThrow(/daily model budget/i);
+		expect(invoke).not.toHaveBeenCalled();
 		expect(createdCandidates).not.toHaveBeenCalled();
 	});
 });

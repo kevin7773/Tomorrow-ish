@@ -1,5 +1,5 @@
 import type { APIRoute } from 'astro';
-import { getRuntimeModelProvider } from '../../../ai/runtime-model-provider';
+import { getRuntimeModelConfiguration } from '../../../ai/runtime-model-provider';
 import { getGenerationRepository } from '../../../data/runtime-generation-repository';
 import {
 	actionErrorResponse,
@@ -26,7 +26,10 @@ export const POST: APIRoute = async (context) => {
 	const form = await context.request.formData();
 	const returnPath = safeReturnPath(form.get('returnPath'), '/editorial/intakes');
 	try {
-		const service = new GenerationService(getGenerationRepository(), getRuntimeModelProvider());
+		const model = getRuntimeModelConfiguration();
+		const service = new GenerationService(getGenerationRepository(), model.provider, {
+			dailyBudgetMicrousd: model.dailyBudgetMicrousd,
+		});
 		switch (form.get('action')) {
 			case 'normalize': {
 				const id = await service.proposeNormalization(requireEditor(context), form.get('intakeId'), form.get('idempotencyKey'));

@@ -3,6 +3,7 @@ import EditorialMessage from '../../../../components/EditorialMessage.astro';
 import { SATIRE_SUITABILITIES } from '../../../../domain/editorial';
 import { GUARDRAIL_FLAGS, displaySuitability } from '../../../../domain/generation';
 import { getGenerationRepository } from '../../../../data/runtime-generation-repository';
+import { isRuntimeModelGenerationAvailable } from '../../../../ai/runtime-model-provider';
 import EditorialLayout from '../../../../layouts/EditorialLayout.astro';
 
 const intakeId = Astro.params.id ?? '';
@@ -18,7 +19,7 @@ const selectedId = Astro.url.searchParams.get('version');
 const selected = versions.find((version) => version.id === selectedId) ?? versions[0];
 const sourceById = new Map(intake.references.map((source) => [source.id, source]));
 const assertionsJson = selected ? JSON.stringify(selected.assertions.map(({ kind, statement, sources }) => ({ kind, statement, sources })), null, 2) : '[]';
-const modelGenerationAvailable = import.meta.env.DEV;
+const modelGenerationAvailable = isRuntimeModelGenerationAvailable();
 ---
 
 <EditorialLayout title={`Normalize ${intake.title}`}>
@@ -34,7 +35,7 @@ const modelGenerationAvailable = import.meta.env.DEV;
 
 	<section class="editorial-panel" aria-labelledby="propose-heading">
 		<h2 id="propose-heading">Propose a normalized event</h2>
-		<p>The deterministic fake provider is available in local development only. It performs no network request.</p>
+		<p>{import.meta.env.DEV ? 'The deterministic local provider performs no network request.' : 'The configured provider receives only the editor-entered brief and source metadata; it does not fetch source URLs.'}</p>
 		<form method="post" action="/editorial/actions/generation">
 			<input type="hidden" name="csrf_token" value={csrfToken} />
 			<input type="hidden" name="action" value="normalize" />
