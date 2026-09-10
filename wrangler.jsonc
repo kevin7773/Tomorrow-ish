@@ -5,6 +5,11 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
   "preview_urls": false,
+  "vars": {
+    "CF_ACCESS_TEAM_DOMAIN": "https://jolly-glitter-da93.cloudflareaccess.com",
+    "CF_ACCESS_AUD": "d7990901bf79388de024fee36a5a8abcd4452ff4c908acfa19189b37856fb30b",
+    "EDITORIAL_ALLOWED_EMAIL": "newsgoblin@tomorrow-ish.news"
+  },
   "routes": [
     {
       "pattern": "tomorrow-ish.news",
