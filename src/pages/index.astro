@@ -9,7 +9,7 @@ import { formatEditionDate } from '../lib/dates';
 const repository = getStoryRepository();
 const leadStory = await repository.getLeadStory();
 const recentStories = leadStory
-	? await repository.listPublished({ excludeId: leadStory.id, limit: 3 })
+	? await repository.listPublished({ excludeId: leadStory.id, limit: 6 })
 	: [];
 ---
 
@@ -22,11 +22,18 @@ const recentStories = leadStory
 			</div>
 
 			<section class="lead-grid" aria-labelledby="tomorrows-headline">
-				<h1 id="tomorrows-headline" class="section-kicker">Tomorrow’s headline</h1>
-				<StoryCard story={leadStory} prominent />
+				<div class="lead-grid__story">
+					<h1 id="tomorrows-headline" class="section-kicker">Tomorrow’s headline</h1>
+					<StoryCard story={leadStory} prominent />
+				</div>
+				<aside class="lead-grid__rail" aria-label="More from Tomorrow-ish">
+					<p class="section-kicker">Elsewhere in the edition</p>
+					{recentStories.slice(0, 2).map((story) => <StoryCard story={story} compact />)}
+					<AdSlot format="sidebar" />
+				</aside>
 			</section>
 
-			<AdSlot format="banner" />
+			<AdSlot format="leaderboard" />
 
 			{recentStories.length > 0 && (
 				<section aria-labelledby="recent-heading">
@@ -35,12 +42,19 @@ const recentStories = leadStory
 						<a href="/latest">All headlines</a>
 					</div>
 					<div class="story-grid">
-						{recentStories.map((story) => <StoryCard story={story} />)}
+						{recentStories.slice(2).map((story) => <StoryCard story={story} />)}
 					</div>
 				</section>
 			)}
 
 			<AdSlot format="in-feed" />
+
+			<section class="archive-promo" aria-labelledby="archive-promo-heading">
+				<p class="section-kicker">Every prediction, carefully preserved</p>
+				<h2 id="archive-promo-heading">Yesterday's tomorrows remain on the record.</h2>
+				<p>Browse complete editions by date, from the nearly plausible to the administratively inevitable.</p>
+				<a class="text-link" href="/archive">Explore the archive <span aria-hidden="true">→</span></a>
+			</section>
 		</>
 	) : (
 		<EmptyEdition />

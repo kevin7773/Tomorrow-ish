@@ -5,12 +5,13 @@ import StoryMeta from './StoryMeta.astro';
 interface Props {
 	story: Story;
 	prominent?: boolean;
+	compact?: boolean;
 }
 
-const { story, prominent = false } = Astro.props;
+const { story, prominent = false, compact = false } = Astro.props;
 ---
 
-<article class:list={['story-card', { 'story-card--prominent': prominent }]}>
+<article class:list={['story-card', { 'story-card--prominent': prominent, 'story-card--compact': compact }]}>
 	<StoryMeta category={story.category.name} editionDate={story.editionDate} />
 	<h2><a href={`/story/${story.slug}`}>{story.headline}</a></h2>
 	<p class="story-card__deck">{story.deck}</p>

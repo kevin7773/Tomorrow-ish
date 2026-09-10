@@ -21,13 +21,18 @@ const editions = groupStoriesByEdition(await repository.listPublished({ limit: 1
 	</header>
 
 	{editions.length ? (
-		<section aria-label="Published editions">
+		<section class="archive-list" aria-label="Published editions">
 			{editions.map((edition) => (
 				<section class="archive-edition">
-					<h2><time datetime={edition.editionDate}>{formatEditionDate(edition.editionDate)}</time></h2>
+					<header>
+						<p class="section-kicker">Edition</p>
+						<h2><time datetime={edition.editionDate}>{formatEditionDate(edition.editionDate)}</time></h2>
+						<p>{edition.stories.length} {edition.stories.length === 1 ? 'story' : 'stories'}</p>
+					</header>
 					<ul>
 						{edition.stories.map((story) => (
 							<li>
+								<span class="archive-edition__category">{story.category.name}</span>
 								<a href={`/story/${story.slug}`}>{story.headline}</a>
 								<p>{story.deck}</p>
 							</li>
@@ -35,6 +40,7 @@ const editions = groupStoriesByEdition(await repository.listPublished({ limit: 1
 					</ul>
 				</section>
 			))}
+			<div class="archive-end" aria-hidden="true">End of the known future</div>
 		</section>
 	) : (
 		<EmptyEdition title="The archive is still in the future." />

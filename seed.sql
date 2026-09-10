@@ -84,7 +84,55 @@ INSERT OR IGNORE INTO stories (
         '["clouds","apologies","weather"]',
         '2026-09-07T17:30:00Z',
         '2026-09-07T18:00:00Z'
-    );
+	),
+    (
+        'story-hidden-draft',
+        'city-considers-moving-tuesday-to-weekend',
+        'City Considers Moving Tuesday to the Weekend',
+        'A fictional draft that must never appear on the public site.',
+        'CITY HALL — This unpublished draft exists only to verify the public boundary.',
+        '2026-09-12',
+        NULL,
+        'cat-civic-life',
+        'DRAFT',
+        'Unpublished fictional test content.',
+        NULL,
+        '["publication-test"]',
+        '2026-09-10T12:00:00Z',
+        '2026-09-10T12:00:00Z'
+    ),
+    (
+        'story-hidden-review',
+        'pigeons-request-formal-sidewalk-right-of-way',
+        'Pigeons Request Formal Sidewalk Right of Way',
+        'A fictional review item that must never appear on the public site.',
+        'PUBLIC SQUARE — This unpublished review item exists only to verify the public boundary.',
+        '2026-09-12',
+        NULL,
+        'cat-civic-life',
+        'REVIEW',
+        'Unpublished fictional test content.',
+        NULL,
+        '["publication-test"]',
+        '2026-09-10T12:00:00Z',
+        '2026-09-10T12:00:00Z'
+    ),
+    (
+        'story-hidden-approved',
+        'office-plant-cleared-for-middle-management',
+        'Office Plant Cleared for Middle Management',
+        'A fictional approved item that must never appear before publication.',
+        'CORPORATE CAMPUS — This approved but unpublished item exists only to verify the public boundary.',
+        '2026-09-12',
+        NULL,
+        'cat-business',
+        'APPROVED',
+        'Unpublished fictional test content.',
+        NULL,
+        '["publication-test"]',
+        '2026-09-10T12:00:00Z',
+        '2026-09-10T12:00:00Z'
+	);
 
 INSERT OR IGNORE INTO sources (
     id,

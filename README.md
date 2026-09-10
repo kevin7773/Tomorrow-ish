@@ -2,7 +2,7 @@
 
 Tomorrow-ish is a lightweight satirical newspaper that publishes tomorrow's fictional headlines today.
 
-The M0 foundation uses Astro 6, TypeScript, Cloudflare Workers with Static Assets, and Cloudflare D1. It does not create or depend on a Cloudflare Pages project.
+The publication uses Astro 7, TypeScript, Cloudflare Workers with Static Assets, and Cloudflare D1. It does not create or depend on a Cloudflare Pages project.
 
 ## Requirements
 
@@ -69,7 +69,7 @@ The project is pinned to Astro 7.3.2 and the matching official Cloudflare adapte
 - `src/data/` owns the repository interface and D1 implementation.
 - Routes and components depend on the repository boundary rather than issuing D1 queries directly.
 
-M0 includes only `categories`, `stories`, and `sources`. Editorial UI, automated generation, candidate tables, generation-run tables, R2, scheduled triggers, queues, workflows, social automation, advertising vendors, and analytics vendors are intentionally out of scope.
+The publishable MVP includes only `categories`, `stories`, and `sources`. Editorial UI, automated generation, candidate tables, generation-run tables, R2, scheduled triggers, queues, workflows, social automation, advertising vendors, and analytics vendors are intentionally out of scope.
 
 ## Production D1 migrations
 
@@ -98,7 +98,7 @@ Do not run `seed.sql` against production.
 
 ## Production deployment model
 
-Production deployment configuration is intentionally deferred until the local M0 build has been validated and the Cloudflare resources exist.
+Production deployment configuration remains deferred until the M1 build has been validated and the Cloudflare resources exist.
 
 When configured, connect the existing GitHub repository to **Cloudflare Workers Builds**:
 
@@ -117,4 +117,4 @@ The domain model recognizes these states:
 DRAFT → REVIEW → APPROVED → PUBLISHED → ARCHIVED
 ```
 
-Rejection and revision paths are explicit. Generated or draft content has no route that can publish directly. M0 contains no editorial interface or automated publishing mechanism.
+Rejection and revision paths are explicit. Generated or draft content has no route that can publish directly. M1 contains no editorial interface or automated publishing mechanism.

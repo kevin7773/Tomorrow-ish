@@ -1,12 +1,12 @@
 ---
 interface Props {
-	format?: 'banner' | 'in-feed' | 'sidebar';
+	format?: 'leaderboard' | 'in-feed' | 'sidebar';
 }
 
-const { format = 'banner' } = Astro.props;
+const { format = 'leaderboard' } = Astro.props;
 ---
 
 <aside class:list={['ad-slot', `ad-slot--${format}`]} aria-label="Advertisement placeholder">
 	<span>Advertisement</span>
-	<p>Reserved for a quiet, future sponsor.</p>
+	<p aria-hidden="true">A quiet space reserved for a future sponsor.</p>
 </aside>

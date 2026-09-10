@@ -11,7 +11,12 @@ export interface PageMetadata {
 }
 
 export function absoluteSiteUrl(pathname: string): string {
-	return new URL(pathname, SITE_URL).toString();
+	const requested = new URL(pathname, SITE_URL);
+	const canonicalPath = requested.pathname.length > 1
+		? requested.pathname.replace(/\/+$/, '')
+		: '/';
+
+	return new URL(canonicalPath, SITE_URL).toString();
 }
 
 export function buildPageMetadata(options: {

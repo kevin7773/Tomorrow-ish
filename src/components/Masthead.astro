@@ -5,6 +5,7 @@ const primaryLinks = [
 	{ href: '/archive', label: 'Archive' },
 	{ href: '/about', label: 'About' },
 ];
+const pathname = Astro.url.pathname;
 ---
 
 <header class="masthead">
@@ -12,6 +13,8 @@ const primaryLinks = [
 	<a class="masthead__brand" href="/" aria-label="Tomorrow-ish home">TOMORROW-ISH</a>
 	<p class="masthead__tagline">Tomorrow's news. Approximately.</p>
 	<nav class="masthead__nav" aria-label="Primary navigation">
-		{primaryLinks.map((link) => <a href={link.href}>{link.label}</a>)}
+		{primaryLinks.map((link) => (
+			<a href={link.href} aria-current={pathname === link.href ? 'page' : undefined}>{link.label}</a>
+		))}
 	</nav>
 </header>

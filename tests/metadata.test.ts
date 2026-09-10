@@ -8,6 +8,13 @@ describe('canonical and social metadata', () => {
 		);
 	});
 
+	it('removes trailing slashes and ignores alternate hosts', () => {
+		expect(absoluteSiteUrl('/about/')).toBe('https://tomorrow-ish.news/about');
+		expect(absoluteSiteUrl('https://www.tomorrow-ish.news/archive/')).toBe(
+			'https://tomorrow-ish.news/archive',
+		);
+	});
+
 	it('builds article metadata without inventing an image', () => {
 		const metadata = buildPageMetadata({
 			title: 'A Fictional Headline',

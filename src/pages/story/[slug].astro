@@ -1,15 +1,19 @@
 ---
 import AdSlot from '../../components/AdSlot.astro';
 import NotFoundContent from '../../components/NotFoundContent.astro';
+import StoryCard from '../../components/StoryCard.astro';
 import StoryMeta from '../../components/StoryMeta.astro';
 import { getStoryRepository } from '../../data/runtime-story-repository';
-import { storyParagraphs } from '../../domain/story';
 import SiteLayout from '../../layouts/SiteLayout.astro';
+import { renderStoryMarkdown } from '../../lib/markdown';
 import { absoluteSiteUrl, serializeJsonLd } from '../../lib/metadata';
 
 const slug = Astro.params.slug ?? '';
 const repository = getStoryRepository();
 const story = await repository.findPublishedBySlug(slug);
+const relatedStories = story
+	? await repository.listPublished({ excludeId: story.id, limit: 3 })
+	: [];
 
 if (!story) Astro.response.status = 404;
 
@@ -40,6 +44,9 @@ const articleJsonLd = story
 	type={story ? 'article' : 'website'}
 	imageUrl={story?.ogImageKey ? `/media/${story.ogImageKey}` : null}
 	noindex={!story}
+	publishedAt={story?.publishedAt}
+	section={story?.category.name}
+	tags={story?.tags}
 >
 	{story && articleJsonLd ? (
 		<>
@@ -51,9 +58,10 @@ const articleJsonLd = story
 					<p class="article-deck">{story.deck}</p>
 				</header>
 
-				<div class="article-body">
-					{storyParagraphs(story.bodyMarkdown).map((paragraph) => <p>{paragraph}</p>)}
+				<div class="article-layout">
+					<div class="article-body" set:html={renderStoryMarkdown(story.bodyMarkdown)} />
 
+					<aside class="article-context" aria-label="Story context">
 					<section class="source-list" aria-labelledby="source-heading">
 						<h2 id="source-heading">Source and context</h2>
 						{story.sources.length ? (
@@ -66,13 +74,30 @@ const articleJsonLd = story
 								))}
 							</ul>
 						) : (
-							<p>No external sources are attached to this fictional sample.</p>
+							<p>This wholly fictional story has no external source material attached.</p>
 						)}
 					</section>
+					<section class="article-disclosure" aria-labelledby="article-disclosure-heading">
+						<h2 id="article-disclosure-heading">A note from the future</h2>
+						<p>This article is satire. Its people, events, quotations, and institutions are fictional.</p>
+					</section>
+					</aside>
 				</div>
 			</article>
 
-			<AdSlot format="banner" />
+			<AdSlot format="leaderboard" />
+
+			{relatedStories.length > 0 && (
+				<section aria-labelledby="related-heading">
+					<div class="section-heading">
+						<h2 id="related-heading">More from the near future</h2>
+						<a href="/latest">Latest headlines</a>
+					</div>
+					<div class="story-grid">
+						{relatedStories.map((relatedStory) => <StoryCard story={relatedStory} />)}
+					</div>
+				</section>
+			)}
 		</>
 	) : (
 		<NotFoundContent />

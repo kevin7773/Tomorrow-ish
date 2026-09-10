@@ -1,2 +1,6 @@
 User-agent: *
 Allow: /
+
+Sitemap: https://tomorrow-ish.news/sitemap.xml
+
+Sitemap: https://tomorrow-ish.news/sitemap.xml
