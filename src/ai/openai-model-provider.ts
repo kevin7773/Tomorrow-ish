@@ -3,6 +3,7 @@ import { parseCandidateBatch, parseNormalizationProposal } from './validation';
 import {
 	ModelOutputError,
 	ModelProviderError,
+	type ProviderResponseDiagnostics,
 	type GenerateCandidatesInput,
 	type ModelProvider,
 	type NormalizeEventInput,
@@ -109,11 +110,69 @@ function nonnegativeInteger(value: unknown): number {
 	return value as number;
 }
 
-function httpFailure(status: number): ModelProviderError {
-	if (status === 401 || status === 403) return new ModelProviderError('PROVIDER_AUTHENTICATION', false);
-	if (status === 429) return new ModelProviderError('PROVIDER_RATE_LIMIT', true);
-	if (status >= 500) return new ModelProviderError('PROVIDER_SERVER', true);
-	return new ModelProviderError('PROVIDER_REQUEST', false);
+const MAX_PROVIDER_ERROR_BODY_CHARACTERS = 64_000;
+const MAX_PROVIDER_MESSAGE_CHARACTERS = 500;
+
+function safeIdentifier(value: unknown, maxLength = 200): string | null {
+	if (typeof value !== 'string') return null;
+	const trimmed = value.trim();
+	return trimmed.length > 0 && trimmed.length <= maxLength && /^[A-Za-z0-9._:-]+$/.test(trimmed) ? trimmed : null;
+}
+
+function safeHeader(value: string | null, maxLength = 200): string | null {
+	if (value === null) return null;
+	const trimmed = value.trim();
+	return trimmed.length > 0 && trimmed.length <= maxLength && /^[\x20-\x7E]+$/.test(trimmed) ? trimmed : null;
+}
+
+function sanitizedProviderMessage(value: unknown): string | null {
+	if (typeof value !== 'string') return null;
+	const sanitized = value
+		.replace(/[\u0000-\u001F\u007F]/g, ' ')
+		.replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
+		.replace(/\bsk-[A-Za-z0-9_-]+\b/g, '[REDACTED]')
+		.replace(/\s+/g, ' ')
+		.trim();
+	return sanitized ? sanitized.slice(0, MAX_PROVIDER_MESSAGE_CHARACTERS) : null;
+}
+
+async function responseDiagnostics(response: Response): Promise<ProviderResponseDiagnostics> {
+	let errorType: string | null = null;
+	let errorCode: string | null = null;
+	let errorMessage: string | null = null;
+	try {
+		const raw = await response.text();
+		if (raw.length <= MAX_PROVIDER_ERROR_BODY_CHARACTERS) {
+			const envelope: unknown = JSON.parse(raw);
+			if (envelope && typeof envelope === 'object' && !Array.isArray(envelope)) {
+				const error = (envelope as { error?: unknown }).error;
+				if (error && typeof error === 'object' && !Array.isArray(error)) {
+					errorType = safeIdentifier((error as { type?: unknown }).type);
+					errorCode = safeIdentifier((error as { code?: unknown }).code);
+					errorMessage = sanitizedProviderMessage((error as { message?: unknown }).message);
+				}
+			}
+		}
+	} catch {
+		// An absent or malformed provider error body intentionally yields metadata-only diagnostics.
+	}
+	return {
+		httpStatus: response.status,
+		errorType,
+		errorCode,
+		errorMessage,
+		requestId: safeIdentifier(response.headers.get('x-request-id')),
+		retryAfter: safeHeader(response.headers.get('retry-after'), 100),
+	};
+}
+
+async function httpFailure(response: Response): Promise<ModelProviderError> {
+	const diagnostics = await responseDiagnostics(response);
+	const status = response.status;
+	if (status === 401 || status === 403) return new ModelProviderError('PROVIDER_AUTHENTICATION', false, undefined, diagnostics);
+	if (status === 429) return new ModelProviderError('PROVIDER_RATE_LIMIT', true, undefined, diagnostics);
+	if (status >= 500) return new ModelProviderError('PROVIDER_SERVER', true, undefined, diagnostics);
+	return new ModelProviderError('PROVIDER_REQUEST', false, undefined, diagnostics);
 }
 
 export class OpenAIModelProvider implements ModelProvider {
@@ -188,7 +247,7 @@ export class OpenAIModelProvider implements ModelProvider {
 			if (error instanceof DOMException && error.name === 'AbortError') throw error;
 			throw new ModelProviderError('PROVIDER_NETWORK', true);
 		}
-		if (!response.ok) throw httpFailure(response.status);
+		if (!response.ok) throw await httpFailure(response);
 		let envelope: OpenAIResponse;
 		try { envelope = await response.json() as OpenAIResponse; }
 		catch { throw new ModelOutputError(); }

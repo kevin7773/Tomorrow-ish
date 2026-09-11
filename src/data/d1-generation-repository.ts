@@ -47,6 +47,8 @@ interface ModelRunRow {
 	output_tokens: number | null; input_characters: number; output_characters: number; latency_ms: number;
 	retry_count: number; estimated_cost_microusd: number; candidate_count: number; idempotency_key: string;
 	requested_by_email: string; failure_classification: string | null; created_at: string; completed_at: string;
+	provider_http_status: number | null; provider_error_type: string | null; provider_error_code: string | null;
+	provider_error_message: string | null; provider_request_id: string | null; provider_retry_after: string | null;
 }
 
 function jsonFlags(value: string): GuardrailFlag[] {
@@ -80,6 +82,9 @@ function mapRun(row: ModelRunRow): ModelRun {
 		retryCount: row.retry_count, estimatedCostMicrousd: row.estimated_cost_microusd,
 		candidateCount: row.candidate_count, idempotencyKey: row.idempotency_key,
 		requestedByEmail: row.requested_by_email, failureClassification: row.failure_classification,
+		providerHttpStatus: row.provider_http_status, providerErrorType: row.provider_error_type,
+		providerErrorCode: row.provider_error_code, providerErrorMessage: row.provider_error_message,
+		providerRequestId: row.provider_request_id, providerRetryAfter: row.provider_retry_after,
 		createdAt: row.created_at, completedAt: row.completed_at };
 }
 
@@ -89,13 +94,16 @@ function insertRun(db: D1Database, run: ModelRunRecord): D1PreparedStatement {
 		provider_revision, prompt_version, input_hash, output_hash,
 		input_tokens, output_tokens, input_characters, output_characters, latency_ms, retry_count,
 		estimated_cost_microusd, candidate_count, idempotency_key, requested_by_email,
-		failure_classification, created_at, completed_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		failure_classification, provider_http_status, provider_error_type, provider_error_code,
+		provider_error_message, provider_request_id, provider_retry_after, created_at, completed_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 		.bind(run.id, run.operation, run.status, run.sourceIntakeId, run.normalizedEventVersionId,
 			run.provider, run.model, run.providerRevision, run.promptVersion, run.inputHash, run.outputHash,
 			run.inputTokens, run.outputTokens, run.inputCharacters,
 			run.outputCharacters, run.latencyMs, run.retryCount, run.estimatedCostMicrousd,
 			run.candidateCount, run.idempotencyKey, run.requestedByEmail, run.failureClassification,
+			run.providerHttpStatus, run.providerErrorType, run.providerErrorCode,
+			run.providerErrorMessage, run.providerRequestId, run.providerRetryAfter,
 			run.createdAt, run.completedAt);
 }
 

@@ -33,6 +33,15 @@ export interface ModelProvider {
 	estimateMaximumCostMicrousd(operation: ModelOperation, inputCharacters: number): number;
 }
 
+export interface ProviderResponseDiagnostics {
+	httpStatus: number;
+	errorType: string | null;
+	errorCode: string | null;
+	errorMessage: string | null;
+	requestId: string | null;
+	retryAfter: string | null;
+}
+
 export class ModelOutputError extends Error {
 	constructor(message = 'The model returned invalid structured output.') {
 		super(message);
@@ -45,6 +54,7 @@ export class ModelProviderError extends Error {
 		readonly failureClassification: string,
 		readonly retryable: boolean,
 		message = 'The model provider request failed.',
+		readonly responseDiagnostics: ProviderResponseDiagnostics | null = null,
 	) {
 		super(message);
 		this.name = 'ModelProviderError';

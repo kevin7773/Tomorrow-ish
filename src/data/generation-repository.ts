@@ -30,6 +30,12 @@ export interface ModelRunRecord {
 	idempotencyKey: string;
 	requestedByEmail: string;
 	failureClassification: string | null;
+	providerHttpStatus: number | null;
+	providerErrorType: string | null;
+	providerErrorCode: string | null;
+	providerErrorMessage: string | null;
+	providerRequestId: string | null;
+	providerRetryAfter: string | null;
 	createdAt: string;
 	completedAt: string;
 }

@@ -97,6 +97,41 @@ describe('generation authority', () => {
 		expect(response.headers.get('Location')).not.toContain('invalid-request');
 	});
 
+	it('persists only approved safe diagnostics for a rejected provider response', async () => {
+		const rawBodySecret = 'raw-body-secret-must-not-persist';
+		const transport = vi.fn(async () => new Response(JSON.stringify({
+			error: {
+				type: 'invalid_request_error', code: 'invalid_value',
+				message: 'The request field is not supported.', private_detail: rawBodySecret,
+			},
+		}), {
+			status: 400,
+			headers: {
+				'x-request-id': 'req_safe_456', 'retry-after': '7',
+				'Authorization': 'Bearer sk-response-header-secret', 'x-private-header': 'private-header-secret',
+			},
+		}));
+		const { repo, createdNormalization } = repository();
+		const service = new GenerationService(repo, new OpenAIModelProvider('test-key', OPENAI_MODEL, transport), {
+			now: () => '2026-09-11T02:32:25.216Z', createId: () => 'provider-rejected-run',
+		});
+		const caught: unknown = await service.proposeNormalization(identity, intake.id, 'openai-provider-rejected').catch((error: unknown) => error);
+		expect(caught).toMatchObject({ code: 'provider-rejected' });
+		expect(transport).toHaveBeenCalledTimes(1);
+		expect(createdNormalization).not.toHaveBeenCalled();
+		expect(repo.createModelRun).toHaveBeenCalledWith(expect.objectContaining({
+			status: 'FAILED', failureClassification: 'PROVIDER_REQUEST', providerHttpStatus: 400,
+			providerErrorType: 'invalid_request_error', providerErrorCode: 'invalid_value',
+			providerErrorMessage: 'The request field is not supported.', providerRequestId: 'req_safe_456',
+			providerRetryAfter: '7',
+		}));
+		const persisted = JSON.stringify(vi.mocked(repo.createModelRun).mock.calls[0][0]);
+		expect(persisted).not.toContain(rawBodySecret);
+		expect(persisted).not.toContain('sk-response-header-secret');
+		expect(persisted).not.toContain('private-header-secret');
+		expect(persisted).not.toContain('test-key');
+	});
+
 	it.each([
 		['PROVIDER_AUTHENTICATION', 'provider-rejected'],
 		['PROVIDER_REQUEST', 'provider-rejected'],

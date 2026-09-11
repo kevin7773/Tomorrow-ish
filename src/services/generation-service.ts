@@ -21,6 +21,7 @@ import {
 	type ModelOperation,
 	type NormalizationProposal,
 } from '../domain/generation';
+import type { ProviderResponseDiagnostics } from '../ai/model-provider';
 import { EditorialValidationError, requiredText } from './validation';
 
 interface GenerationDependencies {
@@ -45,6 +46,25 @@ function sanitizedFailure(error: unknown): string {
 	if (error instanceof ModelProviderError) return error.failureClassification;
 	if (error instanceof DOMException && error.name === 'AbortError') return 'TIMEOUT';
 	return 'PROVIDER_FAILURE';
+}
+
+function providerResponseDiagnostics(error: unknown): ProviderResponseDiagnostics | null {
+	if (error instanceof ModelExecutionError) return providerResponseDiagnostics(error.cause);
+	return error instanceof ModelProviderError ? error.responseDiagnostics : null;
+}
+
+function persistedProviderDiagnostics(error: unknown): Pick<ModelRunRecord,
+	'providerHttpStatus' | 'providerErrorType' | 'providerErrorCode' | 'providerErrorMessage' |
+	'providerRequestId' | 'providerRetryAfter'> {
+	const diagnostics = providerResponseDiagnostics(error);
+	return {
+		providerHttpStatus: diagnostics?.httpStatus ?? null,
+		providerErrorType: diagnostics?.errorType ?? null,
+		providerErrorCode: diagnostics?.errorCode ?? null,
+		providerErrorMessage: diagnostics?.errorMessage ?? null,
+		providerRequestId: diagnostics?.requestId ?? null,
+		providerRetryAfter: diagnostics?.retryAfter ?? null,
+	};
 }
 
 function editorialModelFailure(error: unknown): EditorialValidationError {
@@ -162,6 +182,7 @@ export class GenerationService {
 				latencyMs: error instanceof ModelExecutionError ? error.latencyMs : executed?.latencyMs ?? 0,
 				estimatedCostMicrousd: executed?.result.usage.estimatedCostMicrousd ?? reservedCostMicrousd, candidateCount: 0, idempotencyKey: key,
 				requestedByEmail, failureClassification: sanitizedFailure(error), createdAt, completedAt,
+				...persistedProviderDiagnostics(error),
 			};
 			await this.repository.createModelRun(failed);
 			throw editorialModelFailure(error);
@@ -294,7 +315,7 @@ export class GenerationService {
 				retryCount: error instanceof ModelExecutionError ? error.retryCount : executed?.retryCount ?? 0,
 				estimatedCostMicrousd: executed?.result.usage.estimatedCostMicrousd ?? reservedCostMicrousd,
 				candidateCount: 0, idempotencyKey: key, requestedByEmail,
-				failureClassification: sanitizedFailure(error), createdAt, completedAt });
+				failureClassification: sanitizedFailure(error), ...persistedProviderDiagnostics(error), createdAt, completedAt });
 			throw editorialModelFailure(error);
 		}
 	}
@@ -331,6 +352,8 @@ export class GenerationService {
 			estimatedCostMicrousd: input.executed.result.usage.estimatedCostMicrousd,
 			candidateCount: input.operation === 'GENERATE_CANDIDATES' ? this.limits.defaultCandidateCount : 0,
 			idempotencyKey: input.key, requestedByEmail: input.requestedByEmail,
-			failureClassification: null, createdAt: input.createdAt, completedAt: input.completedAt };
+			failureClassification: null, providerHttpStatus: null, providerErrorType: null,
+			providerErrorCode: null, providerErrorMessage: null, providerRequestId: null,
+			providerRetryAfter: null, createdAt: input.createdAt, completedAt: input.completedAt };
 	}
 }

@@ -36,6 +36,25 @@ function response(output: unknown, status = 200, usage = { input_tokens: 100, ou
 	}), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
+function providerErrorResponse(
+	status: number,
+	error: { type?: unknown; code?: unknown; message?: unknown },
+	headers: Record<string, string> = {},
+): Response {
+	return new Response(JSON.stringify({ error }), {
+		status,
+		headers: { 'Content-Type': 'application/json', ...headers },
+	});
+}
+
+async function providerFailure(response: Response): Promise<ModelProviderError> {
+	const provider = new OpenAIModelProvider('test-key', OPENAI_MODEL, async () => response);
+	const error = await provider.normalizeEvent({ title: 'Event', neutralBrief: 'Brief', references: [reference] }, signal)
+		.catch((caught: unknown) => caught);
+	expect(error).toBeInstanceOf(ModelProviderError);
+	return error as ModelProviderError;
+}
+
 describe('OpenAI Responses provider', () => {
 	it('uses a receiver-safe native fetch wrapper by default', async () => {
 		let receivedThis: unknown;
@@ -119,6 +138,58 @@ describe('OpenAI Responses provider', () => {
 		expect(caught.message).not.toContain('secret diagnostic');
 		expect(caught.cause).toBeInstanceOf(ModelProviderError);
 		expect((caught.cause as ModelProviderError).failureClassification).toBe('PROVIDER_AUTHENTICATION');
+	});
+
+	it.each([
+		[400, 'PROVIDER_REQUEST', 'invalid_request_error', 'invalid_value', 'A required field is invalid.'],
+		[401, 'PROVIDER_AUTHENTICATION', 'authentication_error', 'invalid_api_key', 'Authentication failed.'],
+		[403, 'PROVIDER_AUTHENTICATION', 'invalid_request_error', 'model_not_found', 'The model is unavailable to this project.'],
+		[429, 'PROVIDER_RATE_LIMIT', 'insufficient_quota', 'insufficient_quota', 'Quota has been exceeded.'],
+		[500, 'PROVIDER_SERVER', 'server_error', 'internal_error', 'The provider encountered an error.'],
+	] as const)('captures safe structured diagnostics for HTTP %s', async (status, classification, type, code, message) => {
+		const error = await providerFailure(providerErrorResponse(status, { type, code, message }));
+		expect(error.failureClassification).toBe(classification);
+		expect(error.responseDiagnostics).toEqual({
+			httpStatus: status, errorType: type, errorCode: code, errorMessage: message,
+			requestId: null, retryAfter: null,
+		});
+	});
+
+	it('captures temporary rate-limit Retry-After and request ID without full headers', async () => {
+		const error = await providerFailure(providerErrorResponse(429, {
+			type: 'rate_limit_error', code: 'rate_limit_exceeded', message: 'Please retry later.',
+		}, {
+			'Retry-After': '12', 'x-request-id': 'req_safe_123',
+			'Authorization': 'Bearer sk-never-persist', 'x-internal-secret': 'do-not-store',
+		}));
+		expect(error.responseDiagnostics).toEqual({
+			httpStatus: 429, errorType: 'rate_limit_error', errorCode: 'rate_limit_exceeded',
+			errorMessage: 'Please retry later.', requestId: 'req_safe_123', retryAfter: '12',
+		});
+		expect(JSON.stringify(error.responseDiagnostics)).not.toContain('never-persist');
+		expect(JSON.stringify(error.responseDiagnostics)).not.toContain('do-not-store');
+	});
+
+	it.each([
+		new Response('', { status: 400 }),
+		new Response('not-json and must not be retained', { status: 400 }),
+		new Response(JSON.stringify({ error: 'wrong shape' }), { status: 400 }),
+	])('handles absent or malformed provider error bodies without retaining them', async (providerResponse) => {
+		const error = await providerFailure(providerResponse);
+		expect(error.responseDiagnostics).toMatchObject({
+			httpStatus: 400, errorType: null, errorCode: null, errorMessage: null,
+		});
+		expect(JSON.stringify(error.responseDiagnostics)).not.toContain('not-json');
+	});
+
+	it('sanitizes and bounds the documented provider message field', async () => {
+		const error = await providerFailure(providerErrorResponse(400, {
+			type: 'invalid_request_error', code: 'invalid_value',
+			message: `Bad\nBearer sk-secret-token ${'x'.repeat(600)}`,
+		}));
+		expect(error.responseDiagnostics?.errorMessage).toContain('Bearer [REDACTED]');
+		expect(error.responseDiagnostics?.errorMessage).not.toContain('sk-secret-token');
+		expect(error.responseDiagnostics?.errorMessage?.length).toBeLessThanOrEqual(500);
 	});
 
 	it('aborts timed-out requests and stops after the bounded retry count', async () => {
