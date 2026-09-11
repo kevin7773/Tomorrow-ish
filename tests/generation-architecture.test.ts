@@ -28,6 +28,7 @@ describe('M3 architectural boundaries', () => {
 		const repository = readFileSync(join(root, 'src/data/d1-generation-repository.ts'), 'utf8');
 		expect(domain).toContain("['DRAFT', 'REVIEW', 'APPROVED', 'REJECTED']");
 		expect(repository).toContain("'DRAFT'");
+		expect(repository).toContain("'MODEL'");
 		expect(repository).not.toMatch(/status\s*=\s*['\"]PUBLISHED/);
 	});
 

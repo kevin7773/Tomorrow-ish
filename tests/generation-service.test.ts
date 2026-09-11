@@ -212,6 +212,31 @@ describe('generation authority', () => {
 		expect(record.run.status).toBe('SUCCEEDED');
 	});
 
+	it('records candidate timeout after two longer-timeout attempts without persisting candidates', async () => {
+		const { repo, createdCandidates } = repository();
+		const provider = new FakeModelProvider();
+		const invoke = vi.spyOn(provider, 'generateCandidates').mockImplementation((_input, signal) => new Promise((_resolve, reject) => {
+			signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+		}));
+		const service = new GenerationService(repo, provider, {
+			createId: () => 'candidate-timeout-run',
+			limits: {
+				timeoutMs: 5, candidateTimeoutMs: 10, maxAttempts: 2, defaultCandidateCount: 5,
+				maxInputCharacters: 24_000, maxOutputCharacters: 24_000, maxEstimatedCostMicrousd: 100_000,
+			},
+		});
+		const caught: unknown = await service.generateCandidates(identity, {
+			intakeId: intake.id, normalizedEventVersionId: 'version-1', categoryId: 'cat-civic-life', idempotencyKey: 'candidate-timeout',
+		}).catch((error: unknown) => error);
+		expect(caught).toMatchObject({ code: 'provider-unavailable' });
+		expect(invoke).toHaveBeenCalledTimes(2);
+		expect(createdCandidates).not.toHaveBeenCalled();
+		expect(repo.createModelRun).toHaveBeenCalledWith(expect.objectContaining({
+			id: 'candidate-timeout-run', status: 'FAILED', failureClassification: 'TIMEOUT',
+			candidateCount: 0, retryCount: 1,
+		}));
+	});
+
 	it.each(['UNSUITABLE', 'UNREVIEWED'] as const)('blocks %s candidate generation', async (suitability) => {
 		const { repo, createdCandidates } = repository(accepted(suitability));
 		await expect(new GenerationService(repo, new FakeModelProvider()).generateCandidates(identity, { intakeId: intake.id, normalizedEventVersionId: 'version-1', categoryId: 'cat-civic-life', idempotencyKey: suitability })).rejects.toThrow();

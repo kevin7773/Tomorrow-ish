@@ -7,6 +7,7 @@ import {
 	HOUSE_VOICE_CONTRACT,
 	ModelExecutionError,
 	NORMALIZATION_PROMPT_VERSION,
+	modelLimitsForOperation,
 	runWithLimits,
 	sha256,
 	type ModelLimits,
@@ -140,7 +141,8 @@ export class GenerationService {
 		const runId = this.createId();
 		let executed: { result: ModelResult<unknown>; retryCount: number; latencyMs: number } | null = null;
 		try {
-			executed = await runWithLimits((signal) => this.provider.normalizeEvent(input, signal), inputText.length, this.limits);
+			executed = await runWithLimits((signal) => this.provider.normalizeEvent(input, signal), inputText.length,
+				modelLimitsForOperation('NORMALIZE', this.limits));
 			const parsed = parseNormalizationProposal(executed.result.output);
 			const referenceIds = new Set(intake.references.map((reference) => reference.id));
 			if (parsed.assertions.some((assertion) => assertion.sources.some((source) => !referenceIds.has(source.sourceReferenceId)))) {
@@ -288,7 +290,8 @@ export class GenerationService {
 		const reservedCostMicrousd = await this.requireBudget('GENERATE_CANDIDATES', inputText.length, createdAt);
 		let executed: { result: ModelResult<unknown>; retryCount: number; latencyMs: number } | null = null;
 		try {
-			executed = await runWithLimits((signal) => this.provider.generateCandidates(modelInput, signal), inputText.length, this.limits);
+			executed = await runWithLimits((signal) => this.provider.generateCandidates(modelInput, signal), inputText.length,
+				modelLimitsForOperation('GENERATE_CANDIDATES', this.limits));
 			const candidates = parseCandidateBatch(executed.result.output, this.limits.defaultCandidateCount);
 			const outputText = JSON.stringify(candidates);
 			const completedAt = this.now();

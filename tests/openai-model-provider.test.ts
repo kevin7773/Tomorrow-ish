@@ -151,7 +151,7 @@ describe('OpenAI Responses provider', () => {
 		const provider = new OpenAIModelProvider('test-key', OPENAI_MODEL, transport);
 		const executed = await runWithLimits((requestSignal) => provider.normalizeEvent({
 			title: 'Event', neutralBrief: 'Brief', references: [reference],
-		}, requestSignal), 100, { timeoutMs: 100, maxAttempts: 2, defaultCandidateCount: 5, maxInputCharacters: 1_000, maxOutputCharacters: 10_000, maxEstimatedCostMicrousd: 10_000 });
+		}, requestSignal), 100, { timeoutMs: 100, candidateTimeoutMs: 250, maxAttempts: 2, defaultCandidateCount: 5, maxInputCharacters: 1_000, maxOutputCharacters: 10_000, maxEstimatedCostMicrousd: 10_000 });
 		expect(transport).toHaveBeenCalledTimes(2);
 		expect(executed.retryCount).toBe(1);
 		expect(executed.result.usage.estimatedCostMicrousd).toBe(800);
@@ -229,7 +229,7 @@ describe('OpenAI Responses provider', () => {
 		const provider = new OpenAIModelProvider('test-key', OPENAI_MODEL, transport);
 		const caught: unknown = await runWithLimits((requestSignal) => provider.normalizeEvent({
 			title: 'Event', neutralBrief: 'Brief', references: [reference],
-		}, requestSignal), 100, { timeoutMs: 5, maxAttempts: 2, defaultCandidateCount: 5, maxInputCharacters: 1_000, maxOutputCharacters: 10_000, maxEstimatedCostMicrousd: 10_000 }).catch((error: unknown) => error);
+		}, requestSignal), 100, { timeoutMs: 5, candidateTimeoutMs: 10, maxAttempts: 2, defaultCandidateCount: 5, maxInputCharacters: 1_000, maxOutputCharacters: 10_000, maxEstimatedCostMicrousd: 10_000 }).catch((error: unknown) => error);
 		expect(caught).toBeInstanceOf(ModelExecutionError);
 		if (!(caught instanceof ModelExecutionError)) throw new Error('Expected a model execution error.');
 		expect(caught.retryCount).toBe(1);

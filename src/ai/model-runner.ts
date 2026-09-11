@@ -1,4 +1,4 @@
-import type { ModelResult } from '../domain/generation';
+import type { ModelOperation, ModelResult } from '../domain/generation';
 import { ModelProviderError } from './model-provider';
 
 export const NORMALIZATION_PROMPT_VERSION = 'normalize-v1';
@@ -14,6 +14,7 @@ export const HOUSE_VOICE_CONTRACT = [
 
 export interface ModelLimits {
 	timeoutMs: number;
+	candidateTimeoutMs: number;
 	maxAttempts: number;
 	defaultCandidateCount: number;
 	maxInputCharacters: number;
@@ -23,12 +24,20 @@ export interface ModelLimits {
 
 export const DEFAULT_MODEL_LIMITS: Readonly<ModelLimits> = {
 	timeoutMs: 8_000,
+	candidateTimeoutMs: 25_000,
 	maxAttempts: 2,
 	defaultCandidateCount: 5,
 	maxInputCharacters: 24_000,
 	maxOutputCharacters: 24_000,
 	maxEstimatedCostMicrousd: 100_000,
 };
+
+export function modelLimitsForOperation(
+	operation: ModelOperation,
+	limits: Readonly<ModelLimits> = DEFAULT_MODEL_LIMITS,
+): Readonly<ModelLimits> {
+	return operation === 'GENERATE_CANDIDATES' ? { ...limits, timeoutMs: limits.candidateTimeoutMs } : limits;
+}
 
 export class ModelLimitError extends Error {
 	constructor(message: string) {
