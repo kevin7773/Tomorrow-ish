@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { isCurrentHeroImage } from '../src/domain/article-image';
+import { isImageGenerationEnabled } from '../src/images/image-provider-factory';
 
 describe('article image persistence governance', () => {
 	const migration = readFileSync(join(process.cwd(), 'migrations/0005_governed_article_images.sql'), 'utf8');
@@ -52,9 +54,27 @@ describe('article image persistence governance', () => {
 	it('keeps pending state visible and non-reviewable in the editorial UI', () => {
 		const page = readFileSync(join(process.cwd(), 'src/pages/editorial/stories/[id].astro'), 'utf8');
 		expect(page).toContain("image.status === 'PENDING'");
-		expect(page).toContain('disabled={hasPendingImage}');
+		expect(page).toContain('disabled={!imageGenerationEnabled || hasPendingImage}');
 		expect(page).toMatch(/image\.status === 'GENERATED'[\s\S]*Approve and attach image/);
 		expect(page).not.toMatch(/image\.status === 'PENDING'[\s\S]{0,300}Approve and attach image/);
+	});
+
+	it('reflects the server image-generation flag in the editorial control', () => {
+		const page = readFileSync(join(process.cwd(), 'src/pages/editorial/stories/[id].astro'), 'utf8');
+		expect(isImageGenerationEnabled({})).toBe(false);
+		expect(isImageGenerationEnabled({ IMAGE_GENERATION_ENABLED: 'false' })).toBe(false);
+		expect(isImageGenerationEnabled({ IMAGE_GENERATION_ENABLED: 'true' })).toBe(true);
+		expect(page).toContain('disabled={!imageGenerationEnabled || hasPendingImage}');
+		expect(page).toContain("!imageGenerationEnabled ? 'Image generation disabled'");
+		expect(page).toContain('Image generation is currently disabled.');
+	});
+
+	it('labels only matching non-null image assets as the current hero', () => {
+		expect(isCurrentHeroImage(null, null)).toBe(false);
+		expect(isCurrentHeroImage(null, 'images/story/image.webp')).toBe(false);
+		expect(isCurrentHeroImage('images/story/image.webp', null)).toBe(false);
+		expect(isCurrentHeroImage('images/story/image.webp', 'images/story/other.webp')).toBe(false);
+		expect(isCurrentHeroImage('images/story/image.webp', 'images/story/image.webp')).toBe(true);
 	});
 
 	it('authenticates the bounded webhook before parsing or processing its body', () => {

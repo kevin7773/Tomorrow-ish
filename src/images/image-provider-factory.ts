@@ -18,8 +18,12 @@ export interface ImageEnvironment {
 	CLOUDFLARE_AI_GATEWAY_ID?: string;
 }
 
+export function isImageGenerationEnabled(environment: Pick<ImageEnvironment, 'IMAGE_GENERATION_ENABLED'>): boolean {
+	return environment.IMAGE_GENERATION_ENABLED === 'true';
+}
+
 export function createImageProvider(environment: ImageEnvironment): ImageProvider {
-	if (environment.IMAGE_GENERATION_ENABLED !== 'true') {
+	if (!isImageGenerationEnabled(environment)) {
 		throw new ImageProviderError('Article image generation is disabled.', 'PROVIDER_DISABLED');
 	}
 	if (environment.IMAGE_PROVIDER === 'openai') {

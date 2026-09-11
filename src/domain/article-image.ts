@@ -31,3 +31,9 @@ export interface ArticleImage {
 	reviewedByEmail: string | null;
 	reviewedAt: string | null;
 }
+
+export function isCurrentHeroImage(storyHeroAssetKey: string | null, imageAssetKey: string | null): boolean {
+	return storyHeroAssetKey !== null
+		&& imageAssetKey !== null
+		&& storyHeroAssetKey === imageAssetKey;
+}

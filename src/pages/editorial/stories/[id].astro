@@ -1,8 +1,11 @@
 ---
+import { env } from 'cloudflare:workers';
 import EditorialMessage from '../../../components/EditorialMessage.astro';
 import { getEditorialRepository } from '../../../data/runtime-editorial-repository';
 import { getArticleImageRepository } from '../../../data/runtime-article-image-repository';
+import { isCurrentHeroImage } from '../../../domain/article-image';
 import { PUBLICATION_STATUSES, canTransitionPublication } from '../../../domain/publication-status';
+import { isImageGenerationEnabled } from '../../../images/image-provider-factory';
 import EditorialLayout from '../../../layouts/EditorialLayout.astro';
 import { PUBLISH_CONFIRMATION } from '../../../services/publication-service';
 
@@ -22,6 +25,7 @@ const nextStatuses = PUBLICATION_STATUSES.filter(
 );
 const contentLocked = story.status === 'PUBLISHED' || story.status === 'ARCHIVED';
 const hasPendingImage = images.some((image) => image.status === 'PENDING');
+const imageGenerationEnabled = isImageGenerationEnabled(env);
 ---
 
 <EditorialLayout title={story.headline}>
@@ -82,11 +86,12 @@ const hasPendingImage = images.some((image) => image.status === 'PENDING');
 				<input type="hidden" name="action" value="generate" />
 				<input type="hidden" name="storyId" value={story.id} />
 				<input type="hidden" name="returnPath" value={returnPath} />
-				<button class="editorial-button" type="submit" disabled={hasPendingImage}>
-					{hasPendingImage ? 'Image generation pending' : 'Generate landscape image'}
+				<button class="editorial-button" type="submit" disabled={!imageGenerationEnabled || hasPendingImage}>
+					{!imageGenerationEnabled ? 'Image generation disabled' : hasPendingImage ? 'Image generation pending' : 'Generate landscape image'}
 				</button>
 			</form>
-			{hasPendingImage && <p>The provider accepted this request. Approval and another paid generation remain unavailable until it completes or fails.</p>}
+			{!imageGenerationEnabled && <p>Image generation is currently disabled.</p>}
+			{imageGenerationEnabled && hasPendingImage && <p>The provider accepted this request. Approval and another paid generation remain unavailable until it completes or fails.</p>}
 		</section>
 	)}
 
@@ -96,7 +101,7 @@ const hasPendingImage = images.some((image) => image.status === 'PENDING');
 			<div class="editorial-image-history">
 				{images.map((image) => (
 					<article class="editorial-image-record">
-						<header><strong>{image.status}{story.ogImageKey === image.assetKey ? ' · CURRENT HERO' : ''}</strong><span>{new Date(image.requestedAt).toLocaleString('en-US')}</span></header>
+						<header><strong>{image.status}{isCurrentHeroImage(story.ogImageKey, image.assetKey) ? ' · CURRENT HERO' : ''}</strong><span>{new Date(image.requestedAt).toLocaleString('en-US')}</span></header>
 						{image.assetKey && <img src={`/editorial/media/${image.assetKey}`} alt={image.altText ?? ''} loading="lazy" />}
 						<details>
 							<summary>Prompt and provenance</summary>
