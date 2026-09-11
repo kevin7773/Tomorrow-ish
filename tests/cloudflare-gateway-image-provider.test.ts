@@ -10,7 +10,7 @@ describe('Cloudflare AI Gateway asynchronous image provider', () => {
 			result: { id: 'run-123', state: 'Pending' },
 		}), { status: 200, headers: { 'cf-ray': 'ray-123' } }));
 		const provider = new CloudflareGatewayImageProvider(
-			ACCOUNT_ID, 'cloudflare-token', 'tomorrow-ish-images', 'openai/gpt-image-2', fetcher,
+			ACCOUNT_ID, 'cloudflare-token', 'tomorrow-ish', 'openai/gpt-image-2', fetcher,
 		);
 
 		await expect(provider.submit({
@@ -30,7 +30,7 @@ describe('Cloudflare AI Gateway asynchronous image provider', () => {
 		expect(init.headers).toMatchObject({
 			Authorization: 'Bearer cloudflare-token',
 			'Content-Type': 'application/json',
-			'cf-aig-gateway-id': 'tomorrow-ish-images',
+			'cf-aig-gateway-id': 'tomorrow-ish',
 			'cf-aig-max-attempts': '1',
 			'cf-aig-collect-log-payload': 'false',
 		});
@@ -52,7 +52,7 @@ describe('Cloudflare AI Gateway asynchronous image provider', () => {
 			errors: [{ code: 10000, message: 'sensitive upstream message' }],
 		}), { status: 401, headers: { 'cf-ray': 'ray-safe' } }));
 		const provider = new CloudflareGatewayImageProvider(
-			ACCOUNT_ID, 'cloudflare-token', 'tomorrow-ish-images', 'openai/gpt-image-2', fetcher,
+			ACCOUNT_ID, 'cloudflare-token', 'tomorrow-ish', 'openai/gpt-image-2', fetcher,
 		);
 		await expect(provider.submit({
 			prompt: 'Safe prompt', aspectRatio: '16:9', webhookUrl: 'https://tomorrow-ish.news/callback',
@@ -65,7 +65,7 @@ describe('Cloudflare AI Gateway asynchronous image provider', () => {
 
 	it('rejects missing run IDs and invalid configuration', async () => {
 		const provider = new CloudflareGatewayImageProvider(
-			ACCOUNT_ID, 'cloudflare-token', 'tomorrow-ish-images', 'openai/gpt-image-2',
+			ACCOUNT_ID, 'cloudflare-token', 'tomorrow-ish', 'openai/gpt-image-2',
 			vi.fn().mockResolvedValue(Response.json({ success: true, result: { state: 'Pending' } })),
 		);
 		await expect(provider.submit({

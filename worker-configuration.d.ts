@@ -15,7 +15,7 @@ interface __BaseEnv_Env {
 	IMAGE_MODEL: "openai/gpt-image-2";
 	IMAGE_GENERATION_ENABLED: "false";
 	CLOUDFLARE_ACCOUNT_ID: "13fbf38daabf893cddf8e7214957bfce";
-	CLOUDFLARE_AI_GATEWAY_ID: "tomorrow-ish-images";
+	CLOUDFLARE_AI_GATEWAY_ID: "tomorrow-ish";
 	IMAGE_WEBHOOK_ORIGIN: "https://tomorrow-ish.news";
 }
 declare namespace Cloudflare {

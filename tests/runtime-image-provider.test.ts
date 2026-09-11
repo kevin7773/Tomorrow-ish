@@ -19,7 +19,7 @@ describe('runtime image provider configuration', () => {
 		const provider = createImageProvider({
 			IMAGE_GENERATION_ENABLED: 'true', IMAGE_PROVIDER: 'cloudflare-ai-gateway',
 			CLOUDFLARE_ACCOUNT_ID: '13fbf38daabf893cddf8e7214957bfce',
-			CLOUDFLARE_AI_API_TOKEN: 'token', CLOUDFLARE_AI_GATEWAY_ID: 'tomorrow-ish-images',
+			CLOUDFLARE_AI_API_TOKEN: 'token', CLOUDFLARE_AI_GATEWAY_ID: 'tomorrow-ish',
 		});
 		expect(provider).toMatchObject({ lifecycle: 'asynchronous', model: 'openai/gpt-image-2' });
 	});

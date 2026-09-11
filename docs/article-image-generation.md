@@ -84,7 +84,7 @@ IMAGE_PROVIDER=cloudflare-ai-gateway
 IMAGE_MODEL=openai/gpt-image-2
 IMAGE_GENERATION_ENABLED=false
 CLOUDFLARE_ACCOUNT_ID=<account-id>
-CLOUDFLARE_AI_GATEWAY_ID=tomorrow-ish-images
+CLOUDFLARE_AI_GATEWAY_ID=tomorrow-ish
 IMAGE_WEBHOOK_ORIGIN=https://tomorrow-ish.news
 IMAGE_ASSETS -> tomorrow-ish-images
 ```
