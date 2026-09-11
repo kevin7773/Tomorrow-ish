@@ -1,6 +1,6 @@
 import type { PublicationStatus } from '../domain/publication-status';
 import type { Story, StorySource } from '../domain/story';
-import type { StoryRepository } from './story-repository';
+import type { StoryRepository, PublishedStoryQuery } from './story-repository';
 
 interface StoryRow {
 	id: string;
@@ -122,22 +122,39 @@ export class D1StoryRepository implements StoryRepository {
 		return row ? mapStory(row) : null;
 	}
 
-	async listPublished(options: { excludeId?: string; limit?: number } = {}): Promise<Story[]> {
-		const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
-		const query = options.excludeId
-			? `${STORY_SELECT}
-				WHERE s.status = 'PUBLISHED' AND s.id <> ?
-				ORDER BY s.edition_date DESC, s.published_at DESC
-				LIMIT ?`
-			: `${STORY_SELECT}
-				WHERE s.status = 'PUBLISHED'
-				ORDER BY s.edition_date DESC, s.published_at DESC
-				LIMIT ?`;
+	async listCategories(): Promise<Story['category'][]> {
+		const result = await this.db
+			.prepare('SELECT id, slug, name FROM categories ORDER BY name ASC')
+			.all<Story['category']>();
+		return result.results;
+	}
 
-		const statement = this.db.prepare(query);
-		const result = options.excludeId
-			? await statement.bind(options.excludeId, limit).all<StoryRow>()
-			: await statement.bind(limit).all<StoryRow>();
+	async findCategoryBySlug(slug: string): Promise<Story['category'] | null> {
+		return this.db
+			.prepare('SELECT id, slug, name FROM categories WHERE slug = ? LIMIT 1')
+			.bind(slug)
+			.first<Story['category']>();
+	}
+
+	async listPublished(options: PublishedStoryQuery = {}): Promise<Story[]> {
+		const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+		const conditions = ["s.status = 'PUBLISHED'"];
+		const bindings: Array<string | number> = [];
+		if (options.excludeId) {
+			conditions.push('s.id <> ?');
+			bindings.push(options.excludeId);
+		}
+		if (options.categorySlug) {
+			conditions.push('c.slug = ?');
+			bindings.push(options.categorySlug);
+		}
+		bindings.push(limit);
+		const result = await this.db.prepare(`${STORY_SELECT}
+			WHERE ${conditions.join(' AND ')}
+			ORDER BY s.edition_date DESC, s.published_at DESC
+			LIMIT ?`)
+			.bind(...bindings)
+			.all<StoryRow>();
 
 		return result.results.map((row) => mapStory(row));
 	}

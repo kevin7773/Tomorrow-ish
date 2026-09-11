@@ -13,7 +13,7 @@ const { story, prominent = false, compact = false } = Astro.props;
 
 <article class:list={['story-card', { 'story-card--prominent': prominent, 'story-card--compact': compact }]}>
 	{story.ogImageKey && story.imageAltText && <a class="story-card__image" href={`/story/${story.slug}`} tabindex="-1"><img src={`/media/${story.ogImageKey}`} alt={story.imageAltText} loading={prominent ? 'eager' : 'lazy'} /></a>}
-	<StoryMeta category={story.category.name} editionDate={story.editionDate} />
+	<StoryMeta category={story.category.name} categorySlug={story.category.slug} editionDate={story.editionDate} />
 	<h2><a href={`/story/${story.slug}`}>{story.headline}</a></h2>
 	<p class="story-card__deck">{story.deck}</p>
 	<a class="story-card__read" href={`/story/${story.slug}`}>Read tomorrow's story <span aria-hidden="true">→</span></a>

@@ -172,13 +172,17 @@ export class EditorialService {
 	): Promise<string> {
 		const createdAt = this.now();
 		const id = this.createId();
+		const categoryId = requiredText(input.categoryId, 'Category', 100);
+		if (!(await this.repository.categoryExists(categoryId))) {
+			throw new EditorialValidationError('Category is invalid.');
+		}
 		const created = await this.repository.createCandidate({
 			id,
 			sourceIntakeId: requiredText(input.sourceIntakeId, 'Intake ID', 100),
 			proposedHeadline: requiredText(input.proposedHeadline, 'Headline', 300),
 			proposedDeck: requiredText(input.proposedDeck, 'Deck', 1_000),
 			draftBodyMarkdown: requiredText(input.draftBodyMarkdown, 'Draft body', 50_000),
-			categoryId: requiredText(input.categoryId, 'Category', 100),
+			categoryId,
 			editorialNotes: optionalText(input.editorialNotes, 'Editorial notes', 20_000),
 			actorEmail: identityEmail(identity),
 			createdAt,
@@ -192,12 +196,16 @@ export class EditorialService {
 		identity: EditorialIdentity,
 		input: Record<string, unknown>,
 	): Promise<void> {
+		const categoryId = requiredText(input.categoryId, 'Category', 100);
+		if (!(await this.repository.categoryExists(categoryId))) {
+			throw new EditorialValidationError('Category is invalid.');
+		}
 		const updated = await this.repository.updateCandidate({
 			id: requiredText(input.id, 'Candidate ID', 100),
 			proposedHeadline: requiredText(input.proposedHeadline, 'Headline', 300),
 			proposedDeck: requiredText(input.proposedDeck, 'Deck', 1_000),
 			draftBodyMarkdown: requiredText(input.draftBodyMarkdown, 'Draft body', 50_000),
-			categoryId: requiredText(input.categoryId, 'Category', 100),
+			categoryId,
 			editorialNotes: optionalText(input.editorialNotes, 'Editorial notes', 20_000),
 			actorEmail: identityEmail(identity),
 			updatedAt: this.now(),
@@ -277,6 +285,10 @@ export class EditorialService {
 		if (story.status === 'PUBLISHED' || story.status === 'ARCHIVED') {
 			throw new EditorialValidationError('Published or archived story content is locked.');
 		}
+		const categoryId = requiredText(input.categoryId, 'Category', 100);
+		if (!(await this.repository.categoryExists(categoryId))) {
+			throw new EditorialValidationError('Category is invalid.');
+		}
 		const updated = await this.repository.updateStory({
 			id,
 			slug: storySlug(input.slug),
@@ -284,7 +296,7 @@ export class EditorialService {
 			deck: requiredText(input.deck, 'Deck', 1_000),
 			bodyMarkdown: requiredText(input.bodyMarkdown, 'Body', 50_000),
 			editionDate: editionDate(input.editionDate),
-			categoryId: requiredText(input.categoryId, 'Category', 100),
+			categoryId,
 			socialExcerpt: requiredText(input.socialExcerpt, 'Social excerpt', 500),
 			tags: tagList(input.tags),
 			actorEmail: identityEmail(identity),

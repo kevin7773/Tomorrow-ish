@@ -2,7 +2,7 @@ import type { APIRoute } from 'astro';
 import { getStoryRepository } from '../data/runtime-story-repository';
 import { absoluteSiteUrl } from '../lib/metadata';
 
-const staticPaths = ['/', '/latest', '/archive', '/about', '/privacy', '/terms'];
+const staticPaths = ['/', '/latest', '/archive', '/categories', '/about', '/privacy', '/terms'];
 
 interface SitemapEntry {
 	location: string;
@@ -11,9 +11,13 @@ interface SitemapEntry {
 
 export const GET: APIRoute = async () => {
 	const repository = getStoryRepository();
-	const stories = await repository.listPublished({ limit: 100 });
+	const [stories, categories] = await Promise.all([
+		repository.listPublished({ limit: 100 }),
+		repository.listCategories(),
+	]);
 	const urls: SitemapEntry[] = [
 		...staticPaths.map((path) => ({ location: absoluteSiteUrl(path) })),
+		...categories.map((category) => ({ location: absoluteSiteUrl(`/category/${category.slug}`) })),
 		...stories.map((story) => ({
 			location: absoluteSiteUrl(`/story/${story.slug}`),
 			lastModified: story.publishedAt,

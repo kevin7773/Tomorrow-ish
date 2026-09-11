@@ -435,6 +435,29 @@ main {
 	border-top: 4px double var(--ink);
 }
 
+.category-directory {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+	gap: 1px;
+	background: var(--rule);
+	list-style: none;
+	margin: 0 0 clamp(3rem, 7vw, 6rem);
+	padding: 1px;
+}
+
+.category-directory li {
+	background: var(--paper);
+}
+
+.category-directory a {
+	display: block;
+	font-family: var(--display);
+	font-size: clamp(1.5rem, 3vw, 2.25rem);
+	font-weight: 700;
+	padding: clamp(1.25rem, 3vw, 2rem);
+	text-decoration: none;
+}
+
 .archive-edition {
 	display: grid;
 	grid-template-columns: minmax(13rem, 0.38fr) minmax(0, 1fr);

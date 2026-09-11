@@ -32,7 +32,7 @@ Load the clearly fictional sample edition:
 npm run db:seed:local
 ```
 
-The seed also adds `Florida, Probably` as ordinary category reference data. Production reference data remains a separate reviewed action.
+The `categories` table is the authoritative editorial taxonomy; forms and public section pages load it through repository queries. The seed includes all current categories for local development, including Sports, Weather, and Community. Production reference data remains a separate reviewed migration action.
 
 Both commands operate on local state. The seed script is idempotent and does not run as part of a production deployment.
 
@@ -129,6 +129,8 @@ Migration `0003_governed_generation.sql` is not applied by deployment. Before an
 The [M3 provider runbook](./docs/m3-provider-review.md) records the prepared OpenAI adapter, request contract, budget, secret command, and separately reviewed enablement steps. Production generation remains disabled, and `OPENAI_API_KEY` must never be committed.
 
 Migration `0005_governed_article_images.sql`, the `tomorrow-ish-images` R2 bucket, the `REPLICATE_API_TOKEN` secret, and `IMAGE_GENERATION_ENABLED=true` are separate manual production steps. See the [article-image generation runbook](./docs/article-image-generation.md). No migration, bucket creation, secret creation, paid request, deployment, or production enablement is automatic.
+
+Migration `0006_add_editorial_categories.sql` adds Sports (`sports`), Weather (`weather`), and Community (`community`) as ordinary category reference rows. It is additive and idempotent, preserves every existing category and story relationship, and must be applied through the same separately reviewed production migration process.
 
 When configured, connect the existing GitHub repository to **Cloudflare Workers Builds**:
 

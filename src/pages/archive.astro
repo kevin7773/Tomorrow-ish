@@ -32,7 +32,7 @@ const editions = groupStoriesByEdition(await repository.listPublished({ limit: 1
 					<ul>
 						{edition.stories.map((story) => (
 							<li>
-								<span class="archive-edition__category">{story.category.name}</span>
+								<a class="archive-edition__category" href={`/category/${story.category.slug}`}>{story.category.name}</a>
 								<a href={`/story/${story.slug}`}>{story.headline}</a>
 								<p>{story.deck}</p>
 							</li>

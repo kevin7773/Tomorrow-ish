@@ -327,6 +327,12 @@ export class D1EditorialRepository implements EditorialRepository {
 		return result.results;
 	}
 
+	async categoryExists(id: string): Promise<boolean> {
+		return Boolean(
+			await this.db.prepare('SELECT 1 AS found FROM categories WHERE id = ? LIMIT 1').bind(id).first(),
+		);
+	}
+
 	async listIntakes(limit = 50): Promise<SourceIntake[]> {
 		const result = await this.db
 			.prepare('SELECT * FROM source_intakes ORDER BY updated_at DESC LIMIT ?')

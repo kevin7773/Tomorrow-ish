@@ -29,7 +29,7 @@ function accepted(suitability: NormalizedEventVersion['proposedSuitability'] = '
 	};
 }
 
-function repository(version = accepted(), previousRuns = 0) {
+function repository(version = accepted(), previousRuns = 0, validCategoryIds: ReadonlySet<string> | null = null) {
 	let prior: ModelRun | null = null;
 	const createdNormalization = vi.fn(async (record) => {
 		prior = { ...record.run, normalizedEventVersionId: record.versionId } as ModelRun;
@@ -44,7 +44,8 @@ function repository(version = accepted(), previousRuns = 0) {
 		findAcceptedNormalizedVersion: vi.fn(async () => version), findModelRun: vi.fn(async () => null),
 		findModelRunByIdempotencyKey: vi.fn(async () => prior), createModelRun: vi.fn(async () => undefined),
 		sumModelRunCostSince: vi.fn(async () => 0),
-		countSuccessfulGenerationRuns: vi.fn(async () => previousRuns), categoryExists: vi.fn(async () => true),
+		countSuccessfulGenerationRuns: vi.fn(async () => previousRuns),
+		categoryExists: vi.fn(async (id: string) => validCategoryIds ? validCategoryIds.has(id) : true),
 		createNormalization: createdNormalization, createEditorRevision: vi.fn(async () => undefined),
 		reviewNormalization: vi.fn(async () => true), createGeneratedCandidates: createdCandidates,
 		supersedeNormalization: vi.fn(async () => true),
@@ -210,6 +211,35 @@ describe('generation authority', () => {
 		expect(record.run.candidateCount).toBe(5);
 		expect(record.run.estimatedCostMicrousd).toBe(11);
 		expect(record.run.status).toBe('SUCCEEDED');
+	});
+
+	it.each(['cat-sports', 'cat-weather', 'cat-community'])('persists generated drafts in the %s category', async (categoryId) => {
+		const { repo, createdCandidates } = repository(accepted(), 0, new Set([categoryId]));
+		const provider = new FakeModelProvider();
+		const service = new GenerationService(repo, provider, {
+			createId: (() => { let number = 0; return () => `${categoryId}-${++number}`; })(),
+		});
+		await service.generateCandidates(identity, {
+			intakeId: intake.id,
+			normalizedEventVersionId: 'version-1',
+			categoryId,
+			idempotencyKey: `generate-${categoryId}`,
+		});
+		expect(createdCandidates).toHaveBeenCalledWith(expect.objectContaining({ categoryId }));
+	});
+
+	it('rejects an unknown category before candidate provider invocation', async () => {
+		const { repo, createdCandidates } = repository(accepted(), 0, new Set(['cat-sports']));
+		const provider = new FakeModelProvider();
+		const invoke = vi.spyOn(provider, 'generateCandidates');
+		await expect(new GenerationService(repo, provider).generateCandidates(identity, {
+			intakeId: intake.id,
+			normalizedEventVersionId: 'version-1',
+			categoryId: 'cat-unknown',
+			idempotencyKey: 'unknown-category',
+		})).rejects.toThrow('Category is invalid');
+		expect(invoke).not.toHaveBeenCalled();
+		expect(createdCandidates).not.toHaveBeenCalled();
 	});
 
 	it('records candidate timeout after two longer-timeout attempts without persisting candidates', async () => {

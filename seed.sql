@@ -4,7 +4,10 @@ INSERT OR IGNORE INTO categories (id, slug, name, created_at) VALUES
     ('cat-civic-life', 'civic-life', 'Civic Life', '2026-09-10T12:00:00Z'),
     ('cat-science', 'science', 'Science', '2026-09-10T12:00:00Z'),
     ('cat-business', 'business', 'Business', '2026-09-10T12:00:00Z'),
-    ('cat-florida-probably', 'florida-probably', 'Florida, Probably', '2026-09-10T12:00:00Z');
+    ('cat-florida-probably', 'florida-probably', 'Florida, Probably', '2026-09-10T12:00:00Z'),
+    ('cat-sports', 'sports', 'Sports', '2026-09-11T17:00:00Z'),
+    ('cat-weather', 'weather', 'Weather', '2026-09-11T17:00:00Z'),
+    ('cat-community', 'community', 'Community', '2026-09-11T17:00:00Z');
 
 INSERT OR IGNORE INTO stories (
     id,

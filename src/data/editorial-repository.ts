@@ -151,6 +151,7 @@ export interface PublishApprovedStoryRecord {
 export interface EditorialRepository {
 	getDashboardCounts(): Promise<EditorialDashboardCounts>;
 	listCategories(): Promise<StoryCategory[]>;
+	categoryExists(id: string): Promise<boolean>;
 	listIntakes(limit?: number): Promise<SourceIntake[]>;
 	findIntakeById(id: string): Promise<SourceIntake | null>;
 	createIntake(record: CreateIntakeRecord): Promise<void>;

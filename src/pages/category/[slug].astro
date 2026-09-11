@@ -1,0 +1,41 @@
+---
+import EmptyEdition from '../../components/EmptyEdition.astro';
+import StoryCard from '../../components/StoryCard.astro';
+import { getStoryRepository } from '../../data/runtime-story-repository';
+import SiteLayout from '../../layouts/SiteLayout.astro';
+
+const slug = Astro.params.slug ?? '';
+const repository = getStoryRepository();
+const category = await repository.findCategoryBySlug(slug);
+const stories = category
+	? await repository.listPublished({ categorySlug: category.slug, limit: 100 })
+	: [];
+
+if (!category) Astro.response.status = 404;
+---
+
+<SiteLayout
+	title={category?.name ?? 'Section not found'}
+	description={category ? `Published fictional ${category.name} stories from Tomorrow-ish.` : 'This Tomorrow-ish section does not exist.'}
+	canonicalPath={category ? `/category/${category.slug}` : '/404'}
+	noindex={!category}
+>
+	{category ? (
+		<>
+			<header class="page-header">
+				<p class="section-kicker">Tomorrow-ish section</p>
+				<h1>{category.name}</h1>
+				<p>Published dispatches from the {category.name} desk.</p>
+			</header>
+			{stories.length ? (
+				<section class="story-list" aria-label={`Published ${category.name} stories`}>
+					{stories.map((story) => <StoryCard story={story} />)}
+				</section>
+			) : (
+				<EmptyEdition title={`No ${category.name} stories have arrived from tomorrow yet.`} />
+			)}
+		</>
+	) : (
+		<EmptyEdition title="That section has not been invented." />
+	)}
+</SiteLayout>

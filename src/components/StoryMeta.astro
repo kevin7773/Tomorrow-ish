@@ -3,14 +3,15 @@ import { formatEditionDate } from '../lib/dates';
 
 interface Props {
 	category: string;
+	categorySlug: string;
 	editionDate: string;
 }
 
-const { category, editionDate } = Astro.props;
+const { category, categorySlug, editionDate } = Astro.props;
 ---
 
 <p class="story-meta">
-	<span>{category}</span>
+	<a href={`/category/${categorySlug}`}>{category}</a>
 	<span aria-hidden="true">•</span>
 	<time datetime={editionDate}>{formatEditionDate(editionDate)} edition</time>
 </p>

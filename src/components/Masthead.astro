@@ -3,9 +3,14 @@ const primaryLinks = [
 	{ href: '/', label: 'Today' },
 	{ href: '/latest', label: 'Latest' },
 	{ href: '/archive', label: 'Archive' },
+	{ href: '/categories', label: 'Sections' },
 	{ href: '/about', label: 'About' },
 ];
 const pathname = Astro.url.pathname;
+
+function isCurrent(href: string): boolean {
+	return pathname === href || (href === '/categories' && pathname.startsWith('/category/'));
+}
 ---
 
 <header class="masthead">
@@ -14,7 +19,7 @@ const pathname = Astro.url.pathname;
 	<p class="masthead__tagline">Tomorrow's news. Approximately.</p>
 	<nav class="masthead__nav" aria-label="Primary navigation">
 		{primaryLinks.map((link) => (
-			<a href={link.href} aria-current={pathname === link.href ? 'page' : undefined}>{link.label}</a>
+			<a href={link.href} aria-current={isCurrent(link.href) ? 'page' : undefined}>{link.label}</a>
 		))}
 	</nav>
 </header>

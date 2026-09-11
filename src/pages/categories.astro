@@ -1,0 +1,26 @@
+---
+import { getStoryRepository } from '../data/runtime-story-repository';
+import SiteLayout from '../layouts/SiteLayout.astro';
+
+const categories = await getStoryRepository().listCategories();
+---
+
+<SiteLayout
+	title="Sections"
+	description="Browse every Tomorrow-ish editorial section."
+	canonicalPath="/categories"
+>
+	<header class="page-header">
+		<p class="section-kicker">The departments of tomorrow</p>
+		<h1>Sections</h1>
+		<p>Every fictional dispatch, organized by the part of reality it nearly resembles.</p>
+	</header>
+
+	<nav aria-label="Editorial sections">
+		<ul class="category-directory">
+			{categories.map((category) => (
+				<li><a href={`/category/${category.slug}`}>{category.name}</a></li>
+			))}
+		</ul>
+	</nav>
+</SiteLayout>
