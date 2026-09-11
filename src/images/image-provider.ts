@@ -18,7 +18,7 @@ export interface GeneratedImage {
 export interface SubmittedImageGeneration {
 	provider: string;
 	model: string;
-	providerRequestId: string;
+	providerRequestId: string | null;
 	metadata: Record<string, unknown>;
 }
 

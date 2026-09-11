@@ -60,7 +60,19 @@ export class AsyncArticleImageService {
 			receivedAt: this.now(),
 		});
 		if (recorded === 'conflict') return 'conflict';
-		if (!image.providerRequestId) return 'deferred';
+		if (!image.providerRequestId) {
+			const attached = await this.imageRepository.attachSubmission({
+				imageId,
+				providerRequestId: callback.providerRequestId,
+				metadata: { ...image.metadata, providerRequestIdSource: 'webhook' },
+				submittedAt: this.now(),
+				auditId: this.createId(),
+			});
+			if (!attached) {
+				const current = await this.imageRepository.findById(imageId);
+				if (current?.providerRequestId !== callback.providerRequestId) return 'conflict';
+			}
+		}
 		return this.processStoredWebhook(imageId);
 	}
 

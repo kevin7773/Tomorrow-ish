@@ -4,7 +4,7 @@ import { CloudflareGatewayImageProvider } from '../src/images/cloudflare-gateway
 const ACCOUNT_ID = '1234567890abcdef1234567890abcdef';
 
 describe('Cloudflare AI Gateway asynchronous image provider', () => {
-	it('submits exactly one background GPT Image 2 request and returns its run ID', async () => {
+	it('submits exactly one background GPT Image 2 request and preserves an optional run ID', async () => {
 		const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
 			success: true,
 			result: { id: 'run-123', state: 'Pending' },
@@ -21,6 +21,7 @@ describe('Cloudflare AI Gateway asynchronous image provider', () => {
 			provider: 'cloudflare-ai-gateway',
 			model: 'openai/gpt-image-2',
 			providerRequestId: 'run-123',
+			metadata: { submissionAccepted: true, responseEnvelopeParsed: true },
 		});
 
 		expect(fetcher).toHaveBeenCalledOnce();
@@ -99,14 +100,63 @@ describe('Cloudflare AI Gateway asynchronous image provider', () => {
 		expect(fetcher).toHaveBeenCalledOnce();
 	});
 
-	it('rejects missing run IDs and invalid configuration', async () => {
+	it('accepts a successful background response without an immediate run ID', async () => {
 		const provider = new CloudflareGatewayImageProvider(
 			ACCOUNT_ID, 'cloudflare-token', 'tomorrow-ish', 'openai/gpt-image-2',
 			vi.fn().mockResolvedValue(Response.json({ success: true, result: { state: 'Pending' } })),
 		);
 		await expect(provider.submit({
 			prompt: 'Safe prompt', aspectRatio: '16:9', webhookUrl: 'https://tomorrow-ish.news/callback',
-		})).rejects.toMatchObject({ failureClassification: 'PROVIDER_INVALID_OUTPUT' });
+		})).resolves.toMatchObject({
+			providerRequestId: null,
+			metadata: { submissionState: 'Pending', submissionAccepted: true, responseEnvelopeParsed: true },
+		});
+	});
+
+	it('treats an unreadable 2xx response as accepted because the request may already be running', async () => {
+		const provider = new CloudflareGatewayImageProvider(
+			ACCOUNT_ID, 'cloudflare-token', 'tomorrow-ish', 'openai/gpt-image-2',
+			vi.fn().mockResolvedValue(new Response('not-json', { status: 202 })),
+		);
+		await expect(provider.submit({
+			prompt: 'Safe prompt', aspectRatio: '16:9', webhookUrl: 'https://tomorrow-ish.news/callback',
+		})).resolves.toMatchObject({
+			providerRequestId: null,
+			metadata: { submissionAccepted: true, responseEnvelopeParsed: false },
+		});
+	});
+
+	it('rejects a Cloudflare failure envelope even when its HTTP status is 2xx', async () => {
+		const provider = new CloudflareGatewayImageProvider(
+			ACCOUNT_ID, 'cloudflare-token', 'tomorrow-ish', 'openai/gpt-image-2',
+			vi.fn().mockResolvedValue(new Response(JSON.stringify({
+				success: false,
+				errors: [{ code: 7003, message: 'sensitive detail' }],
+				result: null,
+			}), { status: 200, headers: { 'cf-ray': 'ray-envelope' } })),
+		);
+		await expect(provider.submit({
+			prompt: 'Safe prompt', aspectRatio: '16:9', webhookUrl: 'https://tomorrow-ish.news/callback',
+		})).rejects.toMatchObject({
+			failureClassification: 'PROVIDER_REQUEST',
+			metadata: { httpStatus: 200, cloudflareRequestId: 'ray-envelope', errorCode: '7003' },
+		});
+	});
+
+	it('rejects a 2xx envelope containing errors even if success is true', async () => {
+		const provider = new CloudflareGatewayImageProvider(
+			ACCOUNT_ID, 'cloudflare-token', 'tomorrow-ish', 'openai/gpt-image-2',
+			vi.fn().mockResolvedValue(Response.json({ success: true, errors: [{ code: 'billing_required' }] })),
+		);
+		await expect(provider.submit({
+			prompt: 'Safe prompt', aspectRatio: '16:9', webhookUrl: 'https://tomorrow-ish.news/callback',
+		})).rejects.toMatchObject({
+			failureClassification: 'PROVIDER_REQUEST',
+			metadata: { httpStatus: 200, errorCode: 'billing_required' },
+		});
+	});
+
+	it('rejects invalid configuration', () => {
 		expect(() => new CloudflareGatewayImageProvider('bad', 'token', 'gateway', 'openai/gpt-image-2'))
 			.toThrow('account configuration');
 	});

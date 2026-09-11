@@ -106,24 +106,29 @@ export class ArticleImageService {
 					webhookUrl,
 				});
 				submittedRequestId = submitted.providerRequestId;
-				const attached = await this.imageRepository.attachSubmission({
-					imageId: id,
-					providerRequestId: submitted.providerRequestId,
-					metadata: submitted.metadata,
-					submittedAt: this.now(),
-					auditId: this.createId(),
-				});
-				if (!attached) {
-					await this.imageRepository.failPending({
+				if (submitted.providerRequestId) {
+					const attached = await this.imageRepository.attachSubmission({
 						imageId: id,
 						providerRequestId: submitted.providerRequestId,
-						metadata: { stage: 'submission-persistence' },
-						errorClassification: 'PROVIDER_REQUEST',
-						errorMessage: 'The accepted provider request could not be attached locally.',
-						failedAt: this.now(),
+						metadata: submitted.metadata,
+						submittedAt: this.now(),
 						auditId: this.createId(),
 					});
-					throw new EditorialValidationError('The image submission could not be attached locally.', 'conflict');
+					if (!attached) {
+						const raced = await this.imageRepository.findById(id);
+						if (raced?.providerRequestId !== submitted.providerRequestId) {
+							await this.imageRepository.failPending({
+								imageId: id,
+								providerRequestId: submitted.providerRequestId,
+								metadata: { stage: 'submission-persistence' },
+								errorClassification: 'PROVIDER_REQUEST',
+								errorMessage: 'The accepted provider request could not be attached locally.',
+								failedAt: this.now(),
+								auditId: this.createId(),
+							});
+							throw new EditorialValidationError('The image submission could not be attached locally.', 'conflict');
+						}
+					}
 				}
 				await this.processStoredWebhook?.(id);
 				const current = await this.imageRepository.findById(id);

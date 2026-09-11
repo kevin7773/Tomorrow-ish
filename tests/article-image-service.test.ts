@@ -205,6 +205,43 @@ describe('governed article image service', () => {
 		expect(assetStore.put).not.toHaveBeenCalled();
 	});
 
+	it('keeps an accepted background submission pending when no run ID is returned initially', async () => {
+		const editorialRepository = {
+			findEditorialStoryById: vi.fn().mockResolvedValue(story()),
+		} as unknown as EditorialRepository;
+		const pending = { ...image('PENDING'), providerRequestId: null };
+		const imageRepository = {
+			findById: vi.fn().mockResolvedValue(pending),
+			hasPendingForStory: vi.fn().mockResolvedValue(false),
+			recordPending: vi.fn().mockResolvedValue(true),
+			attachSubmission: vi.fn(),
+			failPending: vi.fn().mockResolvedValue(true),
+		} as unknown as ArticleImageRepository;
+		const provider: ImageProvider = {
+			provider: 'cloudflare-ai-gateway', model: 'openai/gpt-image-2', lifecycle: 'asynchronous',
+			submit: vi.fn().mockResolvedValue({
+				provider: 'cloudflare-ai-gateway', model: 'openai/gpt-image-2', providerRequestId: null,
+				metadata: { submissionAccepted: true },
+			}),
+		};
+		const processStoredWebhook = vi.fn().mockResolvedValue(undefined);
+		const service = new ArticleImageService(editorialRepository, imageRepository, provider, {
+			put: vi.fn(), delete: vi.fn(),
+		}, {
+			createId: () => 'image-accepted',
+			createWebhookUrl: vi.fn().mockResolvedValue('https://tomorrow-ish.news/callback?signature=safe'),
+			processStoredWebhook,
+		});
+
+		await expect(service.generate(identity, { storyId: 'story-1' })).resolves.toEqual({
+			imageId: 'image-accepted', status: 'PENDING',
+		});
+		expect(imageRepository.attachSubmission).not.toHaveBeenCalled();
+		expect(imageRepository.failPending).not.toHaveBeenCalled();
+		expect(processStoredWebhook).toHaveBeenCalledWith('image-accepted');
+		expect(provider.submit).toHaveBeenCalledOnce();
+	});
+
 	it('blocks another paid submission while the story has a pending request', async () => {
 		const state = setup();
 		vi.mocked(state.imageRepository.hasPendingForStory).mockResolvedValueOnce(true);

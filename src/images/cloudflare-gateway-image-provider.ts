@@ -27,6 +27,10 @@ function safeErrorCode(value: unknown): string | null {
 	return safeIdentifier(value);
 }
 
+function firstEnvelopeError(envelope: Record<string, unknown>): Record<string, unknown> | null {
+	return Array.isArray(envelope.errors) ? objectValue(envelope.errors[0]) : null;
+}
+
 function classifyFetchException(error: unknown): string {
 	const name = error && typeof error === 'object' && 'name' in error ? String(error.name) : '';
 	const message = error && typeof error === 'object' && 'message' in error ? String(error.message) : '';
@@ -153,26 +157,39 @@ export class CloudflareGatewayImageProvider implements AsynchronousImageProvider
 		let envelope: Record<string, unknown> | null = null;
 		try {
 			const raw = await response.text();
-			if (raw.length === 0 || raw.length > MAX_RESPONSE_CHARACTERS) throw new Error('invalid response size');
-			envelope = objectValue(JSON.parse(raw));
+			if (raw.length > 0 && raw.length <= MAX_RESPONSE_CHARACTERS) {
+				envelope = objectValue(JSON.parse(raw));
+			}
 		} catch {
-			throw new ImageProviderError('Cloudflare returned an invalid submission response.', 'PROVIDER_INVALID_OUTPUT');
+			// A 2xx background submission may already have been accepted. An unreadable or
+			// undocumented response body must not make the request safe to submit again.
 		}
-		if (!envelope) {
-			throw new ImageProviderError('Cloudflare returned an invalid submission response.', 'PROVIDER_INVALID_OUTPUT');
+		const hasErrors = Array.isArray(envelope?.errors) && envelope.errors.length > 0;
+		const firstError = envelope ? firstEnvelopeError(envelope) : null;
+		if (envelope?.success === false || hasErrors) {
+			const errorCode = safeErrorCode(firstError?.code);
+			throw new ImageProviderError(
+				'Cloudflare AI Gateway rejected the image submission.',
+				'PROVIDER_REQUEST',
+				null,
+				{
+					httpStatus: response.status,
+					cloudflareRequestId: safeIdentifier(response.headers.get('cf-ray')),
+					...(errorCode ? { errorCode } : {}),
+				},
+			);
 		}
-		const result = objectValue(envelope.result) ?? envelope;
-		const providerRequestId = safeIdentifier(result.id ?? envelope.id);
-		const state = safeIdentifier(result.state ?? envelope.state);
-		if (!providerRequestId) {
-			throw new ImageProviderError('Cloudflare returned no background run identifier.', 'PROVIDER_INVALID_OUTPUT');
-		}
+		const result = objectValue(envelope?.result) ?? envelope;
+		const providerRequestId = safeIdentifier(result?.id ?? envelope?.id);
+		const state = safeIdentifier(result?.state ?? envelope?.state);
 		return {
 			provider: this.provider,
 			model: this.model,
 			providerRequestId,
 			metadata: {
 				...(state ? { submissionState: state } : {}),
+				submissionAccepted: true,
+				responseEnvelopeParsed: envelope !== null,
 				cloudflareRequestId: safeIdentifier(response.headers.get('cf-ray')),
 			},
 		};

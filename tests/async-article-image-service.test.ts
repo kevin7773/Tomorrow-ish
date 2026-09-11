@@ -55,6 +55,11 @@ function setup(initial = pendingImage()) {
 		findById: vi.fn(async () => image),
 		findByProviderRequestId: vi.fn(async (_provider: string, requestId: string) =>
 			image?.providerRequestId === requestId ? image : null),
+		attachSubmission: vi.fn(async (record) => {
+			if (!image || image.status !== 'PENDING' || image.providerRequestId !== null) return false;
+			image = { ...image, providerRequestId: record.providerRequestId, metadata: record.metadata };
+			return true;
+		}),
 		recordWebhook: vi.fn(async (record: Omit<ImageWebhookInboxRecord, 'processingState'>) => {
 			if (inbox) {
 				return inbox.providerRequestId === record.providerRequestId && inbox.outcome === record.outcome
@@ -172,12 +177,14 @@ describe('asynchronous article image completion', () => {
 		expect(mismatch.repository.recordWebhook).not.toHaveBeenCalled();
 	});
 
-	it('persists an early callback until the provider request identifier is attached', async () => {
+	it('attaches a later authenticated webhook run ID and processes the pending image', async () => {
 		const state = setup(pendingImage({ providerRequestId: null }));
-		await expect(state.service.acceptWebhook('image-1', successCallback())).resolves.toBe('deferred');
-		expect(state.fetcher).not.toHaveBeenCalled();
-		state.setImage(pendingImage());
-		await expect(state.service.processStoredWebhook('image-1')).resolves.toBe('processed');
+		await expect(state.service.acceptWebhook('image-1', successCallback())).resolves.toBe('processed');
+		expect(state.repository.attachSubmission).toHaveBeenCalledWith(expect.objectContaining({
+			imageId: 'image-1', providerRequestId: 'run-1',
+			metadata: expect.objectContaining({ providerRequestIdSource: 'webhook' }),
+		}));
+		expect(state.getImage()?.providerRequestId).toBe('run-1');
 		expect(state.assetStore.put).toHaveBeenCalledOnce();
 	});
 
