@@ -12,7 +12,10 @@
     "MODEL_PROVIDER": "openai",
     "MODEL_NAME": "gpt-5.6-terra",
     "MODEL_GENERATION_ENABLED": "true",
-    "MODEL_DAILY_BUDGET_MICRO_USD": "1000000"
+    "MODEL_DAILY_BUDGET_MICRO_USD": "1000000",
+    "IMAGE_PROVIDER": "replicate",
+    "IMAGE_MODEL": "black-forest-labs/flux-2-pro",
+    "IMAGE_GENERATION_ENABLED": "false"
   },
   "routes": [
     {
@@ -30,6 +33,12 @@
       "binding": "DB",
       "database_name": "tomorrow-ish-production",
       "database_id": "96f4a86d-1d60-47b1-a240-86552d001191"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "IMAGE_ASSETS",
+      "bucket_name": "tomorrow-ish-images"
     }
   ],
   "observability": {

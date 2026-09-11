@@ -1,6 +1,7 @@
 import type { APIContext } from 'astro';
 import type { EditorialIdentity } from '../domain/editorial';
 import { ModelProviderError } from '../ai/model-provider';
+import { ImageProviderError } from '../images/image-provider';
 import { EditorialValidationError } from '../services/validation';
 
 export function formRecord(form: FormData): Record<string, unknown> {
@@ -34,6 +35,14 @@ export function redirectWithResult(path: string, key: 'message' | 'error', value
 }
 
 export function actionErrorResponse(error: unknown, returnPath: string): Response {
+	if (error instanceof ImageProviderError) {
+		const code = ['PROVIDER_CONFIGURATION', 'PROVIDER_DISABLED'].includes(error.failureClassification)
+			? 'image-disabled'
+			: ['PROVIDER_AUTHENTICATION', 'PROVIDER_REQUEST'].includes(error.failureClassification)
+				? 'image-provider-rejected'
+				: 'image-provider-unavailable';
+		return redirectWithResult(returnPath, 'error', code);
+	}
 	if (error instanceof ModelProviderError) {
 		const code = ['PROVIDER_CONFIGURATION', 'PROVIDER_DISABLED'].includes(error.failureClassification)
 			? 'model-disabled'

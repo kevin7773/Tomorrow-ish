@@ -15,6 +15,7 @@ function story(id: string, editionDate: string): Story {
 		status: 'PUBLISHED',
 		socialExcerpt: 'Fictional sample.',
 		ogImageKey: null,
+		imageAltText: null,
 		tags: [],
 		sources: [],
 	};

@@ -26,6 +26,7 @@ export interface Story {
 	status: PublicationStatus;
 	socialExcerpt: string;
 	ogImageKey: string | null;
+	imageAltText: string | null;
 	tags: string[];
 	sources: StorySource[];
 }

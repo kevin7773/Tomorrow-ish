@@ -33,6 +33,7 @@ const articleJsonLd = story
 		},
 		isAccessibleForFree: true,
 		genre: 'Satire',
+		...(story.ogImageKey ? { image: absoluteSiteUrl(`/media/${story.ogImageKey}`) } : {}),
 	})
 	: null;
 ---
@@ -52,6 +53,7 @@ const articleJsonLd = story
 		<>
 			<script is:inline type="application/ld+json" set:html={articleJsonLd} />
 			<article>
+				{story.ogImageKey && story.imageAltText && <img class="article-hero" src={`/media/${story.ogImageKey}`} alt={story.imageAltText} />}
 				<header class="article-header">
 					<StoryMeta category={story.category.name} editionDate={story.editionDate} />
 					<h1>{story.headline}</h1>

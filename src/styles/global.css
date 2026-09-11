@@ -224,6 +224,29 @@ main {
 	font-size: clamp(1.7rem, 3.5vw, 2.65rem);
 }
 
+.story-card__image {
+	display: block;
+	margin-bottom: 1.25rem;
+	overflow: hidden;
+}
+
+.story-card__image img,
+.article-hero,
+.editorial-image-record img {
+	display: block;
+	width: 100%;
+	aspect-ratio: 16 / 9;
+	object-fit: cover;
+}
+
+.story-card__image img {
+	transition: transform 180ms ease;
+}
+
+.story-card__image:hover img {
+	transform: scale(1.015);
+}
+
 .story-card--prominent h2 {
 	font-size: clamp(2.8rem, 6.8vw, 6.2rem);
 }
@@ -480,6 +503,11 @@ main {
 	margin-inline: auto;
 	padding: clamp(3.5rem, 9vw, 8rem) 0 clamp(2.5rem, 5vw, 4rem);
 	text-align: center;
+}
+
+.article-hero {
+	border-bottom: 4px double var(--ink);
+	margin-top: clamp(2rem, 5vw, 4rem);
 }
 
 .article-header .story-meta {
@@ -1131,6 +1159,53 @@ main {
 
 .editorial-provenance p:last-child {
 	margin-bottom: 0;
+}
+
+.editorial-image-history {
+	display: grid;
+	gap: 1.5rem;
+}
+
+.editorial-image-record {
+	border: 1px solid var(--rule);
+	padding: 1rem;
+}
+
+.editorial-image-record > header {
+	display: flex;
+	justify-content: space-between;
+	gap: 1rem;
+	margin-bottom: 0.75rem;
+}
+
+.editorial-image-record img {
+	background: var(--surface);
+	margin-bottom: 1rem;
+}
+
+.editorial-image-record details {
+	margin-block: 0.75rem;
+}
+
+.editorial-image-record dl {
+	display: grid;
+	grid-template-columns: minmax(8rem, 0.25fr) minmax(0, 1fr);
+	gap: 0.5rem 1rem;
+	font-size: 0.875rem;
+}
+
+.editorial-image-record dt {
+	font-weight: 800;
+}
+
+.editorial-image-record dd {
+	margin: 0;
+	overflow-wrap: anywhere;
+}
+
+.editorial-image-actions {
+	display: grid;
+	gap: 0.75rem;
 }
 
 .editorial-audit {

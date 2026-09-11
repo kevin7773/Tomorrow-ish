@@ -46,6 +46,8 @@ Astro runs against Cloudflare's local Workers runtime and the local `DB` binding
 
 The private editorial workspace is available at `http://localhost:4321/editorial`. Localhost uses a fixed development-only editor identity; non-local requests always require a valid Cloudflare Access assertion and complete Access configuration.
 
+Approved stories also expose a governed article-image review stage. The Replicate adapter, durable R2 copy, append-only D1 history, and explicit approval controls are documented in the [article-image generation runbook](./docs/article-image-generation.md). Image generation is disabled by default and tests use injected mocks; local development makes no paid image requests.
+
 M3 adds a governed, manual normalization and candidate-generation path. In local development, the normalization and generation screens use a deterministic fake provider that requires no network access, API key, or new Cloudflare binding:
 
 ```text
@@ -85,9 +87,9 @@ The project is pinned to Astro 7.3.2 and the matching official Cloudflare adapte
 - `src/data/` owns the repository interface and D1 implementation.
 - Routes and components depend on the repository boundary rather than issuing D1 queries directly.
 
-M2 adds protected source intake, normalized source references, human-reviewed satire candidates, immutable candidate-to-story provenance, and an append-only audit log. M3 adds immutable normalized-event versions, assertion-level source provenance, model-run cost/usage records, and idempotent DRAFT-candidate generation behind a narrow repository boundary. Candidate conversion creates only a `DRAFT` story. `publishStory()` is the sole operation that can assign `PUBLISHED`, and it atomically records the authenticated editor and publication time.
+M2 adds protected source intake, normalized source references, human-reviewed satire candidates, immutable candidate-to-story provenance, and an append-only audit log. M3 adds immutable normalized-event versions, assertion-level source provenance, model-run cost/usage records, and idempotent DRAFT-candidate generation behind a narrow repository boundary. The article-image subsystem adds immutable prompt/provider/asset provenance and explicit image review without gaining publication authority. Candidate conversion creates only a `DRAFT` story. `publishStory()` is the sole operation that can assign `PUBLISHED`, and it atomically records the authenticated editor and publication time.
 
-Automated discovery/ingestion, scraping, production model enablement, full-article generation, R2, scheduled triggers, queues, workflows, social automation, advertising vendors, analytics vendors, public accounts, comments, and submissions remain intentionally out of scope.
+Automated discovery/ingestion, scraping, production model enablement, full-article generation, scheduled triggers, queues, workflows, social automation, advertising vendors, analytics vendors, public accounts, comments, and submissions remain intentionally out of scope. R2 is used only for reviewed article-image assets.
 
 ## Production D1 migrations
 
@@ -125,6 +127,8 @@ The [M2 production onboarding runbook](./docs/m2-production-onboarding.md) recor
 Migration `0003_governed_generation.sql` is not applied by deployment. Before any future M3 production rollout, review the migration, confirm `0001` and `0002` are already applied and `0003` is the only pending migration, back up/verify production data, then use the same explicit `wrangler d1 migrations apply DB --remote` operator action. Do not configure or deploy a production model adapter as part of that schema action.
 
 The [M3 provider runbook](./docs/m3-provider-review.md) records the prepared OpenAI adapter, request contract, budget, secret command, and separately reviewed enablement steps. Production generation remains disabled, and `OPENAI_API_KEY` must never be committed.
+
+Migration `0005_governed_article_images.sql`, the `tomorrow-ish-images` R2 bucket, the `REPLICATE_API_TOKEN` secret, and `IMAGE_GENERATION_ENABLED=true` are separate manual production steps. See the [article-image generation runbook](./docs/article-image-generation.md). No migration, bucket creation, secret creation, paid request, deployment, or production enablement is automatic.
 
 When configured, connect the existing GitHub repository to **Cloudflare Workers Builds**:
 

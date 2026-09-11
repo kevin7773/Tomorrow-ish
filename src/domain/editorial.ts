@@ -101,6 +101,7 @@ export interface EditorialStory {
 	status: PublicationStatus;
 	socialExcerpt: string;
 	tags: string[];
+	ogImageKey: string | null;
 	originCandidateId: string | null;
 	updatedAt: string;
 }

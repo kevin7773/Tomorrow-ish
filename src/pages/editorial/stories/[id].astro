@@ -1,15 +1,17 @@
 ---
 import EditorialMessage from '../../../components/EditorialMessage.astro';
 import { getEditorialRepository } from '../../../data/runtime-editorial-repository';
+import { getArticleImageRepository } from '../../../data/runtime-article-image-repository';
 import { PUBLICATION_STATUSES, canTransitionPublication } from '../../../domain/publication-status';
 import EditorialLayout from '../../../layouts/EditorialLayout.astro';
 import { PUBLISH_CONFIRMATION } from '../../../services/publication-service';
 
 const id = Astro.params.id ?? '';
 const repository = getEditorialRepository();
-const [story, categories] = await Promise.all([
+const [story, categories, images] = await Promise.all([
 	repository.findEditorialStoryById(id),
 	repository.listCategories(),
+	getArticleImageRepository().listByStory(id),
 ]);
 if (!story) return Astro.redirect('/editorial/stories?error=not-found');
 const auditEntries = await repository.listAuditEntries('STORY', story.id);
@@ -65,6 +67,75 @@ const contentLocked = story.status === 'PUBLISHED' || story.status === 'ARCHIVED
 						<input type="hidden" name="returnPath" value={returnPath} />
 						<button class="editorial-button editorial-button--quiet" type="submit">Move to {status}</button>
 					</form>
+				))}
+			</div>
+		</section>
+	)}
+
+	{story.status === 'APPROVED' && (
+		<section class="editorial-panel" aria-labelledby="image-generation-heading">
+			<h2 id="image-generation-heading">Article image</h2>
+			<p>Generation is a paid, manual action. Each result starts unapproved and cannot become the public hero image until an editor approves it with alt text.</p>
+			<form method="post" action="/editorial/actions/images">
+				<input type="hidden" name="csrf_token" value={csrfToken} />
+				<input type="hidden" name="action" value="generate" />
+				<input type="hidden" name="storyId" value={story.id} />
+				<input type="hidden" name="returnPath" value={returnPath} />
+				<button class="editorial-button" type="submit">Generate 16:9 image</button>
+			</form>
+		</section>
+	)}
+
+	{images.length > 0 && (
+		<section class="editorial-panel" aria-labelledby="image-history-heading">
+			<h2 id="image-history-heading">Image review and history</h2>
+			<div class="editorial-image-history">
+				{images.map((image) => (
+					<article class="editorial-image-record">
+						<header><strong>{image.status}{story.ogImageKey === image.assetKey ? ' · CURRENT HERO' : ''}</strong><span>{new Date(image.requestedAt).toLocaleString('en-US')}</span></header>
+						{image.assetKey && <img src={`/editorial/media/${image.assetKey}`} alt={image.altText ?? ''} loading="lazy" />}
+						<details>
+							<summary>Prompt and provenance</summary>
+							<dl>
+								<dt>Provider / model</dt><dd>{image.provider} / {image.model}</dd>
+								<dt>Provider request</dt><dd>{image.providerRequestId ?? 'Not supplied'}</dd>
+								<dt>Aspect ratio</dt><dd>{image.aspectRatio}</dd>
+								<dt>Prompt</dt><dd>{image.prompt}</dd>
+								{image.errorClassification && <><dt>Failure</dt><dd>{image.errorClassification}: {image.errorMessage}</dd></>}
+							</dl>
+						</details>
+						{image.status === 'GENERATED' && story.status === 'APPROVED' && (
+							<div class="editorial-image-actions">
+								<form class="editorial-form" method="post" action="/editorial/actions/images">
+									<input type="hidden" name="csrf_token" value={csrfToken} />
+									<input type="hidden" name="action" value="approve" />
+									<input type="hidden" name="storyId" value={story.id} />
+									<input type="hidden" name="imageId" value={image.id} />
+									<input type="hidden" name="returnPath" value={returnPath} />
+									<label><span>Descriptive alt text</span><textarea name="altText" maxlength="500" required>{image.altText}</textarea></label>
+									<button class="editorial-button" type="submit">Approve and attach image</button>
+								</form>
+								<form method="post" action="/editorial/actions/images">
+									<input type="hidden" name="csrf_token" value={csrfToken} />
+									<input type="hidden" name="action" value="reject" />
+									<input type="hidden" name="storyId" value={story.id} />
+									<input type="hidden" name="imageId" value={image.id} />
+									<input type="hidden" name="returnPath" value={returnPath} />
+									<button class="editorial-button editorial-button--quiet" type="submit">Reject</button>
+								</form>
+							</div>
+						)}
+						{(image.status === 'GENERATED' || image.status === 'REJECTED') && story.status === 'APPROVED' && (
+							<form method="post" action="/editorial/actions/images">
+								<input type="hidden" name="csrf_token" value={csrfToken} />
+								<input type="hidden" name="action" value="regenerate" />
+								<input type="hidden" name="storyId" value={story.id} />
+								<input type="hidden" name="imageId" value={image.id} />
+								<input type="hidden" name="returnPath" value={returnPath} />
+								<button class="editorial-button editorial-button--quiet" type="submit">Request another version</button>
+							</form>
+						)}
+					</article>
 				))}
 			</div>
 		</section>

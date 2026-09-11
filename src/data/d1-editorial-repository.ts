@@ -97,6 +97,7 @@ interface EditorialStoryRow {
 	category_name: string;
 	status: PublicationStatus;
 	social_excerpt: string;
+	og_image_key: string | null;
 	tags_json: string;
 	origin_candidate_id: string | null;
 	updated_at: string;
@@ -158,6 +159,7 @@ const EDITORIAL_STORY_SELECT = `
 		category.name AS category_name,
 		story.status,
 		story.social_excerpt,
+		story.og_image_key,
 		story.tags_json,
 		story.origin_candidate_id,
 		story.updated_at
@@ -266,6 +268,7 @@ function mapEditorialStory(row: EditorialStoryRow): EditorialStory {
 		},
 		status: row.status,
 		socialExcerpt: row.social_excerpt,
+		ogImageKey: row.og_image_key,
 		tags,
 		originCandidateId: row.origin_candidate_id,
 		updatedAt: row.updated_at,

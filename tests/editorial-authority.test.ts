@@ -46,6 +46,7 @@ function story(overrides: Partial<EditorialStory> = {}): EditorialStory {
 		status: 'APPROVED',
 		socialExcerpt: 'A fictional task force convenes.',
 		tags: [],
+		ogImageKey: null,
 		originCandidateId: 'candidate-1',
 		updatedAt: '2026-09-10T12:00:00.000Z',
 		...overrides,

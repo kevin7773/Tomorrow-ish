@@ -16,6 +16,7 @@ interface StoryRow {
 	status: PublicationStatus;
 	social_excerpt: string;
 	og_image_key: string | null;
+	image_alt_text: string | null;
 	tags_json: string;
 }
 
@@ -42,9 +43,12 @@ const STORY_SELECT = `
 		s.status,
 		s.social_excerpt,
 		s.og_image_key,
+		image.alt_text AS image_alt_text,
 		s.tags_json
 	FROM stories AS s
 	JOIN categories AS c ON c.id = s.category_id
+	LEFT JOIN article_images AS image
+		ON image.asset_key = s.og_image_key AND image.status = 'APPROVED'
 `;
 
 function parseTags(value: string): string[] {
@@ -69,6 +73,7 @@ function mapStory(row: StoryRow, sources: StorySource[] = []): Story {
 		status: row.status,
 		socialExcerpt: row.social_excerpt,
 		ogImageKey: row.og_image_key,
+		imageAltText: row.image_alt_text,
 		tags: parseTags(row.tags_json),
 		sources,
 	};

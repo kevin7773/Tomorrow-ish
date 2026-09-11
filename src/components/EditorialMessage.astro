@@ -23,6 +23,10 @@ const messages: Record<string, string> = {
 	'normalization-rejected': 'The normalized-event version was rejected.',
 	'normalization-superseded': 'The accepted normalized-event version was superseded.',
 	'candidates-generated': 'Five model candidates were created as DRAFT records.',
+	'image-generated': 'A new image was generated and stored for editorial review.',
+	'image-approved': 'The image was approved and attached to the story.',
+	'image-rejected': 'The image was rejected. Its provenance remains in history.',
+	'image-regeneration-requested': 'Another image version was requested. Generate when ready; no paid request was made yet.',
 };
 const errors: Record<string, string> = {
 	'invalid-request': 'The request was not valid. Review the fields and try again.',
@@ -34,6 +38,9 @@ const errors: Record<string, string> = {
 	'provider-invalid-output': 'The model provider returned an invalid response. No editorial content was created.',
 	'model-budget': 'The configured model budget does not permit this request. No editorial content was created.',
 	'model-disabled': 'Model generation is disabled or is not configured. No editorial content was created.',
+	'image-disabled': 'Article-image generation is disabled or missing configuration. The story was not changed.',
+	'image-provider-rejected': 'The image provider rejected the request. The story was not changed.',
+	'image-provider-unavailable': 'The image provider did not complete the request. The story was not changed; retry manually when ready.',
 	'operation-failed': 'The editorial operation could not be completed.',
 };
 ---

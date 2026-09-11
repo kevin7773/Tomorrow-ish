@@ -1,0 +1,179 @@
+import type { ArticleImageRepository } from '../data/article-image-repository';
+import type { EditorialRepository } from '../data/editorial-repository';
+import type { EditorialIdentity } from '../domain/editorial';
+import { produceArticleImagePrompt } from '../images/article-image-prompt';
+import type { ImageAssetStore } from '../images/asset-store';
+import { ImageProviderError, type ImageProvider } from '../images/image-provider';
+import { EditorialValidationError, requiredText } from './validation';
+
+export interface ArticleImageServiceDependencies {
+	now?: () => string;
+	createId?: () => string;
+}
+
+function actor(identity: EditorialIdentity | null | undefined): string {
+	if (!identity?.email) throw new EditorialValidationError('An authenticated editor is required.', 'unauthorized');
+	return identity.email.toLowerCase();
+}
+
+async function deleteAssetBestEffort(assetStore: ImageAssetStore, key: string): Promise<boolean> {
+	try {
+		await assetStore.delete(key);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export class ArticleImageService {
+	private readonly now: () => string;
+	private readonly createId: () => string;
+
+	constructor(
+		private readonly editorialRepository: EditorialRepository,
+		private readonly imageRepository: ArticleImageRepository,
+		private readonly provider: ImageProvider,
+		private readonly assetStore: ImageAssetStore,
+		dependencies: ArticleImageServiceDependencies = {},
+	) {
+		this.now = dependencies.now ?? (() => new Date().toISOString());
+		this.createId = dependencies.createId ?? (() => crypto.randomUUID());
+	}
+
+	async generate(identity: EditorialIdentity, input: { storyId: unknown }): Promise<string> {
+		const requestedByEmail = actor(identity);
+		const storyId = requiredText(input.storyId, 'Story ID', 100);
+		const story = await this.editorialRepository.findEditorialStoryById(storyId);
+		if (!story) throw new EditorialValidationError('The story was not found.', 'not-found');
+		if (story.status !== 'APPROVED') {
+			throw new EditorialValidationError('Only an approved story can request paid image generation.');
+		}
+
+		const id = this.createId();
+		const requestedAt = this.now();
+		const prompt = produceArticleImagePrompt(story);
+		let providerRequestId: string | null = null;
+		let providerMetadata: Record<string, unknown> = {};
+		try {
+			const generated = await this.provider.generate({ prompt: prompt.prompt, aspectRatio: '16:9' });
+			providerRequestId = generated.providerRequestId;
+			providerMetadata = generated.metadata;
+			const assetKey = `article-images/${story.id}/${id}.${generated.fileExtension}`;
+			let stored;
+			try {
+				stored = await this.assetStore.put(assetKey, generated.bytes, generated.contentType);
+			} catch {
+				const cleanupSucceeded = await deleteAssetBestEffort(this.assetStore, assetKey);
+				throw new ImageProviderError(
+					'The generated image could not be copied to durable storage.',
+					'ASSET_STORAGE_FAILED',
+					generated.providerRequestId,
+					{ ...generated.metadata, cleanupSucceeded },
+				);
+			}
+			let recorded = false;
+			try {
+				recorded = await this.imageRepository.recordGenerated({
+					id,
+					storyId,
+					provider: generated.provider,
+					model: generated.model,
+					prompt: prompt.prompt,
+					promptVersion: prompt.promptVersion,
+					aspectRatio: '16:9',
+					providerRequestId: generated.providerRequestId,
+					assetKey: stored.key,
+					contentType: stored.contentType,
+					byteSize: stored.byteSize,
+					altText: prompt.proposedAltText,
+					metadata: generated.metadata,
+					requestedByEmail,
+					requestedAt,
+					generatedAt: generated.generatedAt,
+					auditId: this.createId(),
+				});
+			} catch (error) {
+				await deleteAssetBestEffort(this.assetStore, stored.key);
+				throw error;
+			}
+			if (!recorded) {
+				await deleteAssetBestEffort(this.assetStore, stored.key);
+				throw new EditorialValidationError('The story changed; the generated asset was not attached.', 'conflict');
+			}
+			return id;
+		} catch (error) {
+			if (error instanceof ImageProviderError) {
+				await this.imageRepository.recordFailure({
+					id,
+					storyId,
+					provider: this.provider.provider,
+					model: this.provider.model,
+					prompt: prompt.prompt,
+					promptVersion: prompt.promptVersion,
+					aspectRatio: '16:9',
+					providerRequestId: error.providerRequestId ?? providerRequestId,
+					metadata: Object.keys(error.metadata).length ? error.metadata : providerMetadata,
+					errorClassification: error.failureClassification,
+					errorMessage: error.message.slice(0, 500),
+					requestedByEmail,
+					requestedAt,
+					auditId: this.createId(),
+				});
+			}
+			throw error;
+		}
+	}
+
+	async approve(identity: EditorialIdentity, input: { storyId: unknown; imageId: unknown; altText: unknown }): Promise<void> {
+		const storyId = requiredText(input.storyId, 'Story ID', 100);
+		const imageId = requiredText(input.imageId, 'Image ID', 100);
+		const altText = requiredText(input.altText, 'Alt text', 500);
+		const story = await this.editorialRepository.findEditorialStoryById(storyId);
+		if (!story || story.status !== 'APPROVED') {
+			throw new EditorialValidationError('Only an approved story can attach an image.');
+		}
+		const image = await this.imageRepository.findById(imageId);
+		if (!image || image.storyId !== storyId || image.status !== 'GENERATED' || !image.assetKey) {
+			throw new EditorialValidationError('Only a generated image for this story can be approved.');
+		}
+		const changed = await this.imageRepository.approve({
+			imageId, storyId, altText, actorEmail: actor(identity), reviewedAt: this.now(), auditId: this.createId(),
+		});
+		if (!changed) throw new EditorialValidationError('The story or image changed; reload and retry.', 'conflict');
+	}
+
+	async reject(identity: EditorialIdentity, input: { storyId: unknown; imageId: unknown }): Promise<void> {
+		await this.transition(identity, input, 'GENERATED', 'REJECTED');
+	}
+
+	async requestRegeneration(identity: EditorialIdentity, input: { storyId: unknown; imageId: unknown }): Promise<void> {
+		const imageId = requiredText(input.imageId, 'Image ID', 100);
+		const image = await this.imageRepository.findById(imageId);
+		if (!image || (image.status !== 'GENERATED' && image.status !== 'REJECTED')) {
+			throw new EditorialValidationError('Only an unapproved image can request regeneration.');
+		}
+		await this.transition(identity, input, image.status, 'REGENERATE_REQUESTED');
+	}
+
+	private async transition(
+		identity: EditorialIdentity,
+		input: { storyId: unknown; imageId: unknown },
+		from: 'GENERATED' | 'REJECTED',
+		to: 'REJECTED' | 'REGENERATE_REQUESTED',
+	): Promise<void> {
+		const storyId = requiredText(input.storyId, 'Story ID', 100);
+		const imageId = requiredText(input.imageId, 'Image ID', 100);
+		const story = await this.editorialRepository.findEditorialStoryById(storyId);
+		if (!story || story.status !== 'APPROVED') {
+			throw new EditorialValidationError('Image review actions require an approved story.');
+		}
+		const image = await this.imageRepository.findById(imageId);
+		if (!image || image.storyId !== storyId || image.status !== from) {
+			throw new EditorialValidationError('The image is not available for this review action.');
+		}
+		const changed = await this.imageRepository.transition({
+			imageId, storyId, altText: null, from, to, actorEmail: actor(identity), reviewedAt: this.now(), auditId: this.createId(),
+		});
+		if (!changed) throw new EditorialValidationError('The image changed; reload and retry.', 'conflict');
+	}
+}
