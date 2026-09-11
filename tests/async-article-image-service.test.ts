@@ -3,6 +3,7 @@ import type { ArticleImageRepository, ImageWebhookInboxRecord } from '../src/dat
 import type { ArticleImage } from '../src/domain/article-image';
 import type { ImageAssetStore } from '../src/images/asset-store';
 import type { CloudflareImageWebhook } from '../src/images/cloudflare-image-webhook';
+import { downloadCloudflareImage } from '../src/images/cloudflare-image-result';
 import { AsyncArticleImageService } from '../src/services/async-article-image-service';
 
 const now = '2026-09-11T12:30:00.000Z';
@@ -218,5 +219,67 @@ describe('asynchronous article image completion', () => {
 		expect(state.assetStore.delete).toHaveBeenCalledWith('article-images/story-1/image-1.webp');
 		expect(state.repository.releaseWebhook).toHaveBeenCalledWith('image-1', 'run-1');
 		expect(state.getImage()?.status).toBe('PENDING');
+	});
+});
+
+describe('Cloudflare image result URL trust', () => {
+	it.each([
+		'https://pub-example.r2.dev/image.webp',
+		'https://ai-gateway-outputs.0d37909e38d3e99c29fa2cd343ac421a.r2.cloudflarestorage.com/image.webp',
+		'https://example-bucket.123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/image.webp',
+	])('accepts a documented Cloudflare R2 host: %s', async (resultUrl) => {
+		const fetcher = vi.fn(async () => new Response(validWebpBody(), {
+			status: 200,
+			headers: { 'content-type': 'image/webp', 'content-length': '30' },
+		})) as unknown as typeof fetch;
+
+		await expect(downloadCloudflareImage(resultUrl, fetcher)).resolves.toMatchObject({
+			contentType: 'image/webp', width: 1536, height: 1024, byteSize: 30,
+		});
+		expect(fetcher).toHaveBeenCalledOnce();
+		expect(fetcher).toHaveBeenCalledWith(
+			new URL(resultUrl),
+			expect.objectContaining({ method: 'GET', redirect: 'error' }),
+		);
+	});
+
+	it.each([
+		'https://r2.dev/image.webp',
+		'https://r2.cloudflarestorage.com/image.webp',
+		'https://r2.cloudflarestorage.com.evil.example/image.webp',
+		'https://evil-r2.cloudflarestorage.com.evil.example/image.webp',
+		'https://cloudflarestorage.com/image.webp',
+		'https://foo.cloudflarestorage.com/image.webp',
+		'https://evilr2.cloudflarestorage.com/image.webp',
+		'https://asset.r2.dev@evil.example/image.webp',
+		'https://user@asset.r2.dev/image.webp',
+		'http://asset.r2.dev/image.webp',
+		'ftp://asset.r2.dev/image.webp',
+	])('rejects an untrusted or malformed authority before fetch: %s', async (resultUrl) => {
+		const fetcher = vi.fn() as unknown as typeof fetch;
+		await expect(downloadCloudflareImage(resultUrl, fetcher)).rejects.toMatchObject({
+			failureClassification: 'PROVIDER_INVALID_OUTPUT',
+		});
+		expect(fetcher).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		'https://next.example.r2.dev/image.webp',
+		'https://evil.example/image.webp',
+	])('does not follow redirects from an allowed host to %s', async (location) => {
+		const fetcher = vi.fn(async () => new Response(null, {
+			status: 302,
+			headers: { location },
+		})) as unknown as typeof fetch;
+
+		await expect(downloadCloudflareImage(
+			'https://source.example.r2.dev/image.webp',
+			fetcher,
+		)).rejects.toMatchObject({ failureClassification: 'PROVIDER_REQUEST' });
+		expect(fetcher).toHaveBeenCalledOnce();
+		expect(fetcher).toHaveBeenCalledWith(
+			new URL('https://source.example.r2.dev/image.webp'),
+			expect.objectContaining({ redirect: 'error' }),
+		);
 	});
 });

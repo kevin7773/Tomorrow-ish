@@ -2,6 +2,11 @@ import { ImageProviderError } from './image-provider';
 
 export const MAX_ARTICLE_IMAGE_BYTES = 12 * 1024 * 1024;
 
+const TRUSTED_CLOUDFLARE_R2_HOST_SUFFIXES = [
+	'.r2.dev',
+	'.r2.cloudflarestorage.com',
+] as const;
+
 export interface ValidatedCloudflareImage {
 	bytes: ArrayBuffer;
 	contentType: 'image/webp';
@@ -20,7 +25,7 @@ function resultUrl(value: string): URL {
 	}
 	if (
 		url.protocol !== 'https:' || url.username || url.password || url.port
-		|| !url.hostname.endsWith('.r2.dev') || url.hostname === 'r2.dev'
+		|| !TRUSTED_CLOUDFLARE_R2_HOST_SUFFIXES.some((suffix) => url.hostname.endsWith(suffix))
 	) {
 		throw new ImageProviderError('Cloudflare returned an untrusted image URL.', 'PROVIDER_INVALID_OUTPUT');
 	}
