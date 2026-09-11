@@ -120,8 +120,8 @@ describe('asynchronous article image completion', () => {
 		await expect(state.service.acceptWebhook('image-1', successCallback())).resolves.toBe('processed');
 		expect(state.assetStore.put).toHaveBeenCalledOnce();
 		expect(state.fetcher).toHaveBeenCalledWith(
-			new URL('https://result.example.r2.dev/image.webp'),
-			expect.objectContaining({ method: 'GET', redirect: 'error' }),
+			'https://result.example.r2.dev/image.webp',
+			expect.objectContaining({ method: 'GET', redirect: 'manual' }),
 		);
 		expect(state.assetStore.put).toHaveBeenCalledWith(
 			'article-images/story-1/image-1.webp', expect.any(ArrayBuffer), 'image/webp',
@@ -237,10 +237,36 @@ describe('Cloudflare image result URL trust', () => {
 			contentType: 'image/webp', width: 1536, height: 1024, byteSize: 30,
 		});
 		expect(fetcher).toHaveBeenCalledOnce();
-		expect(fetcher).toHaveBeenCalledWith(
-			new URL(resultUrl),
-			expect.objectContaining({ method: 'GET', redirect: 'error' }),
-		);
+		expect(fetcher).toHaveBeenCalledWith(resultUrl, expect.objectContaining({
+			method: 'GET', redirect: 'manual', signal: expect.any(AbortSignal),
+		}));
+	});
+
+	it('preserves the exact signed URL and invokes a receiver-sensitive fetcher detached', async () => {
+		const resultUrl = 'https://asset.example.r2.dev/image.webp?X-Amz-Credential=key%2Fdate%2Fauto%2Fs3%2Faws4_request&X-Amz-Signature=abc%2Bdef&part=one+two';
+		const fetcher = vi.fn(function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
+			if (this !== undefined) throw new TypeError('Illegal invocation');
+			expect(input).toBe(resultUrl);
+			expect(init?.signal?.aborted).toBe(false);
+			return Promise.resolve(new Response(validWebpBody(), {
+				status: 200,
+				headers: { 'content-type': 'image/webp', 'content-length': '30' },
+			}));
+		}) as unknown as typeof fetch;
+
+		await expect(downloadCloudflareImage(resultUrl, fetcher)).resolves.toMatchObject({ byteSize: 30 });
+		expect(fetcher).toHaveBeenCalledOnce();
+	});
+
+	it('classifies thrown fetch failures without retaining the raw exception message', async () => {
+		const fetcher = vi.fn(async () => {
+			throw new TypeError('Illegal invocation at a sensitive signed URL');
+		}) as unknown as typeof fetch;
+
+		await expect(downloadCloudflareImage('https://asset.example.r2.dev/image.webp', fetcher)).rejects.toMatchObject({
+			failureClassification: 'PROVIDER_REQUEST',
+			metadata: { stage: 'download', exceptionName: 'TypeError', exceptionCategory: 'FETCH_RUNTIME' },
+		});
 	});
 
 	it.each([
@@ -278,8 +304,8 @@ describe('Cloudflare image result URL trust', () => {
 		)).rejects.toMatchObject({ failureClassification: 'PROVIDER_REQUEST' });
 		expect(fetcher).toHaveBeenCalledOnce();
 		expect(fetcher).toHaveBeenCalledWith(
-			new URL('https://source.example.r2.dev/image.webp'),
-			expect.objectContaining({ redirect: 'error' }),
+			'https://source.example.r2.dev/image.webp',
+			expect.objectContaining({ redirect: 'manual' }),
 		);
 	});
 });

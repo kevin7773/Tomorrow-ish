@@ -32,6 +32,24 @@ function resultUrl(value: string): URL {
 	return url;
 }
 
+function safeExceptionName(error: unknown): string {
+	if (!error || typeof error !== 'object' || !('name' in error)) return 'UnknownError';
+	const name = String(error.name);
+	return /^[A-Za-z][A-Za-z0-9_.-]{0,99}$/.test(name) ? name : 'UnknownError';
+}
+
+function classifyFetchException(error: unknown): string {
+	const name = safeExceptionName(error);
+	const message = error && typeof error === 'object' && 'message' in error ? String(error.message) : '';
+	if (name === 'AbortError' || name === 'TimeoutError') return 'FETCH_ABORT';
+	if (/invalid redirect|redirect mode/i.test(message)) return 'FETCH_REDIRECT';
+	if (/invalid url|failed to parse url/i.test(message)) return 'FETCH_INVALID_URL';
+	if (/header/i.test(message)) return 'FETCH_HEADER';
+	if (/illegal invocation|incorrect this reference|request context/i.test(message)) return 'FETCH_RUNTIME';
+	if (/tls|certificate/i.test(message)) return 'FETCH_TLS';
+	return 'FETCH_NETWORK';
+}
+
 function ascii(bytes: Uint8Array, start: number, length: number): string {
 	return String.fromCharCode(...bytes.subarray(start, start + length));
 }
@@ -97,16 +115,29 @@ export async function downloadCloudflareImage(
 	value: string,
 	fetcher: typeof fetch = fetch,
 ): Promise<ValidatedCloudflareImage> {
-	const url = resultUrl(value);
+	resultUrl(value);
 	let response: Response;
 	try {
-		response = await fetcher(url, {
+		// Workerd does not implement RequestRedirect "error". Manual mode lets the
+		// application reject every redirect while preserving the signed URL verbatim.
+		const detachedFetcher = fetcher;
+		response = await detachedFetcher(value, {
 			method: 'GET',
-			redirect: 'error',
+			redirect: 'manual',
 			signal: AbortSignal.timeout(30_000),
 		});
-	} catch {
-		throw new ImageProviderError('Cloudflare image download failed.', 'PROVIDER_REQUEST');
+	} catch (error) {
+		throw new ImageProviderError('Cloudflare image download failed.', 'PROVIDER_REQUEST', null, {
+			stage: 'download',
+			exceptionName: safeExceptionName(error),
+			exceptionCategory: classifyFetchException(error),
+		});
+	}
+	if (response.status >= 300 && response.status < 400) {
+		await response.body?.cancel();
+		throw new ImageProviderError('Cloudflare image download redirect was rejected.', 'PROVIDER_REQUEST', null, {
+			httpStatus: response.status,
+		});
 	}
 	if (!response.ok) {
 		throw new ImageProviderError('Cloudflare image download was rejected.', 'PROVIDER_REQUEST', null, {
