@@ -59,16 +59,71 @@ describe('OpenAI image provider', () => {
 
 	it('classifies authentication failures without persisting provider error bodies', async () => {
 		const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-			error: { message: 'secret diagnostic', api_key: 'must-not-persist' },
-		}), { status: 401, headers: { 'x-request-id': 'req_auth_1' } }));
+			error: {
+				type: 'invalid_request_error',
+				code: 'invalid_api_key',
+				message: 'secret diagnostic',
+				api_key: 'must-not-persist',
+			},
+		}), { status: 401, headers: { 'x-request-id': 'req_auth_1', 'retry-after': '10' } }));
 		const provider = new OpenAIImageProvider('secret-key', 'gpt-image-2', fetcher);
 
 		await expect(provider.generate({ prompt: 'Editorial illustration.', aspectRatio: '16:9' }))
 			.rejects.toMatchObject({
 				failureClassification: 'PROVIDER_AUTHENTICATION',
 				providerRequestId: 'req_auth_1',
-				metadata: { httpStatus: 401 },
+				metadata: {
+					httpStatus: 401,
+					errorType: 'invalid_request_error',
+					errorCode: 'invalid_api_key',
+					retryAfter: '10',
+				},
 			});
+	});
+
+	it('preserves safe network exception diagnostics without retaining exception messages', async () => {
+		const failure = new TypeError('network failure containing secret-key');
+		const provider = new OpenAIImageProvider('secret-key', 'gpt-image-2', vi.fn().mockRejectedValue(failure));
+
+		const caught = await provider.generate({ prompt: 'Editorial illustration.', aspectRatio: '16:9' })
+			.catch((error: unknown) => error);
+		expect(caught).toMatchObject({
+			failureClassification: 'PROVIDER_REQUEST',
+			providerRequestId: null,
+			metadata: {
+				exceptionCategory: 'network-or-fetch',
+				exceptionName: 'TypeError',
+				stage: 'fetch',
+			},
+		});
+		expect(JSON.stringify((caught as { metadata: Record<string, unknown> }).metadata)).not.toContain('secret-key');
+	});
+
+	it('preserves timeout exception diagnostics', async () => {
+		const failure = new DOMException('timed out', 'TimeoutError');
+		const provider = new OpenAIImageProvider('secret-key', 'gpt-image-2', vi.fn().mockRejectedValue(failure));
+
+		await expect(provider.generate({ prompt: 'Editorial illustration.', aspectRatio: '16:9' }))
+			.rejects.toMatchObject({
+				failureClassification: 'PROVIDER_TIMEOUT',
+				metadata: {
+					exceptionCategory: 'timeout',
+					exceptionName: 'TimeoutError',
+					stage: 'fetch',
+				},
+			});
+	});
+
+	it('does not collapse local validation errors into connectivity failures', async () => {
+		const fetcher = vi.fn();
+		const provider = new OpenAIImageProvider('secret-key', 'gpt-image-2', fetcher);
+
+		await expect(provider.generate({ prompt: 'Editorial illustration.', aspectRatio: '4:3' }))
+			.rejects.toMatchObject({
+				message: 'The requested image aspect ratio is unsupported.',
+				failureClassification: 'PROVIDER_CONFIGURATION',
+			});
+		expect(fetcher).not.toHaveBeenCalled();
 	});
 
 	it('rejects bytes that do not match the requested WebP format', async () => {

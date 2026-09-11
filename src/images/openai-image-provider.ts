@@ -8,6 +8,7 @@ import {
 const DEFAULT_API_URL = 'https://api.openai.com/v1/images/generations';
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 const MAX_RESPONSE_CHARACTERS = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 64 * 1024;
+const MAX_PROVIDER_ERROR_BODY_CHARACTERS = 16 * 1024;
 const OUTPUT_FORMAT = 'webp';
 
 interface OpenAIImageResponse {
@@ -25,6 +26,68 @@ function safeRequestId(value: string | null): string | null {
 	return trimmed.length > 0 && trimmed.length <= 200 && /^[A-Za-z0-9._:-]+$/.test(trimmed)
 		? trimmed
 		: null;
+}
+
+function safeIdentifier(value: unknown): string | null {
+	if (typeof value !== 'string') return null;
+	const trimmed = value.trim();
+	return trimmed.length > 0 && trimmed.length <= 200 && /^[A-Za-z0-9._:-]+$/.test(trimmed)
+		? trimmed
+		: null;
+}
+
+function safeHeader(value: string | null, maxLength = 100): string | null {
+	if (value === null) return null;
+	const trimmed = value.trim();
+	return trimmed.length > 0 && trimmed.length <= maxLength && /^[\x20-\x7E]+$/.test(trimmed)
+		? trimmed
+		: null;
+}
+
+function exceptionMetadata(error: unknown, stage: 'request-setup' | 'fetch'): Record<string, unknown> {
+	const exceptionName = error && typeof error === 'object' && 'name' in error
+		? safeIdentifier(String(error.name))
+		: null;
+	const cause = error && typeof error === 'object' && 'cause' in error ? error.cause : null;
+	const causeName = cause && typeof cause === 'object' && 'name' in cause
+		? safeIdentifier(String(cause.name))
+		: null;
+	return {
+		exceptionCategory: exceptionName === 'AbortError' || exceptionName === 'TimeoutError'
+			? 'timeout'
+			: stage === 'fetch' && exceptionName === 'TypeError'
+				? 'network-or-fetch'
+				: 'runtime',
+		exceptionName: exceptionName ?? 'UnknownError',
+		...(causeName ? { causeName } : {}),
+		stage,
+	};
+}
+
+async function providerErrorMetadata(response: Response): Promise<Record<string, unknown>> {
+	let errorType: string | null = null;
+	let errorCode: string | null = null;
+	try {
+		const raw = await response.text();
+		if (raw.length <= MAX_PROVIDER_ERROR_BODY_CHARACTERS) {
+			const envelope: unknown = JSON.parse(raw);
+			if (envelope && typeof envelope === 'object' && !Array.isArray(envelope)) {
+				const error = (envelope as { error?: unknown }).error;
+				if (error && typeof error === 'object' && !Array.isArray(error)) {
+					errorType = safeIdentifier((error as { type?: unknown }).type);
+					errorCode = safeIdentifier((error as { code?: unknown }).code);
+				}
+			}
+		}
+	} catch {
+		// Provider error bodies are optional and are never retained verbatim.
+	}
+	return {
+		httpStatus: response.status,
+		errorType,
+		errorCode,
+		retryAfter: safeHeader(response.headers.get('retry-after')),
+	};
 }
 
 function sizeForAspectRatio(aspectRatio: string): string {
@@ -124,9 +187,10 @@ export class OpenAIImageProvider implements ImageProvider {
 	}
 
 	async generate(request: ImageGenerationRequest): Promise<GeneratedImage> {
-		let response: Response;
+		const size = sizeForAspectRatio(request.aspectRatio);
+		let init: RequestInit;
 		try {
-			response = await this.fetcher(this.apiUrl, {
+			init = {
 				method: 'POST',
 				headers: {
 					Authorization: `Bearer ${this.apiKey}`,
@@ -136,7 +200,7 @@ export class OpenAIImageProvider implements ImageProvider {
 					model: this.model,
 					prompt: request.prompt,
 					n: 1,
-					size: sizeForAspectRatio(request.aspectRatio),
+					size,
 					quality: 'high',
 					background: 'opaque',
 					moderation: 'auto',
@@ -144,12 +208,27 @@ export class OpenAIImageProvider implements ImageProvider {
 					output_compression: 90,
 				}),
 				signal: AbortSignal.timeout(120_000),
-			});
+			};
 		} catch (error) {
+			throw new ImageProviderError(
+				'OpenAI image request setup failed.',
+				'PROVIDER_REQUEST',
+				null,
+				exceptionMetadata(error, 'request-setup'),
+			);
+		}
+
+		let response: Response;
+		try {
+			response = await this.fetcher(this.apiUrl, init);
+		} catch (error) {
+			if (error instanceof ImageProviderError) throw error;
 			const name = error && typeof error === 'object' && 'name' in error ? String(error.name) : '';
 			throw new ImageProviderError(
 				name === 'TimeoutError' || name === 'AbortError' ? 'OpenAI image generation timed out.' : 'OpenAI could not be reached.',
 				name === 'TimeoutError' || name === 'AbortError' ? 'PROVIDER_TIMEOUT' : 'PROVIDER_REQUEST',
+				null,
+				exceptionMetadata(error, 'fetch'),
 			);
 		}
 
@@ -158,9 +237,12 @@ export class OpenAIImageProvider implements ImageProvider {
 			const classification = response.status === 401 || response.status === 403
 				? 'PROVIDER_AUTHENTICATION'
 				: 'PROVIDER_REQUEST';
-			throw new ImageProviderError('OpenAI rejected the image request.', classification, requestId, {
-				httpStatus: response.status,
-			});
+			throw new ImageProviderError(
+				'OpenAI rejected the image request.',
+				classification,
+				requestId,
+				await providerErrorMetadata(response),
+			);
 		}
 		const declaredLength = Number(response.headers.get('content-length'));
 		if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_CHARACTERS) {

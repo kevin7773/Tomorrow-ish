@@ -1,6 +1,6 @@
 import type { EditorialStory } from '../domain/editorial';
 
-export const ARTICLE_IMAGE_PROMPT_VERSION = 'tomorrow-ish-editorial-v1';
+export const ARTICLE_IMAGE_PROMPT_VERSION = 'tomorrow-ish-editorial-v2';
 export const ARTICLE_IMAGE_HOUSE_DIRECTION =
 	'Editorial news illustration, subtly absurd but visually plausible, polished magazine/news-site quality, strong composition, slightly cinematic, no embedded text, no logos, no watermarks.';
 
@@ -15,6 +15,19 @@ function cleanConcept(value: string): string {
 		.replace(/[,:;\s]+$/, '');
 }
 
+function isInternalEditorialText(value: string): boolean {
+	return [
+		/\b(?:draft|review|approved|rejected|published|unpublished)\s+(?:story|item|content|candidate|record)\b/i,
+		/\b(?:do not publish|must never appear|before publication|publication boundary|publication-state)\b/i,
+		/\b(?:test|testing|fixture|scaffold(?:ing)?)\b/i,
+		/\bexists only to (?:verify|test)\b/i,
+	].some((pattern) => pattern.test(value));
+}
+
+function lowerFirst(value: string): string {
+	return value.replace(/^[A-Z]/, (letter) => letter.toLowerCase());
+}
+
 export interface ArticleImagePrompt {
 	prompt: string;
 	proposedAltText: string;
@@ -22,8 +35,16 @@ export interface ArticleImagePrompt {
 }
 
 export function produceArticleImagePrompt(story: EditorialStory): ArticleImagePrompt {
-	const centralConcept = cleanConcept(story.deck || story.socialExcerpt || story.bodyMarkdown);
 	const premise = cleanConcept(story.headline);
+	if (!premise || isInternalEditorialText(premise)) {
+		throw new Error('The story does not contain a reader-facing image premise.');
+	}
+	const supportingConcept = [story.deck, story.socialExcerpt, story.bodyMarkdown]
+		.map(cleanConcept)
+		.find((value) => value.length > 0 && !isInternalEditorialText(value));
+	const centralConcept = supportingConcept
+		?? `A literal visual interpretation of ${lowerFirst(premise)}, staged in a recognizable ${story.category.name.toLowerCase()} setting with subtle satirical details`;
+	const altConcept = supportingConcept ?? lowerFirst(premise);
 	const prompt = [
 		ARTICLE_IMAGE_HOUSE_DIRECTION,
 		`Create an original editorial illustration for the ${story.category.name} section.`,
@@ -35,7 +56,7 @@ export function produceArticleImagePrompt(story: EditorialStory): ArticleImagePr
 
 	return {
 		prompt,
-		proposedAltText: `Editorial illustration of ${centralConcept.replace(/^[A-Z]/, (letter) => letter.toLowerCase())}.`,
+		proposedAltText: `Editorial illustration of ${lowerFirst(altConcept)}.`,
 		promptVersion: ARTICLE_IMAGE_PROMPT_VERSION,
 	};
 }
