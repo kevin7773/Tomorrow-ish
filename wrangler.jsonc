@@ -11,7 +11,7 @@
     "EDITORIAL_ALLOWED_EMAIL": "klsmallwood73@gmail.com",
     "MODEL_PROVIDER": "openai",
     "MODEL_NAME": "gpt-5.6-terra",
-    "MODEL_GENERATION_ENABLED": "false",
+    "MODEL_GENERATION_ENABLED": "true",
     "MODEL_DAILY_BUDGET_MICRO_USD": "1000000"
   },
   "routes": [

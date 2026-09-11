@@ -37,6 +37,23 @@ function response(output: unknown, status = 200, usage = { input_tokens: 100, ou
 }
 
 describe('OpenAI Responses provider', () => {
+	it('uses a receiver-safe native fetch wrapper by default', async () => {
+		let receivedThis: unknown;
+		const nativeFetch = vi.fn(function (this: unknown, _input: RequestInfo | URL, _init?: RequestInit) {
+			receivedThis = this;
+			return Promise.resolve(response(normalization));
+		});
+		vi.stubGlobal('fetch', nativeFetch);
+		try {
+			const provider = new OpenAIModelProvider('test-key');
+			await provider.normalizeEvent({ title: 'Event', neutralBrief: 'Brief', references: [reference] }, signal);
+			expect(nativeFetch).toHaveBeenCalledTimes(1);
+			expect(receivedThis).not.toBe(provider);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
 	it('sends the reviewed normalization contract without source URLs, tools, or storage', async () => {
 		const transport = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => response(normalization));
 		const provider = new OpenAIModelProvider('test-key', OPENAI_MODEL, transport);

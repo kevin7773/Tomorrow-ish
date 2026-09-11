@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { FakeModelProvider } from '../src/ai/fake-model-provider';
+import { ModelProviderError } from '../src/ai/model-provider';
+import { OpenAIModelProvider, OPENAI_MODEL } from '../src/ai/openai-model-provider';
 import type { GenerationRepository } from '../src/data/generation-repository';
 import type { SourceIntake } from '../src/domain/editorial';
 import type { ModelRun, NormalizedEventVersion } from '../src/domain/generation';
 import { GenerationService } from '../src/services/generation-service';
+import { actionErrorResponse } from '../src/lib/editorial-actions';
 
 const identity = { email: 'editor@example.com' };
 const intake: SourceIntake = {
@@ -51,6 +54,61 @@ function repository(version = accepted(), previousRuns = 0) {
 }
 
 describe('generation authority', () => {
+	it('completes normalization with a successful injected OpenAI transport', async () => {
+		const output = {
+			eventStatement: 'Agency opened a drawer.',
+			assertions: [
+				{ kind: 'FACT', statement: 'A drawer was opened.', sources: [{ sourceReferenceId: 'source-1', relationship: 'SUPPORTS' }] },
+				{ kind: 'UNCERTAINTY', statement: 'The contents were not described.', sources: [{ sourceReferenceId: 'source-1', relationship: 'SUPPORTS' }] },
+				{ kind: 'CONTEXT', statement: 'Drawers store items.', sources: [{ sourceReferenceId: 'source-1', relationship: 'CONTEXT' }] },
+			],
+			proposedSignificanceScore: 1, proposedSatirePotentialScore: 3,
+			proposedSuitability: 'SUITABLE', suitabilityReason: 'Reviewed as low harm.', guardrailFlags: [],
+		};
+		const transport = vi.fn(async () => new Response(JSON.stringify({
+			status: 'completed', model: OPENAI_MODEL,
+			output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(output) }] }],
+			usage: { input_tokens: 100, output_tokens: 50 },
+		}), { status: 200 }));
+		const { repo, createdNormalization } = repository();
+		const service = new GenerationService(repo, new OpenAIModelProvider('test-key', OPENAI_MODEL, transport), {
+			createId: (() => { let number = 0; return () => `openai-id-${++number}`; })(),
+		});
+		await service.proposeNormalization(identity, intake.id, 'openai-normalize-success');
+		expect(createdNormalization).toHaveBeenCalledTimes(1);
+		expect(createdNormalization.mock.calls[0][0].run).toMatchObject({ status: 'SUCCEEDED', provider: 'openai', model: OPENAI_MODEL });
+	});
+
+	it('records a transport failure without creating a version or reporting invalid input', async () => {
+		const transport = vi.fn(async () => { throw new TypeError('sensitive transport detail'); });
+		const { repo, createdNormalization } = repository();
+		const service = new GenerationService(repo, new OpenAIModelProvider('test-key', OPENAI_MODEL, transport), {
+			now: () => '2026-09-11T02:21:55.828Z', createId: () => 'failed-run-id',
+		});
+		const caught: unknown = await service.proposeNormalization(identity, intake.id, 'openai-network-failure').catch((error: unknown) => error);
+		expect(caught).toMatchObject({ code: 'provider-unavailable' });
+		expect(transport).toHaveBeenCalledTimes(2);
+		expect(createdNormalization).not.toHaveBeenCalled();
+		expect(repo.createModelRun).toHaveBeenCalledWith(expect.objectContaining({
+			id: 'failed-run-id', status: 'FAILED', failureClassification: 'PROVIDER_NETWORK', normalizedEventVersionId: null, retryCount: 1,
+		}));
+		const response = actionErrorResponse(caught, `/editorial/intakes/${intake.id}/normalize`);
+		expect(response.headers.get('Location')).toContain('error=provider-unavailable');
+		expect(response.headers.get('Location')).not.toContain('invalid-request');
+	});
+
+	it.each([
+		['PROVIDER_AUTHENTICATION', 'provider-rejected'],
+		['PROVIDER_REQUEST', 'provider-rejected'],
+		['PROVIDER_CONFIGURATION', 'model-disabled'],
+		['PROVIDER_DISABLED', 'model-disabled'],
+		['PROVIDER_NETWORK', 'provider-unavailable'],
+	] as const)('maps %s to the safe editorial error %s', (classification, expectedCode) => {
+		const response = actionErrorResponse(new ModelProviderError(classification, false), '/editorial/intakes');
+		expect(response.headers.get('Location')).toContain(`error=${expectedCode}`);
+		expect(response.headers.get('Location')).not.toContain('invalid-request');
+	});
+
 	it('records a model proposal without modifying source fields and preserves deterministic flags', async () => {
 		const flaggedIntake = { ...intake, title: 'Agency Reviews Alleged Filing' };
 		const { repo, createdNormalization } = repository();
@@ -124,9 +182,10 @@ describe('generation authority', () => {
 		const provider = new FakeModelProvider();
 		const invoke = vi.spyOn(provider, 'generateCandidates');
 		const service = new GenerationService(repo, provider, { dailyBudgetMicrousd: 1_000_000 });
-		await expect(service.generateCandidates(identity, {
+		const caught: unknown = await service.generateCandidates(identity, {
 			intakeId: intake.id, normalizedEventVersionId: 'version-1', categoryId: 'cat-civic-life', idempotencyKey: 'budget',
-		})).rejects.toThrow(/daily model budget/i);
+		}).catch((error: unknown) => error);
+		expect(caught).toMatchObject({ code: 'model-budget' });
 		expect(invoke).not.toHaveBeenCalled();
 		expect(createdCandidates).not.toHaveBeenCalled();
 	});

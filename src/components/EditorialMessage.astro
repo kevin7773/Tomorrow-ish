@@ -29,6 +29,11 @@ const errors: Record<string, string> = {
 	'not-found': 'The requested editorial record was not found.',
 	'duplicate': 'That conversion has already occurred.',
 	'conflict': 'The record changed before this action completed. Reload and try again.',
+	'provider-unavailable': 'The model provider could not be reached. No editorial content was created.',
+	'provider-rejected': 'The model provider rejected the request. No editorial content was created.',
+	'provider-invalid-output': 'The model provider returned an invalid response. No editorial content was created.',
+	'model-budget': 'The configured model budget does not permit this request. No editorial content was created.',
+	'model-disabled': 'Model generation is disabled or is not configured. No editorial content was created.',
 	'operation-failed': 'The editorial operation could not be completed.',
 };
 ---

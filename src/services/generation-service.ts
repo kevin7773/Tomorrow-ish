@@ -47,6 +47,23 @@ function sanitizedFailure(error: unknown): string {
 	return 'PROVIDER_FAILURE';
 }
 
+function editorialModelFailure(error: unknown): EditorialValidationError {
+	const classification = sanitizedFailure(error);
+	if (['PROVIDER_NETWORK', 'PROVIDER_SERVER', 'PROVIDER_RATE_LIMIT', 'TIMEOUT'].includes(classification)) {
+		return new EditorialValidationError('The model provider could not be reached.', 'provider-unavailable');
+	}
+	if (['PROVIDER_AUTHENTICATION', 'PROVIDER_REQUEST'].includes(classification)) {
+		return new EditorialValidationError('The model provider rejected the request.', 'provider-rejected');
+	}
+	if (classification === 'MALFORMED_OUTPUT') {
+		return new EditorialValidationError('The model provider returned invalid output.', 'provider-invalid-output');
+	}
+	if (['PROVIDER_CONFIGURATION', 'PROVIDER_DISABLED'].includes(classification)) {
+		return new EditorialValidationError('Model generation is disabled or is not configured.', 'model-disabled');
+	}
+	return new EditorialValidationError('The model operation could not be completed.', 'operation-failed');
+}
+
 function proposalFromVersion(version: Awaited<ReturnType<GenerationRepository['findNormalizedVersion']>>): NormalizationProposal {
 	if (!version) throw new EditorialValidationError('The normalized event was not found.', 'not-found');
 	return {
@@ -147,7 +164,7 @@ export class GenerationService {
 				requestedByEmail, failureClassification: sanitizedFailure(error), createdAt, completedAt,
 			};
 			await this.repository.createModelRun(failed);
-			throw new EditorialValidationError('The normalization model run failed validation.');
+			throw editorialModelFailure(error);
 		}
 	}
 
@@ -278,19 +295,19 @@ export class GenerationService {
 				estimatedCostMicrousd: executed?.result.usage.estimatedCostMicrousd ?? reservedCostMicrousd,
 				candidateCount: 0, idempotencyKey: key, requestedByEmail,
 				failureClassification: sanitizedFailure(error), createdAt, completedAt });
-			throw new EditorialValidationError('The candidate model run failed validation.');
+			throw editorialModelFailure(error);
 		}
 	}
 
 	private async requireBudget(operation: ModelOperation, inputCharacters: number, requestedAt: string): Promise<number> {
 		const reserved = this.provider.estimateMaximumCostMicrousd(operation, inputCharacters);
 		if (!Number.isSafeInteger(reserved) || reserved < 0 || reserved > this.limits.maxEstimatedCostMicrousd) {
-			throw new EditorialValidationError('The model request exceeds its configured cost limit.');
+			throw new EditorialValidationError('The model request exceeds its configured cost limit.', 'model-budget');
 		}
 		const dayStart = `${requestedAt.slice(0, 10)}T00:00:00.000Z`;
 		const spent = await this.repository.sumModelRunCostSince(dayStart);
 		if (!Number.isSafeInteger(spent) || spent < 0 || spent + reserved > this.dailyBudgetMicrousd) {
-			throw new EditorialValidationError('The daily model budget would be exceeded.');
+			throw new EditorialValidationError('The daily model budget would be exceeded.', 'model-budget');
 		}
 		return reserved;
 	}

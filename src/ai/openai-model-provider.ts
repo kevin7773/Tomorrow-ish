@@ -17,7 +17,9 @@ const NORMALIZATION_MAX_OUTPUT_TOKENS = 3_000;
 const CANDIDATE_MAX_OUTPUT_TOKENS = 2_500;
 const PROMPT_OVERHEAD_CHARACTERS = 6_000;
 
-type OpenAITransport = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+export type OpenAITransport = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+export const defaultOpenAITransport: OpenAITransport = (input, init) => fetch(input, init);
 
 const sourceLinkSchema = {
 	type: 'object', additionalProperties: false,
@@ -120,7 +122,7 @@ export class OpenAIModelProvider implements ModelProvider {
 	constructor(
 		private readonly apiKey: string,
 		readonly modelId = OPENAI_MODEL,
-		private readonly transport: OpenAITransport = fetch,
+		private readonly transport: OpenAITransport = defaultOpenAITransport,
 	) {
 		if (!apiKey.trim()) throw new ModelProviderError('PROVIDER_CONFIGURATION', false);
 		if (modelId !== OPENAI_MODEL) throw new ModelProviderError('PROVIDER_CONFIGURATION', false);
