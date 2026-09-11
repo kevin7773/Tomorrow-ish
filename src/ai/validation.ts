@@ -33,6 +33,9 @@ export function parseNormalizationProposal(value: unknown): NormalizationProposa
 		throw new ModelOutputError();
 	}
 	if (!Array.isArray(input.guardrailFlags)) throw new ModelOutputError();
+	if (new Set(input.guardrailFlags).size !== input.guardrailFlags.length) {
+		throw new ModelOutputError('Guardrail flags must be distinct.');
+	}
 	const proposedSuitability = input.proposedSuitability;
 	if (!SATIRE_SUITABILITIES.includes(proposedSuitability as never)) throw new ModelOutputError();
 

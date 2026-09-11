@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ModelOutputError, ModelProviderError } from '../src/ai/model-provider';
 import { ModelExecutionError, runWithLimits } from '../src/ai/model-runner';
-import { OpenAIModelProvider, OPENAI_MODEL, OPENAI_RESPONSES_URL } from '../src/ai/openai-model-provider';
+import {
+	CANDIDATE_SCHEMA,
+	NORMALIZATION_SCHEMA,
+	OpenAIModelProvider,
+	OPENAI_MODEL,
+	OPENAI_RESPONSES_URL,
+} from '../src/ai/openai-model-provider';
 
 const signal = new AbortController().signal;
 const reference = {
@@ -56,6 +62,16 @@ async function providerFailure(response: Response): Promise<ModelProviderError> 
 }
 
 describe('OpenAI Responses provider', () => {
+	it('uses only supported strict Structured Outputs keywords in both response schemas', () => {
+		const normalizationSchema = JSON.stringify(NORMALIZATION_SCHEMA);
+		const candidateSchema = JSON.stringify(CANDIDATE_SCHEMA);
+		expect(normalizationSchema).not.toContain('uniqueItems');
+		expect(normalizationSchema).not.toMatch(/minLength|maxLength/);
+		expect(candidateSchema).not.toMatch(/uniqueItems|minLength|maxLength/);
+		expect(CANDIDATE_SCHEMA.properties.candidates).toMatchObject({ minItems: 5, maxItems: 5 });
+		expect(CANDIDATE_SCHEMA.additionalProperties).toBe(false);
+	});
+
 	it('uses a receiver-safe native fetch wrapper by default', async () => {
 		let receivedThis: unknown;
 		const nativeFetch = vi.fn(function (this: unknown, _input: RequestInfo | URL, _init?: RequestInit) {
@@ -92,6 +108,20 @@ describe('OpenAI Responses provider', () => {
 		expect(request.input).not.toContain(reference.createdAt);
 		expect(result.output).toEqual(normalization);
 		expect(result.usage).toMatchObject({ inputTokens: 100, outputTokens: 50, estimatedCostMicrousd: 800 });
+	});
+
+	it('accepts a valid distinct guardrail array', async () => {
+		const output = { ...normalization, guardrailFlags: ['UNRESOLVED_ALLEGATION'] };
+		const provider = new OpenAIModelProvider('test-key', OPENAI_MODEL, async () => response(output));
+		await expect(provider.normalizeEvent({ title: 'Event', neutralBrief: 'Brief', references: [reference] }, signal))
+			.resolves.toMatchObject({ output });
+	});
+
+	it('rejects duplicate guardrail flags in application validation', async () => {
+		const output = { ...normalization, guardrailFlags: ['UNRESOLVED_ALLEGATION', 'UNRESOLVED_ALLEGATION'] };
+		const provider = new OpenAIModelProvider('test-key', OPENAI_MODEL, async () => response(output));
+		await expect(provider.normalizeEvent({ title: 'Event', neutralBrief: 'Brief', references: [reference] }, signal))
+			.rejects.toThrow(/distinct/i);
 	});
 
 	it('requests and validates exactly five candidate alternatives', async () => {

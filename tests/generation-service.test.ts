@@ -79,6 +79,31 @@ describe('generation authority', () => {
 		expect(createdNormalization.mock.calls[0][0].run).toMatchObject({ status: 'SUCCEEDED', provider: 'openai', model: OPENAI_MODEL });
 	});
 
+	it('never persists normalized content with duplicate provider guardrail flags', async () => {
+		const output = {
+			eventStatement: 'Agency opened a drawer.',
+			assertions: [{ kind: 'FACT', statement: 'A drawer was opened.', sources: [{ sourceReferenceId: 'source-1', relationship: 'SUPPORTS' }] }],
+			proposedSignificanceScore: 1, proposedSatirePotentialScore: 3,
+			proposedSuitability: 'SUITABLE', suitabilityReason: 'Reviewed as low harm.',
+			guardrailFlags: ['UNRESOLVED_ALLEGATION', 'UNRESOLVED_ALLEGATION'],
+		};
+		const transport = vi.fn(async () => new Response(JSON.stringify({
+			status: 'completed', model: OPENAI_MODEL,
+			output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(output) }] }],
+			usage: { input_tokens: 100, output_tokens: 50 },
+		}), { status: 200 }));
+		const { repo, createdNormalization } = repository();
+		const service = new GenerationService(repo, new OpenAIModelProvider('test-key', OPENAI_MODEL, transport), {
+			createId: () => 'duplicate-guardrail-run',
+		});
+		const caught: unknown = await service.proposeNormalization(identity, intake.id, 'duplicate-guardrail-flags').catch((error: unknown) => error);
+		expect(caught).toMatchObject({ code: 'provider-invalid-output' });
+		expect(createdNormalization).not.toHaveBeenCalled();
+		expect(repo.createModelRun).toHaveBeenCalledWith(expect.objectContaining({
+			status: 'FAILED', failureClassification: 'MALFORMED_OUTPUT', normalizedEventVersionId: null,
+		}));
+	});
+
 	it('records a transport failure without creating a version or reporting invalid input', async () => {
 		const transport = vi.fn(async () => { throw new TypeError('sensitive transport detail'); });
 		const { repo, createdNormalization } = repository();

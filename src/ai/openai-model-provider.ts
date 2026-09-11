@@ -25,7 +25,7 @@ export const defaultOpenAITransport: OpenAITransport = (input, init) => fetch(in
 const sourceLinkSchema = {
 	type: 'object', additionalProperties: false,
 	properties: {
-		sourceReferenceId: { type: 'string', minLength: 1, maxLength: 100 },
+		sourceReferenceId: { type: 'string' },
 		relationship: { type: 'string', enum: ['SUPPORTS', 'CONTRADICTS', 'CONTEXT'] },
 	},
 	required: ['sourceReferenceId', 'relationship'],
@@ -34,12 +34,12 @@ const sourceLinkSchema = {
 export const NORMALIZATION_SCHEMA = {
 	type: 'object', additionalProperties: false,
 	properties: {
-		eventStatement: { type: 'string', minLength: 1, maxLength: 1_000 },
+		eventStatement: { type: 'string' },
 		assertions: { type: 'array', minItems: 1, maxItems: 30, items: {
 			type: 'object', additionalProperties: false,
 			properties: {
 				kind: { type: 'string', enum: ['FACT', 'UNCERTAINTY', 'CONTEXT'] },
-				statement: { type: 'string', minLength: 1, maxLength: 2_000 },
+				statement: { type: 'string' },
 				sources: { type: 'array', items: sourceLinkSchema },
 			},
 			required: ['kind', 'statement', 'sources'],
@@ -47,8 +47,8 @@ export const NORMALIZATION_SCHEMA = {
 		proposedSignificanceScore: { type: 'integer', minimum: 1, maximum: 5 },
 		proposedSatirePotentialScore: { type: 'integer', minimum: 1, maximum: 5 },
 		proposedSuitability: { type: 'string', enum: ['UNREVIEWED', 'SUITABLE', 'SENSITIVE', 'UNSUITABLE'] },
-		suitabilityReason: { type: 'string', minLength: 1, maxLength: 2_000 },
-		guardrailFlags: { type: 'array', uniqueItems: true, items: { type: 'string', enum: [
+		suitabilityReason: { type: 'string' },
+		guardrailFlags: { type: 'array', items: { type: 'string', enum: [
 			'DEATH_OR_CASUALTY', 'ACTIVE_EMERGENCY', 'IDENTIFIABLE_VICTIM', 'CHILD_VICTIM',
 			'SELF_HARM', 'SEXUAL_VIOLENCE', 'SERIOUS_MEDICAL_CRISIS', 'UNRESOLVED_ALLEGATION',
 			'POLITICAL_PARTISAN_FRAMING',
@@ -63,10 +63,10 @@ export const CANDIDATE_SCHEMA = {
 		candidates: { type: 'array', minItems: 5, maxItems: 5, items: {
 			type: 'object', additionalProperties: false,
 			properties: {
-				headline: { type: 'string', minLength: 1, maxLength: 300 },
-				deck: { type: 'string', maxLength: 1_000 },
-				rationale: { type: 'string', minLength: 1, maxLength: 2_000 },
-				satiricalMechanism: { type: 'string', minLength: 1, maxLength: 120 },
+				headline: { type: 'string' },
+				deck: { type: 'string' },
+				rationale: { type: 'string' },
+				satiricalMechanism: { type: 'string' },
 			},
 			required: ['headline', 'deck', 'rationale', 'satiricalMechanism'],
 		} },
