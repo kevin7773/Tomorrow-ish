@@ -27,6 +27,16 @@ function safeErrorCode(value: unknown): string | null {
 	return safeIdentifier(value);
 }
 
+function classifyFetchException(error: unknown): string {
+	const name = error && typeof error === 'object' && 'name' in error ? String(error.name) : '';
+	const message = error && typeof error === 'object' && 'message' in error ? String(error.message) : '';
+	if (name === 'AbortError' || name === 'TimeoutError') return 'FETCH_ABORT';
+	if (/invalid url|failed to parse url/i.test(message)) return 'FETCH_INVALID_URL';
+	if (/header/i.test(message)) return 'FETCH_HEADER';
+	if (/illegal invocation|incorrect this reference|request context/i.test(message)) return 'FETCH_RUNTIME';
+	return 'FETCH_NETWORK';
+}
+
 async function safeErrorMetadata(response: Response): Promise<Record<string, unknown>> {
 	let errorCode: string | null = null;
 	try {
@@ -88,7 +98,10 @@ export class CloudflareGatewayImageProvider implements AsynchronousImageProvider
 
 		let response: Response;
 		try {
-			response = await this.fetcher(`${this.apiOrigin}/client/v4/accounts/${this.accountId}/ai/run`, {
+			// Cloudflare's global fetch is receiver-sensitive. Detach it from this provider
+			// before invocation so it is not called with the provider instance as `this`.
+			const fetcher = this.fetcher;
+			response = await fetcher(`${this.apiOrigin}/client/v4/accounts/${this.accountId}/ai/run`, {
 				method: 'POST',
 				headers: {
 					Authorization: `Bearer ${this.apiToken}`,
@@ -120,7 +133,11 @@ export class CloudflareGatewayImageProvider implements AsynchronousImageProvider
 					: 'Cloudflare AI Gateway could not be reached.',
 				name === 'TimeoutError' || name === 'AbortError' ? 'PROVIDER_TIMEOUT' : 'PROVIDER_REQUEST',
 				null,
-				{ stage: 'submission', exceptionName: name ?? 'UnknownError' },
+				{
+					stage: 'submission',
+					exceptionName: name ?? 'UnknownError',
+					exceptionCategory: classifyFetchException(error),
+				},
 			);
 		}
 

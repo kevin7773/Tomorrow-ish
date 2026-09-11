@@ -27,6 +27,8 @@ describe('Cloudflare AI Gateway asynchronous image provider', () => {
 		const [url, init] = fetcher.mock.calls[0];
 		expect(url).toBe(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/ai/run`);
 		expect(init).toMatchObject({ method: 'POST' });
+		expect(init.signal).toBeInstanceOf(AbortSignal);
+		expect(init.signal.aborted).toBe(false);
 		expect(init.headers).toMatchObject({
 			Authorization: 'Bearer cloudflare-token',
 			'Content-Type': 'application/json',
@@ -43,6 +45,40 @@ describe('Cloudflare AI Gateway asynchronous image provider', () => {
 			options: {
 				background: true,
 				webhookUrl: 'https://tomorrow-ish.news/api/image-generation/webhook/image-1?signature=test',
+			},
+		});
+	});
+
+	it('invokes a receiver-sensitive Worker fetch without binding it to the provider', async () => {
+		const fetcher = function (this: unknown) {
+			if (this !== undefined) {
+				return Promise.reject(new TypeError('Illegal invocation: function called with incorrect this reference'));
+			}
+			return Promise.resolve(Response.json({ result: { id: 'run-detached', state: 'Pending' } }));
+		} as typeof fetch;
+		const provider = new CloudflareGatewayImageProvider(
+			ACCOUNT_ID, 'cloudflare-token', 'tomorrow-ish', 'openai/gpt-image-2', fetcher,
+		);
+
+		await expect(provider.submit({
+			prompt: 'Safe prompt', aspectRatio: '16:9', webhookUrl: 'https://tomorrow-ish.news/callback',
+		})).resolves.toMatchObject({ providerRequestId: 'run-detached' });
+	});
+
+	it('classifies illegal fetch invocation without retaining the raw exception message', async () => {
+		const fetcher = vi.fn().mockRejectedValue(
+			new TypeError('Illegal invocation: function called with incorrect this reference and sensitive detail'),
+		);
+		const provider = new CloudflareGatewayImageProvider(
+			ACCOUNT_ID, 'cloudflare-token', 'tomorrow-ish', 'openai/gpt-image-2', fetcher,
+		);
+
+		await expect(provider.submit({
+			prompt: 'Safe prompt', aspectRatio: '16:9', webhookUrl: 'https://tomorrow-ish.news/callback',
+		})).rejects.toMatchObject({
+			failureClassification: 'PROVIDER_REQUEST',
+			metadata: {
+				stage: 'submission', exceptionName: 'TypeError', exceptionCategory: 'FETCH_RUNTIME',
 			},
 		});
 	});
