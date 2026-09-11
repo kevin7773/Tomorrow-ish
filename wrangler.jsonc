@@ -13,8 +13,8 @@
     "MODEL_NAME": "gpt-5.6-terra",
     "MODEL_GENERATION_ENABLED": "true",
     "MODEL_DAILY_BUDGET_MICRO_USD": "1000000",
-    "IMAGE_PROVIDER": "replicate",
-    "IMAGE_MODEL": "black-forest-labs/flux-2-pro",
+    "IMAGE_PROVIDER": "openai",
+    "IMAGE_MODEL": "gpt-image-2",
     "IMAGE_GENERATION_ENABLED": "false"
   },
   "routes": [

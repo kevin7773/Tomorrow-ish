@@ -46,7 +46,7 @@ Astro runs against Cloudflare's local Workers runtime and the local `DB` binding
 
 The private editorial workspace is available at `http://localhost:4321/editorial`. Localhost uses a fixed development-only editor identity; non-local requests always require a valid Cloudflare Access assertion and complete Access configuration.
 
-Approved stories also expose a governed article-image review stage. The Replicate adapter, durable R2 copy, append-only D1 history, and explicit approval controls are documented in the [article-image generation runbook](./docs/article-image-generation.md). Image generation is disabled by default and tests use injected mocks; local development makes no paid image requests.
+Approved stories also expose a governed article-image review stage. The active OpenAI adapter, retained Replicate adapter, durable R2 copy, append-only D1 history, and explicit approval controls are documented in the [article-image generation runbook](./docs/article-image-generation.md). Image generation is disabled by default and tests use injected mocks; local development makes no paid image requests.
 
 M3 adds a governed, manual normalization and candidate-generation path. In local development, the normalization and generation screens use a deterministic fake provider that requires no network access, API key, or new Cloudflare binding:
 
@@ -128,7 +128,7 @@ Migration `0003_governed_generation.sql` is not applied by deployment. Before an
 
 The [M3 provider runbook](./docs/m3-provider-review.md) records the prepared OpenAI adapter, request contract, budget, secret command, and separately reviewed enablement steps. Production generation remains disabled, and `OPENAI_API_KEY` must never be committed.
 
-Migration `0005_governed_article_images.sql`, the `tomorrow-ish-images` R2 bucket, the `REPLICATE_API_TOKEN` secret, and `IMAGE_GENERATION_ENABLED=true` are separate manual production steps. See the [article-image generation runbook](./docs/article-image-generation.md). No migration, bucket creation, secret creation, paid request, deployment, or production enablement is automatic.
+Migration `0005_governed_article_images.sql`, the `tomorrow-ish-images` R2 bucket, and `IMAGE_GENERATION_ENABLED=true` are separate manual production steps. The active image adapter reuses the existing `OPENAI_API_KEY`; the retained Replicate adapter would require `REPLICATE_API_TOKEN` only if selected later. See the [article-image generation runbook](./docs/article-image-generation.md). No migration, bucket creation, secret creation, paid request, deployment, or production enablement is automatic.
 
 Migration `0006_add_editorial_categories.sql` adds Sports (`sports`), Weather (`weather`), and Community (`community`) as ordinary category reference rows. It is additive and idempotent, preserves every existing category and story relationship, and must be applied through the same separately reviewed production migration process.
 
