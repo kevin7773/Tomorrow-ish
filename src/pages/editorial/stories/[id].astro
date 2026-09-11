@@ -21,6 +21,7 @@ const nextStatuses = PUBLICATION_STATUSES.filter(
 	(status) => status !== 'PUBLISHED' && canTransitionPublication(story.status, status),
 );
 const contentLocked = story.status === 'PUBLISHED' || story.status === 'ARCHIVED';
+const hasPendingImage = images.some((image) => image.status === 'PENDING');
 ---
 
 <EditorialLayout title={story.headline}>
@@ -81,8 +82,11 @@ const contentLocked = story.status === 'PUBLISHED' || story.status === 'ARCHIVED
 				<input type="hidden" name="action" value="generate" />
 				<input type="hidden" name="storyId" value={story.id} />
 				<input type="hidden" name="returnPath" value={returnPath} />
-				<button class="editorial-button" type="submit">Generate 16:9 image</button>
+				<button class="editorial-button" type="submit" disabled={hasPendingImage}>
+					{hasPendingImage ? 'Image generation pending' : 'Generate landscape image'}
+				</button>
 			</form>
+			{hasPendingImage && <p>The provider accepted this request. Approval and another paid generation remain unavailable until it completes or fails.</p>}
 		</section>
 	)}
 
@@ -133,6 +137,17 @@ const contentLocked = story.status === 'PUBLISHED' || story.status === 'ARCHIVED
 								<input type="hidden" name="imageId" value={image.id} />
 								<input type="hidden" name="returnPath" value={returnPath} />
 								<button class="editorial-button editorial-button--quiet" type="submit">Request another version</button>
+							</form>
+						)}
+						{image.status === 'PENDING' && (
+							<form method="post" action="/editorial/actions/images">
+								<input type="hidden" name="csrf_token" value={csrfToken} />
+								<input type="hidden" name="action" value="resolve-pending" />
+								<input type="hidden" name="storyId" value={story.id} />
+								<input type="hidden" name="imageId" value={image.id} />
+								<input type="hidden" name="returnPath" value={returnPath} />
+								<button class="editorial-button editorial-button--quiet" type="submit">Resolve stale request</button>
+								<p>Available after one hour. This processes an already-delivered callback or closes the request as failed; it never submits another provider request.</p>
 							</form>
 						)}
 					</article>

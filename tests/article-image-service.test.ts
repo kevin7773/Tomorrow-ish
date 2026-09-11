@@ -38,13 +38,24 @@ function setup(options: { status?: EditorialStory['status']; providerError?: Ima
 	} as unknown as EditorialRepository;
 	const imageRepository = {
 		findById: vi.fn().mockResolvedValue(image(options.imageStatus)),
+		findByProviderRequestId: vi.fn().mockResolvedValue(null),
+		hasPendingForStory: vi.fn().mockResolvedValue(false),
 		recordGenerated: vi.fn().mockResolvedValue(true),
 		recordFailure: vi.fn().mockResolvedValue(true),
+		recordPending: vi.fn().mockResolvedValue(true),
+		attachSubmission: vi.fn().mockResolvedValue(true),
+		completePending: vi.fn().mockResolvedValue(true),
+		failPending: vi.fn().mockResolvedValue(true),
+		recordWebhook: vi.fn().mockResolvedValue('created'),
+		findWebhook: vi.fn().mockResolvedValue(null),
+		claimWebhook: vi.fn().mockResolvedValue(true),
+		releaseWebhook: vi.fn().mockResolvedValue(undefined),
+		markWebhookProcessed: vi.fn().mockResolvedValue(undefined),
 		approve: vi.fn().mockResolvedValue(true),
 		transition: vi.fn().mockResolvedValue(true),
 	} as unknown as ArticleImageRepository;
 	const provider: ImageProvider = {
-		provider: 'fake', model: 'fake-v1',
+		provider: 'fake', model: 'fake-v1', lifecycle: 'synchronous',
 		generate: options.providerError
 			? vi.fn().mockRejectedValue(options.providerError)
 			: vi.fn().mockResolvedValue({
@@ -65,7 +76,7 @@ function setup(options: { status?: EditorialStory['status']; providerError?: Ima
 }
 
 describe('governed article image service', () => {
-	it.each(['DRAFT', 'REVIEW', 'REJECTED'] as const)('blocks paid generation for a %s story', async (status) => {
+	it.each(['DRAFT', 'REVIEW', 'PUBLISHED', 'REJECTED', 'ARCHIVED'] as const)('blocks paid generation for a %s story', async (status) => {
 		const { service, provider } = setup({ status });
 		await expect(service.generate(identity, { storyId: 'story-1' })).rejects.toThrow('Only an approved story');
 		expect(provider.generate).not.toHaveBeenCalled();
@@ -73,7 +84,7 @@ describe('governed article image service', () => {
 
 	it('generates through the provider abstraction, stores the asset, and persists exact provenance unapproved', async () => {
 		const { service, imageRepository, provider, assetStore } = setup();
-		await expect(service.generate(identity, { storyId: 'story-1' })).resolves.toBe('id-1');
+		await expect(service.generate(identity, { storyId: 'story-1' })).resolves.toEqual({ imageId: 'id-1', status: 'GENERATED' });
 		expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({ aspectRatio: '16:9' }));
 		expect(assetStore.put).toHaveBeenCalledOnce();
 		expect(imageRepository.recordGenerated).toHaveBeenCalledWith(expect.objectContaining({
@@ -152,5 +163,252 @@ describe('governed article image service', () => {
 		await expect(approved.service.requestRegeneration(identity, { storyId: 'story-1', imageId: 'image-1' }))
 			.rejects.toThrow('Only an unapproved image');
 		expect(approved.imageRepository.transition).not.toHaveBeenCalled();
+	});
+
+	it('persists PENDING before submitting one asynchronous provider request', async () => {
+		const editorialRepository = {
+			findEditorialStoryById: vi.fn().mockResolvedValue(story()),
+		} as unknown as EditorialRepository;
+		const imageRepository = {
+			findById: vi.fn().mockResolvedValue(image('PENDING')),
+			hasPendingForStory: vi.fn().mockResolvedValue(false),
+			recordPending: vi.fn().mockResolvedValue(true),
+			attachSubmission: vi.fn().mockResolvedValue(true),
+			failPending: vi.fn().mockResolvedValue(true),
+		} as unknown as ArticleImageRepository;
+		const provider: ImageProvider = {
+			provider: 'cloudflare-ai-gateway', model: 'openai/gpt-image-2', lifecycle: 'asynchronous',
+			submit: vi.fn().mockResolvedValue({
+				provider: 'cloudflare-ai-gateway', model: 'openai/gpt-image-2',
+				providerRequestId: 'run-1', metadata: { submissionState: 'queued' },
+			}),
+		};
+		const assetStore = { put: vi.fn(), delete: vi.fn() } as unknown as ImageAssetStore;
+		let id = 0;
+		const processStoredWebhook = vi.fn().mockResolvedValue(undefined);
+		const service = new ArticleImageService(editorialRepository, imageRepository, provider, assetStore, {
+			now: () => '2026-09-11T12:00:00.000Z', createId: () => `id-${++id}`,
+			createWebhookUrl: vi.fn().mockResolvedValue('https://tomorrow-ish.news/api/image-generation/webhook/id-1?signature=safe'),
+			processStoredWebhook,
+		});
+
+		await expect(service.generate(identity, { storyId: 'story-1' })).resolves.toEqual({ imageId: 'id-1', status: 'PENDING' });
+		expect(imageRepository.recordPending).toHaveBeenCalledWith(expect.objectContaining({
+			id: 'id-1', storyId: 'story-1', provider: 'cloudflare-ai-gateway', model: 'openai/gpt-image-2',
+			altText: expect.stringContaining('Editorial illustration'),
+		}));
+		expect(provider.submit).toHaveBeenCalledOnce();
+		expect(vi.mocked(imageRepository.recordPending).mock.invocationCallOrder[0])
+			.toBeLessThan(vi.mocked(provider.submit).mock.invocationCallOrder[0]);
+		expect(imageRepository.attachSubmission).toHaveBeenCalledWith(expect.objectContaining({ providerRequestId: 'run-1' }));
+		expect(processStoredWebhook).toHaveBeenCalledWith('id-1');
+		expect(assetStore.put).not.toHaveBeenCalled();
+	});
+
+	it('blocks another paid submission while the story has a pending request', async () => {
+		const state = setup();
+		vi.mocked(state.imageRepository.hasPendingForStory).mockResolvedValueOnce(true);
+		await expect(state.service.generate(identity, { storyId: 'story-1' })).rejects.toThrow('already pending');
+		expect(state.provider.generate).not.toHaveBeenCalled();
+		expect(state.imageRepository.recordPending).not.toHaveBeenCalled();
+	});
+
+	it('marks a pre-acceptance asynchronous submission failure without retrying', async () => {
+		const editorialRepository = {
+			findEditorialStoryById: vi.fn().mockResolvedValue(story()),
+		} as unknown as EditorialRepository;
+		const imageRepository = {
+			hasPendingForStory: vi.fn().mockResolvedValue(false),
+			recordPending: vi.fn().mockResolvedValue(true),
+			failPending: vi.fn().mockResolvedValue(true),
+		} as unknown as ArticleImageRepository;
+		const failure = new ImageProviderError('Gateway unavailable.', 'PROVIDER_REQUEST', null, { stage: 'submission' });
+		const provider: ImageProvider = {
+			provider: 'cloudflare-ai-gateway', model: 'openai/gpt-image-2', lifecycle: 'asynchronous',
+			submit: vi.fn().mockRejectedValue(failure),
+		};
+		const service = new ArticleImageService(editorialRepository, imageRepository, provider, {
+			put: vi.fn(), delete: vi.fn(),
+		}, {
+			createId: (() => { let id = 0; return () => `id-${++id}`; })(),
+			createWebhookUrl: vi.fn().mockResolvedValue('https://tomorrow-ish.news/callback?signature=safe'),
+		});
+
+		await expect(service.generate(identity, { storyId: 'story-1' })).rejects.toBe(failure);
+		expect(provider.submit).toHaveBeenCalledOnce();
+		expect(imageRepository.failPending).toHaveBeenCalledWith(expect.objectContaining({
+			imageId: 'id-1', providerRequestId: null, errorClassification: 'PROVIDER_REQUEST',
+		}));
+	});
+
+	it('validates webhook configuration before persisting or submitting an asynchronous request', async () => {
+		const editorialRepository = {
+			findEditorialStoryById: vi.fn().mockResolvedValue(story()),
+		} as unknown as EditorialRepository;
+		const imageRepository = {
+			hasPendingForStory: vi.fn().mockResolvedValue(false), recordPending: vi.fn(),
+		} as unknown as ArticleImageRepository;
+		const provider: ImageProvider = {
+			provider: 'cloudflare-ai-gateway', model: 'openai/gpt-image-2', lifecycle: 'asynchronous', submit: vi.fn(),
+		};
+		const service = new ArticleImageService(editorialRepository, imageRepository, provider, {
+			put: vi.fn(), delete: vi.fn(),
+		}, { createId: () => 'image-1', createWebhookUrl: vi.fn().mockRejectedValue(new Error('missing secret')) });
+
+		await expect(service.generate(identity, { storyId: 'story-1' }))
+			.rejects.toMatchObject({ failureClassification: 'PROVIDER_CONFIGURATION' });
+		expect(imageRepository.recordPending).not.toHaveBeenCalled();
+		expect(provider.submit).not.toHaveBeenCalled();
+	});
+
+	it('closes an accepted request safely when provider request-ID persistence fails', async () => {
+		const editorialRepository = {
+			findEditorialStoryById: vi.fn().mockResolvedValue(story()),
+		} as unknown as EditorialRepository;
+		const imageRepository = {
+			hasPendingForStory: vi.fn().mockResolvedValue(false),
+			recordPending: vi.fn().mockResolvedValue(true),
+			attachSubmission: vi.fn().mockRejectedValue(new Error('D1 unavailable')),
+			failPending: vi.fn().mockResolvedValue(true),
+		} as unknown as ArticleImageRepository;
+		const provider: ImageProvider = {
+			provider: 'cloudflare-ai-gateway', model: 'openai/gpt-image-2', lifecycle: 'asynchronous',
+			submit: vi.fn().mockResolvedValue({
+				provider: 'cloudflare-ai-gateway', model: 'openai/gpt-image-2', providerRequestId: 'run-accepted', metadata: {},
+			}),
+		};
+		const service = new ArticleImageService(editorialRepository, imageRepository, provider, {
+			put: vi.fn(), delete: vi.fn(),
+		}, { createId: () => 'image-1', createWebhookUrl: vi.fn().mockResolvedValue('https://tomorrow-ish.news/callback') });
+
+		await expect(service.generate(identity, { storyId: 'story-1' })).rejects.toMatchObject({
+			failureClassification: 'PROVIDER_REQUEST', providerRequestId: 'run-accepted',
+		});
+		expect(provider.submit).toHaveBeenCalledOnce();
+		expect(imageRepository.failPending).toHaveBeenCalledWith(expect.objectContaining({
+			imageId: 'image-1', providerRequestId: 'run-accepted',
+			metadata: { stage: 'submission-persistence' },
+		}));
+	});
+
+	it('manually closes a stale pending request without deleting provenance or calling a provider', async () => {
+		const pending = {
+			...image('PENDING'), assetKey: null, contentType: null, byteSize: null, generatedAt: null,
+			providerRequestId: 'run-stale', requestedAt: '2026-09-11T10:00:00.000Z',
+		};
+		const editorialRepository = {
+			findEditorialStoryById: vi.fn().mockResolvedValue(story()),
+		} as unknown as EditorialRepository;
+		const imageRepository = {
+			findById: vi.fn().mockResolvedValue(pending),
+			findWebhook: vi.fn().mockResolvedValue(null),
+			failPending: vi.fn().mockResolvedValue(true),
+		} as unknown as ArticleImageRepository;
+		const provider = {
+			provider: 'unused', model: 'unused', lifecycle: 'synchronous' as const, generate: vi.fn(),
+		};
+		const service = new ArticleImageService(editorialRepository, imageRepository, provider, {
+			put: vi.fn(), delete: vi.fn(),
+		}, { now: () => '2026-09-11T12:00:00.000Z', createId: () => 'audit-1' });
+
+		await expect(service.resolveStalePending(identity, { storyId: 'story-1', imageId: 'image-1' }))
+			.resolves.toBe('GENERATION_FAILED');
+		expect(imageRepository.failPending).toHaveBeenCalledWith(expect.objectContaining({
+			imageId: 'image-1', providerRequestId: 'run-stale', actorEmail: 'editor@tomorrow-ish.news',
+			errorClassification: 'STALE_PENDING', metadata: expect.objectContaining({ manualRecovery: true }),
+		}));
+		expect(provider.generate).not.toHaveBeenCalled();
+	});
+
+	it('recovers and processes a delivered early callback instead of submitting or discarding it', async () => {
+		const pending = {
+			...image('PENDING'), assetKey: null, contentType: null, byteSize: null, generatedAt: null,
+			providerRequestId: null, requestedAt: '2026-09-11T10:00:00.000Z',
+		};
+		const generated = { ...pending, providerRequestId: 'run-early', status: 'GENERATED' as const };
+		const editorialRepository = {
+			findEditorialStoryById: vi.fn().mockResolvedValue(story()),
+		} as unknown as EditorialRepository;
+		const imageRepository = {
+			findById: vi.fn().mockResolvedValueOnce(pending).mockResolvedValueOnce(generated),
+			findWebhook: vi.fn().mockResolvedValue({
+				imageId: 'image-1', providerRequestId: 'run-early', outcome: 'SUCCESS', resultUrl: 'https://asset.example.r2.dev/image.webp',
+				metadata: {}, errorClassification: null, errorMessage: null, receivedAt: '2026-09-11T10:01:00.000Z', processingState: 'RECEIVED',
+			}),
+			attachSubmission: vi.fn().mockResolvedValue(true),
+		} as unknown as ArticleImageRepository;
+		const processStoredWebhook = vi.fn().mockResolvedValue(undefined);
+		const provider = {
+			provider: 'unused', model: 'unused', lifecycle: 'synchronous' as const, generate: vi.fn(),
+		};
+		const service = new ArticleImageService(editorialRepository, imageRepository, provider, {
+			put: vi.fn(), delete: vi.fn(),
+		}, {
+			now: () => '2026-09-11T12:00:00.000Z', createId: () => 'audit-1', processStoredWebhook,
+		});
+
+		await expect(service.resolveStalePending(identity, { storyId: 'story-1', imageId: 'image-1' }))
+			.resolves.toBe('GENERATED');
+		expect(imageRepository.attachSubmission).toHaveBeenCalledWith(expect.objectContaining({
+			imageId: 'image-1', providerRequestId: 'run-early', metadata: expect.objectContaining({ recoveredFromWebhook: true }),
+		}));
+		expect(processStoredWebhook).toHaveBeenCalledWith('image-1');
+		expect(provider.generate).not.toHaveBeenCalled();
+	});
+
+	it('closes a stale claimed callback without racing a second completion worker', async () => {
+		const pending = {
+			...image('PENDING'), assetKey: null, contentType: null, byteSize: null, generatedAt: null,
+			providerRequestId: 'run-processing', requestedAt: '2026-09-11T10:00:00.000Z',
+		};
+		const editorialRepository = {
+			findEditorialStoryById: vi.fn().mockResolvedValue(story()),
+		} as unknown as EditorialRepository;
+		const imageRepository = {
+			findById: vi.fn().mockResolvedValue(pending),
+			findWebhook: vi.fn().mockResolvedValue({
+				imageId: 'image-1', providerRequestId: 'run-processing', outcome: 'SUCCESS',
+				resultUrl: 'https://asset.example.r2.dev/image.webp', metadata: { callbackState: 'completed' },
+				errorClassification: null, errorMessage: null, receivedAt: '2026-09-11T10:01:00.000Z', processingState: 'PROCESSING',
+			}),
+			failPending: vi.fn().mockResolvedValue(true),
+			markWebhookProcessed: vi.fn().mockResolvedValue(undefined),
+		} as unknown as ArticleImageRepository;
+		const processStoredWebhook = vi.fn();
+		const provider = {
+			provider: 'unused', model: 'unused', lifecycle: 'synchronous' as const, generate: vi.fn(),
+		};
+		const service = new ArticleImageService(editorialRepository, imageRepository, provider, {
+			put: vi.fn(), delete: vi.fn(),
+		}, { now: () => '2026-09-11T12:00:00.000Z', createId: () => 'audit-1', processStoredWebhook });
+
+		await expect(service.resolveStalePending(identity, { storyId: 'story-1', imageId: 'image-1' }))
+			.resolves.toBe('GENERATION_FAILED');
+		expect(processStoredWebhook).not.toHaveBeenCalled();
+		expect(imageRepository.failPending).toHaveBeenCalledWith(expect.objectContaining({
+			providerRequestId: 'run-processing', errorClassification: 'STALE_PENDING',
+		}));
+		expect(imageRepository.markWebhookProcessed).toHaveBeenCalledWith('image-1', 'run-processing');
+	});
+
+	it('does not allow manual pending recovery before the one-hour threshold', async () => {
+		const pending = {
+			...image('PENDING'), assetKey: null, contentType: null, byteSize: null, generatedAt: null,
+			requestedAt: '2026-09-11T11:30:00.000Z',
+		};
+		const editorialRepository = {
+			findEditorialStoryById: vi.fn().mockResolvedValue(story()),
+		} as unknown as EditorialRepository;
+		const imageRepository = {
+			findById: vi.fn().mockResolvedValue(pending), findWebhook: vi.fn(), failPending: vi.fn(),
+		} as unknown as ArticleImageRepository;
+		const service = new ArticleImageService(editorialRepository, imageRepository, {
+			provider: 'unused', model: 'unused', lifecycle: 'synchronous', generate: vi.fn(),
+		}, { put: vi.fn(), delete: vi.fn() }, { now: () => '2026-09-11T12:00:00.000Z' });
+
+		await expect(service.resolveStalePending(identity, { storyId: 'story-1', imageId: 'image-1' }))
+			.rejects.toThrow('only after one hour');
+		expect(imageRepository.findWebhook).not.toHaveBeenCalled();
+		expect(imageRepository.failPending).not.toHaveBeenCalled();
 	});
 });

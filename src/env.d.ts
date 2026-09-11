@@ -12,3 +12,11 @@ declare namespace App {
 		csrfToken?: string;
 	}
 }
+
+declare namespace Cloudflare {
+	interface Env {
+		CLOUDFLARE_AI_API_TOKEN: string;
+		IMAGE_WEBHOOK_SECRET: string;
+		IMAGE_WEBHOOK_ORIGIN: string;
+	}
+}

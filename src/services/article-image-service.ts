@@ -9,7 +9,16 @@ import { EditorialValidationError, requiredText } from './validation';
 export interface ArticleImageServiceDependencies {
 	now?: () => string;
 	createId?: () => string;
+	createWebhookUrl?: (imageId: string) => Promise<string>;
+	processStoredWebhook?: (imageId: string) => Promise<void>;
 }
+
+export interface ArticleImageGenerationResult {
+	imageId: string;
+	status: 'PENDING' | 'GENERATED' | 'GENERATION_FAILED';
+}
+
+export const STALE_PENDING_MINIMUM_MS = 60 * 60 * 1000;
 
 function actor(identity: EditorialIdentity | null | undefined): string {
 	if (!identity?.email) throw new EditorialValidationError('An authenticated editor is required.', 'unauthorized');
@@ -28,6 +37,8 @@ async function deleteAssetBestEffort(assetStore: ImageAssetStore, key: string): 
 export class ArticleImageService {
 	private readonly now: () => string;
 	private readonly createId: () => string;
+	private readonly createWebhookUrl?: (imageId: string) => Promise<string>;
+	private readonly processStoredWebhook?: (imageId: string) => Promise<void>;
 
 	constructor(
 		private readonly editorialRepository: EditorialRepository,
@@ -38,9 +49,11 @@ export class ArticleImageService {
 	) {
 		this.now = dependencies.now ?? (() => new Date().toISOString());
 		this.createId = dependencies.createId ?? (() => crypto.randomUUID());
+		this.createWebhookUrl = dependencies.createWebhookUrl;
+		this.processStoredWebhook = dependencies.processStoredWebhook;
 	}
 
-	async generate(identity: EditorialIdentity, input: { storyId: unknown }): Promise<string> {
+	async generate(identity: EditorialIdentity, input: { storyId: unknown }): Promise<ArticleImageGenerationResult> {
 		const requestedByEmail = actor(identity);
 		const storyId = requiredText(input.storyId, 'Story ID', 100);
 		const story = await this.editorialRepository.findEditorialStoryById(storyId);
@@ -48,10 +61,111 @@ export class ArticleImageService {
 		if (story.status !== 'APPROVED') {
 			throw new EditorialValidationError('Only an approved story can request paid image generation.');
 		}
+		if (await this.imageRepository.hasPendingForStory(storyId)) {
+			throw new EditorialValidationError('An image generation is already pending for this story.', 'conflict');
+		}
 
 		const id = this.createId();
 		const requestedAt = this.now();
 		const prompt = produceArticleImagePrompt(story);
+		if (this.provider.lifecycle === 'asynchronous') {
+			if (!this.createWebhookUrl) {
+				throw new ImageProviderError('Asynchronous image callbacks are not configured.', 'PROVIDER_CONFIGURATION');
+			}
+			let webhookUrl: string;
+			try {
+				webhookUrl = await this.createWebhookUrl(id);
+			} catch {
+				throw new ImageProviderError(
+					'Asynchronous image callbacks are not configured.',
+					'PROVIDER_CONFIGURATION',
+				);
+			}
+			const pending = await this.imageRepository.recordPending({
+				id,
+				storyId,
+				provider: this.provider.provider,
+				model: this.provider.model,
+				prompt: prompt.prompt,
+				promptVersion: prompt.promptVersion,
+				aspectRatio: '16:9',
+				altText: prompt.proposedAltText,
+				requestedByEmail,
+				requestedAt,
+				auditId: this.createId(),
+			});
+			if (!pending) {
+				throw new EditorialValidationError('The story changed or an image generation is already pending.', 'conflict');
+			}
+
+			let submittedRequestId: string | null = null;
+			try {
+				const submitted = await this.provider.submit({
+					prompt: prompt.prompt,
+					aspectRatio: '16:9',
+					webhookUrl,
+				});
+				submittedRequestId = submitted.providerRequestId;
+				const attached = await this.imageRepository.attachSubmission({
+					imageId: id,
+					providerRequestId: submitted.providerRequestId,
+					metadata: submitted.metadata,
+					submittedAt: this.now(),
+					auditId: this.createId(),
+				});
+				if (!attached) {
+					await this.imageRepository.failPending({
+						imageId: id,
+						providerRequestId: submitted.providerRequestId,
+						metadata: { stage: 'submission-persistence' },
+						errorClassification: 'PROVIDER_REQUEST',
+						errorMessage: 'The accepted provider request could not be attached locally.',
+						failedAt: this.now(),
+						auditId: this.createId(),
+					});
+					throw new EditorialValidationError('The image submission could not be attached locally.', 'conflict');
+				}
+				await this.processStoredWebhook?.(id);
+				const current = await this.imageRepository.findById(id);
+				return {
+					imageId: id,
+					status: current?.status === 'GENERATED' || current?.status === 'GENERATION_FAILED'
+						? current.status
+						: 'PENDING',
+				};
+			} catch (error) {
+				if (error instanceof ImageProviderError) {
+					await this.imageRepository.failPending({
+						imageId: id,
+						providerRequestId: error.providerRequestId ?? submittedRequestId,
+						metadata: error.metadata,
+						errorClassification: error.failureClassification,
+						errorMessage: error.message.slice(0, 500),
+						failedAt: this.now(),
+						auditId: this.createId(),
+					});
+				} else if (!(error instanceof EditorialValidationError)) {
+					const safeFailure = new ImageProviderError(
+						'The asynchronous image request could not be submitted.',
+						'PROVIDER_REQUEST',
+						submittedRequestId,
+						{ stage: submittedRequestId ? 'submission-persistence' : 'submission' },
+					);
+					await this.imageRepository.failPending({
+						imageId: id,
+						providerRequestId: submittedRequestId,
+						metadata: safeFailure.metadata,
+						errorClassification: safeFailure.failureClassification,
+						errorMessage: safeFailure.message,
+						failedAt: this.now(),
+						auditId: this.createId(),
+					});
+					throw safeFailure;
+				}
+				throw error;
+			}
+		}
+
 		let providerRequestId: string | null = null;
 		let providerMetadata: Record<string, unknown> = {};
 		try {
@@ -100,7 +214,7 @@ export class ArticleImageService {
 				await deleteAssetBestEffort(this.assetStore, stored.key);
 				throw new EditorialValidationError('The story changed; the generated asset was not attached.', 'conflict');
 			}
-			return id;
+			return { imageId: id, status: 'GENERATED' };
 		} catch (error) {
 			if (error instanceof ImageProviderError) {
 				await this.imageRepository.recordFailure({
@@ -122,6 +236,70 @@ export class ArticleImageService {
 			}
 			throw error;
 		}
+	}
+
+	async resolveStalePending(
+		identity: EditorialIdentity,
+		input: { storyId: unknown; imageId: unknown },
+	): Promise<'GENERATED' | 'GENERATION_FAILED'> {
+		const actorEmail = actor(identity);
+		const storyId = requiredText(input.storyId, 'Story ID', 100);
+		const imageId = requiredText(input.imageId, 'Image ID', 100);
+		const story = await this.editorialRepository.findEditorialStoryById(storyId);
+		if (!story) throw new EditorialValidationError('The story was not found.', 'not-found');
+		const image = await this.imageRepository.findById(imageId);
+		if (!image || image.storyId !== storyId || image.status !== 'PENDING') {
+			throw new EditorialValidationError('The image request is not pending.', 'conflict');
+		}
+		const resolvedAt = this.now();
+		const requestedAtMs = Date.parse(image.requestedAt);
+		const resolvedAtMs = Date.parse(resolvedAt);
+		if (!Number.isFinite(requestedAtMs) || !Number.isFinite(resolvedAtMs)
+			|| resolvedAtMs - requestedAtMs < STALE_PENDING_MINIMUM_MS) {
+			throw new EditorialValidationError('A pending image can be resolved manually only after one hour.', 'conflict');
+		}
+
+		const callback = await this.imageRepository.findWebhook(imageId);
+		if (callback) {
+			if (image.providerRequestId && image.providerRequestId !== callback.providerRequestId) {
+				throw new EditorialValidationError('The pending image has conflicting provider provenance.', 'conflict');
+			}
+			if (callback.processingState !== 'PROCESSING') {
+				if (!this.processStoredWebhook) {
+					throw new ImageProviderError('Asynchronous image callbacks are not configured.', 'PROVIDER_CONFIGURATION');
+				}
+				if (!image.providerRequestId) {
+					const attached = await this.imageRepository.attachSubmission({
+						imageId,
+						providerRequestId: callback.providerRequestId,
+						metadata: { ...image.metadata, recoveredFromWebhook: true },
+						submittedAt: resolvedAt,
+						auditId: this.createId(),
+					});
+					if (!attached) throw new EditorialValidationError('The pending image changed; reload and retry.', 'conflict');
+				}
+				await this.processStoredWebhook(imageId);
+				const completed = await this.imageRepository.findById(imageId);
+				if (completed?.status === 'GENERATED' || completed?.status === 'GENERATION_FAILED') {
+					return completed.status;
+				}
+				throw new EditorialValidationError('The pending callback could not be resolved.', 'conflict');
+			}
+		}
+
+		const failed = await this.imageRepository.failPending({
+			imageId,
+			providerRequestId: image.providerRequestId ?? callback?.providerRequestId ?? null,
+			actorEmail,
+			metadata: { ...image.metadata, ...callback?.metadata, manualRecovery: true },
+			errorClassification: 'STALE_PENDING',
+			errorMessage: 'The pending image received no callback and was closed manually after one hour.',
+			failedAt: resolvedAt,
+			auditId: this.createId(),
+		});
+		if (!failed) throw new EditorialValidationError('The pending image changed; reload and retry.', 'conflict');
+		if (callback) await this.imageRepository.markWebhookProcessed(imageId, callback.providerRequestId);
+		return 'GENERATION_FAILED';
 	}
 
 	async approve(identity: EditorialIdentity, input: { storyId: unknown; imageId: unknown; altText: unknown }): Promise<void> {

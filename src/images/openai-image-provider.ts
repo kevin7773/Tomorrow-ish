@@ -2,7 +2,7 @@ import {
 	ImageProviderError,
 	type GeneratedImage,
 	type ImageGenerationRequest,
-	type ImageProvider,
+	type SynchronousImageProvider,
 } from './image-provider';
 
 const DEFAULT_API_URL = 'https://api.openai.com/v1/images/generations';
@@ -169,8 +169,9 @@ function decodeBase64Image(value: string, requestId: string | null, metadata: Re
 	return bytes.buffer;
 }
 
-export class OpenAIImageProvider implements ImageProvider {
+export class OpenAIImageProvider implements SynchronousImageProvider {
 	readonly provider = 'openai';
+	readonly lifecycle = 'synchronous' as const;
 
 	constructor(
 		private readonly apiKey: string,

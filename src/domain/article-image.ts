@@ -1,4 +1,5 @@
 export const ARTICLE_IMAGE_STATUSES = [
+	'PENDING',
 	'GENERATED',
 	'APPROVED',
 	'REJECTED',

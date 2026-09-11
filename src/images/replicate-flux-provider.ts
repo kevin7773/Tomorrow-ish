@@ -2,7 +2,7 @@ import {
 	ImageProviderError,
 	type GeneratedImage,
 	type ImageGenerationRequest,
-	type ImageProvider,
+	type SynchronousImageProvider,
 } from './image-provider';
 
 const DEFAULT_API_BASE_URL = 'https://api.replicate.com/v1';
@@ -43,8 +43,9 @@ function fileExtension(contentType: string): string {
 	return 'webp';
 }
 
-export class ReplicateFluxProvider implements ImageProvider {
+export class ReplicateFluxProvider implements SynchronousImageProvider {
 	readonly provider = 'replicate';
+	readonly lifecycle = 'synchronous' as const;
 
 	constructor(
 		private readonly apiToken: string,

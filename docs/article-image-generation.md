@@ -6,12 +6,12 @@ Article images are an ancillary editorial subsystem. They cannot publish a story
 
 The subsystem has four replaceable boundaries:
 
-- `ImageProvider` accepts a prompt, aspect ratio, and provider options and returns provider/model provenance plus downloaded image bytes.
-- `OpenAIImageProvider` is the active adapter and uses the existing `OPENAI_API_KEY`. `ReplicateFluxProvider` remains available for a future provider switch. Article-domain and editorial code do not import provider-specific types.
+- `ImageProvider` is a discriminated synchronous/asynchronous provider union. Synchronous providers return validated bytes; asynchronous providers return an accepted provider request ID and complete through the webhook service.
+- `CloudflareGatewayImageProvider` is the active asynchronous adapter. `OpenAIImageProvider` and `ReplicateFluxProvider` remain available synchronous adapters. Article-domain and editorial code do not import provider-specific types.
 - `ImageAssetStore` durably copies bytes into the `IMAGE_ASSETS` R2 bucket before D1 records a successful generation.
 - `ArticleImageRepository` records append-only generation history and performs explicit review transitions.
 
-Only an authenticated editor viewing a story whose authoritative status is `APPROVED` can initiate a paid request. The button creates exactly one request; there is no automatic retry, polling loop, scheduled generation, or generation-on-draft behavior. A provider failure records a `GENERATION_FAILED` history row when a provider request was attempted and leaves the story unchanged.
+Only an authenticated editor viewing a story whose authoritative status is `APPROVED` can initiate a paid request. The button creates exactly one request; there is no automatic retry, polling loop, scheduled generation, or generation-on-draft behavior. A partial unique D1 index permits at most one `PENDING` row per story. A provider failure records a `GENERATION_FAILED` history row and leaves the story unchanged.
 
 ## Prompt production
 
@@ -21,7 +21,7 @@ The current prompt version is `tomorrow-ish-editorial-v2`. The exact submitted p
 
 ## Image lifecycle
 
-Successful images begin as `GENERATED` and cannot appear publicly. An editor can:
+The asynchronous lifecycle is `PENDING → GENERATED` or `PENDING → GENERATION_FAILED`. `PENDING` means the provider accepted the request but no reviewable asset exists. It is never treated as successful, cannot be approved, and blocks another paid generation for the same story. On completion, successful images become `GENERATED` and still cannot appear publicly. An editor can:
 
 - approve a generated image after reviewing/editing mandatory descriptive alt text;
 - reject it without deleting its asset or provenance;
@@ -29,9 +29,32 @@ Successful images begin as `GENERATED` and cannot appear publicly. An editor can
 
 Other recorded outcomes are `APPROVED`, `REJECTED`, and `GENERATION_FAILED`. Approval atomically changes the image status and assigns its immutable asset key to the story's single `stories.og_image_key` current-hero pointer. Multiple historical rows may remain `APPROVED`, but exactly one can function as the current/public hero because the story has only one pointer; the editorial UI labels that row `CURRENT HERO`. Current approved images cannot be rejected or marked for regeneration. Approving a later generated image moves the single pointer to that image without deleting or relabeling the previous approved provenance row. The public `/media/...` route serves an R2 object only while a currently `PUBLISHED` story still points to that exact key; prior publication or prior association is insufficient. Editorial previews use the Access-protected `/editorial/media/...` route.
 
-## OpenAI Images
+## Cloudflare AI Gateway background provider
 
-The active model is `gpt-image-2`. The adapter calls `POST /v1/images/generations`, requests one opaque 1536×864 WebP for the existing 16:9 workflow, and receives the result as base64 image data. It validates the response size, declared output format, base64 encoding, and WebP signature before returning bytes to the service. Only bounded, non-sensitive response metadata is persisted; provider error bodies and credentials are not retained.
+The active adapter submits one background REST request to `POST /client/v4/accounts/{account_id}/ai/run` with `model=openai/gpt-image-2`, `options.background=true`, and a per-image webhook URL. It sends one medium-quality, opaque, 1536×1024 WebP—the closest currently supported landscape size to the site's 16:9 hero format. The provider returns immediately with a run ID; that ID is attached to the already-persisted `PENDING` image record. Provider acceptance is not generation success. The request overrides any Gateway retry default with `cf-aig-max-attempts: 1`, so the Gateway cannot turn one editorial action into multiple upstream attempts.
+
+Cloudflare's current background/webhook contract is documented on the REST API, while the Workers AI binding documents ordinary `env.AI.run()` calls but does not expose the background webhook options in its binding contract. This implementation therefore uses the authenticated Cloudflare REST endpoint from the Worker and does not add an unused `AI` binding.
+
+Cloudflare documents webhook delivery as best-effort with no retries and does not document a callback-signature header. Each request therefore receives a unique HTTPS capability URL containing an HMAC-SHA-256 signature derived from `IMAGE_WEBHOOK_SECRET` and the locally generated image ID. The endpoint verifies that signature before parsing a bounded body. The submission sets `cf-aig-collect-log-payload: false`, retaining Gateway metrics while preventing the prompt and capability-bearing `webhookUrl` request body from being stored in Gateway logs. The capability URL and signing secret must not be logged elsewhere. Cloudflare's callback `story`, model, provider, object-key, and alt-text values are never authoritative: the persisted pending record supplies those values.
+
+The first valid terminal callback wins. The webhook inbox has one row per image and unique provider request ID; duplicate delivery is idempotent, contradictory later success/failure callbacks cannot overwrite a terminal image, and unknown or mismatched IDs are rejected. A callback that beats local run-ID persistence is retained as `RECEIVED` and processed immediately after the ID is attached. Completion claims the inbox row with a compare-and-set before downloading. It accepts only HTTPS Cloudflare R2 delivery URLs, a bounded WebP response of at most 12 MiB, a valid WebP signature, and the expected 1536×1024 dimensions. The deterministic R2 key comes only from persisted internal story/image IDs. If D1 completion fails after the R2 write, the service compensates by deleting the object.
+
+Failure callbacks store only bounded classifications/codes and provenance—not response bodies or raw exception messages—and never retry. Unexpected processing errors release the webhook inbox claim back to `RECEIVED` after compensating R2 cleanup, making the same already-delivered callback manually recoverable without another provider request.
+
+For a `PENDING` row older than one hour, an authenticated editor uses **Resolve stale request** on that story's image-history record. The action never constructs or invokes an image provider. If an early callback is waiting in `RECEIVED`, it restores the callback's run-ID mapping and processes that stored result. If no callback exists, or a crashed worker left its callback claimed as `PROCESSING`, it transitions the same image row to `GENERATION_FAILED` with `STALE_PENDING`, marks that inbox entry processed, records the acting editor in the audit log, preserves the original prompt and provenance, and releases the per-story pending lock. It does not reset a claimed callback and race a potentially live completion worker; that worker's D1 compare-and-set will fail and any object it wrote will be removed. A later callback cannot resurrect the terminal failure. This is the deliberate recovery procedure for crashes after pending persistence, provider acceptance before run-ID attachment, completion processing, and best-effort callback loss; there is no timer, deletion, automatic retry, or automatic resubmission.
+
+Official Cloudflare references:
+
+- [AI REST API, background requests, and webhook payload](https://developers.cloudflare.com/ai-gateway/usage/rest-api/)
+- [Cloudflare GPT Image 2 model contract](https://developers.cloudflare.com/ai/models/openai/gpt-image-2/)
+- [AI Gateway BYOK stored keys](https://developers.cloudflare.com/ai-gateway/configuration/bring-your-own-keys/)
+- [AI Gateway Unified Billing and credential precedence](https://developers.cloudflare.com/ai-gateway/features/unified-billing/)
+- [AI Gateway request retries and per-request overrides](https://developers.cloudflare.com/ai-gateway/configuration/request-handling/)
+- [AI Gateway payload logging control](https://developers.cloudflare.com/ai-gateway/observability/logging/)
+
+## Retained direct OpenAI Images provider
+
+The retained direct adapter uses `gpt-image-2`. It calls `POST /v1/images/generations`, requests one opaque 1536×864 WebP for the existing 16:9 workflow, and receives the result as base64 image data. It validates the response size, declared output format, base64 encoding, and WebP signature before returning bytes to the service. Only bounded, non-sensitive response metadata is persisted; provider error bodies and credentials are not retained.
 
 The generated bytes continue through the existing `ImageAssetStore` boundary: R2 persistence must succeed before D1 records a successful generation. The adapter performs no automatic retry, and `IMAGE_GENERATION_ENABLED=false` still blocks the request before either provider can be constructed.
 
@@ -57,21 +80,31 @@ Official references:
 `wrangler.jsonc` contains only replaceable, non-secret settings and the R2 binding:
 
 ```text
-IMAGE_PROVIDER=openai
-IMAGE_MODEL=gpt-image-2
+IMAGE_PROVIDER=cloudflare-ai-gateway
+IMAGE_MODEL=openai/gpt-image-2
 IMAGE_GENERATION_ENABLED=false
+CLOUDFLARE_ACCOUNT_ID=<account-id>
+CLOUDFLARE_AI_GATEWAY_ID=tomorrow-ish-images
+IMAGE_WEBHOOK_ORIGIN=https://tomorrow-ish.news
 IMAGE_ASSETS -> tomorrow-ish-images
 ```
 
+Two Worker secrets are required but never committed: `CLOUDFLARE_AI_API_TOKEN`, with Account > Workers AI > Read permission, and a strong random `IMAGE_WEBHOOK_SECRET`. The `/ai/run` route resolves the upstream OpenAI credential according to Cloudflare's documented order: a default BYOK stored key first, otherwise Unified Billing credits. The existing Worker `OPENAI_API_KEY` is used only by the retained direct OpenAI provider; this background REST adapter does not transmit it. Before enablement, an operator must deliberately choose and verify default-alias BYOK or funded Unified Billing and configure an AI Gateway spend limit. Unified Billing currently adds a 5% credit-purchase fee while passing provider inference prices through without markup.
+
 Do not enable or deploy this subsystem until the following separately reviewed operator actions are authorized:
 
-1. Review and apply `migrations/0005_governed_article_images.sql` to the intended D1 database. Deployment never applies it automatically.
-2. Create the R2 bucket named `tomorrow-ish-images` (or change the reviewed binding configuration to the chosen bucket). This repository does not provision it.
-3. Confirm the existing production `OPENAI_API_KEY` secret is present. Do not copy it into source, command output, or committed configuration. If Replicate is selected in the future, configure `REPLICATE_API_TOKEN` separately at that time.
-4. Change only `IMAGE_GENERATION_ENABLED` to `true`, rerun `npm run types`, and complete the normal validation/deployment review.
+1. Review and apply `migrations/0007_async_article_images.sql` to the intended D1 database only after confirming migrations `0001`–`0006` are already applied. Deployment never applies it automatically. The migration copies existing rows—including historical failures—without changing their provenance.
+2. Confirm the `tomorrow-ish-images` R2 bucket and `IMAGE_ASSETS` binding still match the reviewed configuration.
+3. Create or select the AI Gateway named by `CLOUDFLARE_AI_GATEWAY_ID`. Configure either the existing OpenAI credential as the `default` BYOK key or deliberately fund Unified Billing; do not assume a non-default alias will be used by `/ai/run`.
+4. Create a narrowly scoped Cloudflare API token with Account > Workers AI > Read permission and enter it interactively with `npx wrangler secret put CLOUDFLARE_AI_API_TOKEN`. Never place it in command history or source.
+5. Generate a strong independent signing secret of at least 32 bytes and enter it interactively with `npx wrangler secret put IMAGE_WEBHOOK_SECRET`. Do not reuse the Cloudflare or OpenAI credential.
+6. Deploy once with `IMAGE_GENERATION_ENABLED=false`, verify the webhook route rejects missing/invalid signatures, and smoke-test editorial/public image boundaries. No model request is required for this check.
+7. For a later controlled paid smoke test, select one `APPROVED` story, inspect its final prompt/alt text, set only `IMAGE_GENERATION_ENABLED=true`, deploy, submit exactly once, and stop. Verify `PENDING` first, then one authenticated callback, one `GENERATED` row, one R2 object, unchanged story status/`og_image_key`, protected preview access, and public denial. Return the flag to `false` afterward. Never approve or retry automatically.
 
-For local end-to-end UI testing, use an explicitly disposable local/test provider setup and keep its token only in ignored local environment configuration; automated tests inject mocks and never call Replicate.
+The webhook path must remain internet-reachable over HTTPS so Cloudflare can deliver it. If a broader Cloudflare Access application covers the whole hostname, configure a narrowly scoped bypass for `/api/image-generation/webhook/*`; the HMAC capability is the route's authentication control. Keep the editorial Access policy unchanged.
+
+For local end-to-end UI testing, use an explicitly disposable local/test provider setup and keep its token only in ignored local environment configuration; automated tests inject mocks and never call Cloudflare, OpenAI, or Replicate.
 
 ## Adding another provider
 
-Implement `ImageProvider`, return normalized `GeneratedImage` bytes and provenance, and extend the runtime factory's provider selection. Do not change story states, the D1 image lifecycle, asset storage, approval behavior, or publication service. Provider-specific input options belong inside the adapter or the optional provider-options field, not in article-domain records.
+Implement either `SynchronousImageProvider` (normalized `GeneratedImage` bytes) or `AsynchronousImageProvider` (accepted run provenance), then extend the runtime factory. Asynchronous implementations must use the existing pending/webhook completion service rather than reporting acceptance as success. Do not change story states, approval behavior, or publication authority.

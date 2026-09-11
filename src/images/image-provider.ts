@@ -15,6 +15,13 @@ export interface GeneratedImage {
 	metadata: Record<string, unknown>;
 }
 
+export interface SubmittedImageGeneration {
+	provider: string;
+	model: string;
+	providerRequestId: string;
+	metadata: Record<string, unknown>;
+}
+
 export type ImageFailureClassification =
 	| 'PROVIDER_DISABLED'
 	| 'PROVIDER_CONFIGURATION'
@@ -37,8 +44,19 @@ export class ImageProviderError extends Error {
 	}
 }
 
-export interface ImageProvider {
+interface ImageProviderBase {
 	readonly provider: string;
 	readonly model: string;
+}
+
+export interface SynchronousImageProvider extends ImageProviderBase {
+	readonly lifecycle: 'synchronous';
 	generate(request: ImageGenerationRequest): Promise<GeneratedImage>;
 }
+
+export interface AsynchronousImageProvider extends ImageProviderBase {
+	readonly lifecycle: 'asynchronous';
+	submit(request: ImageGenerationRequest & { webhookUrl: string }): Promise<SubmittedImageGeneration>;
+}
+
+export type ImageProvider = SynchronousImageProvider | AsynchronousImageProvider;
