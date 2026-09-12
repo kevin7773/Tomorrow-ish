@@ -16,21 +16,35 @@ function renderInline(value: string): string {
 }
 
 export function renderStoryMarkdown(markdown: string): string {
+	return renderStoryMarkdownBlocks(markdown).map((block) => block.html).join('\n');
+}
+
+export interface RenderedStoryBlock {
+	kind: 'paragraph' | 'heading' | 'list' | 'blockquote';
+	html: string;
+}
+
+export function renderStoryMarkdownBlocks(markdown: string): RenderedStoryBlock[] {
 	const lines = markdown.replace(/\\n/g, '\n').split(/\r?\n/);
-	const output: string[] = [];
+	const output: RenderedStoryBlock[] = [];
 	let paragraph: string[] = [];
 	let listType: 'ul' | 'ol' | null = null;
+	let listItems: string[] = [];
 
 	const flushParagraph = () => {
 		if (!paragraph.length) return;
-		output.push(`<p>${renderInline(paragraph.join(' '))}</p>`);
+		output.push({ kind: 'paragraph', html: `<p>${renderInline(paragraph.join(' '))}</p>` });
 		paragraph = [];
 	};
 
 	const closeList = () => {
 		if (!listType) return;
-		output.push(`</${listType}>`);
+		output.push({
+			kind: 'list',
+			html: `<${listType}>\n${listItems.join('\n')}\n</${listType}>`,
+		});
 		listType = null;
+		listItems = [];
 	};
 
 	for (const rawLine of lines) {
@@ -47,7 +61,7 @@ export function renderStoryMarkdown(markdown: string): string {
 			flushParagraph();
 			closeList();
 			const level = heading[1]?.length ?? 2;
-			output.push(`<h${level}>${renderInline(heading[2] ?? '')}</h${level}>`);
+			output.push({ kind: 'heading', html: `<h${level}>${renderInline(heading[2] ?? '')}</h${level}>` });
 			continue;
 		}
 
@@ -59,9 +73,8 @@ export function renderStoryMarkdown(markdown: string): string {
 			if (listType !== nextListType) {
 				closeList();
 				listType = nextListType;
-				output.push(`<${listType}>`);
 			}
-			output.push(`<li>${renderInline((unorderedItem ?? orderedItem)?.[1] ?? '')}</li>`);
+			listItems.push(`<li>${renderInline((unorderedItem ?? orderedItem)?.[1] ?? '')}</li>`);
 			continue;
 		}
 
@@ -69,7 +82,7 @@ export function renderStoryMarkdown(markdown: string): string {
 		if (quote) {
 			flushParagraph();
 			closeList();
-			output.push(`<blockquote><p>${renderInline(quote[1] ?? '')}</p></blockquote>`);
+			output.push({ kind: 'blockquote', html: `<blockquote><p>${renderInline(quote[1] ?? '')}</p></blockquote>` });
 			continue;
 		}
 
@@ -79,5 +92,5 @@ export function renderStoryMarkdown(markdown: string): string {
 
 	flushParagraph();
 	closeList();
-	return output.join('\n');
+	return output;
 }

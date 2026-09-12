@@ -1,12 +1,36 @@
 ---
+import { env } from 'cloudflare:workers';
+import {
+	ADSENSE_PUBLISHER_ID,
+	getAdSenseSlot,
+	isAdsEnabled,
+	type AdPlacement,
+} from '../ads/adsense';
+
 interface Props {
-	format?: 'leaderboard' | 'in-feed' | 'sidebar';
+	placement: AdPlacement;
+	format?: 'inline' | 'sidebar';
 }
 
-const { format = 'leaderboard' } = Astro.props;
+const { placement, format = 'inline' } = Astro.props;
+const slot = getAdSenseSlot(env, placement);
+const shouldRender = isAdsEnabled(env) && slot !== null;
 ---
 
-<aside class:list={['ad-slot', `ad-slot--${format}`]} aria-label="Advertisement placeholder">
-	<span>Advertisement</span>
-	<p aria-hidden="true">A quiet space reserved for a future sponsor.</p>
-</aside>
+{shouldRender && (
+	<aside class:list={['ad-slot', `ad-slot--${format}`]} aria-label="Advertisement" data-ad-placement={placement}>
+		<span class="ad-slot__label">Advertisement</span>
+		<ins
+			class="adsbygoogle"
+			style="display:block"
+			data-ad-client={ADSENSE_PUBLISHER_ID}
+			data-ad-slot={slot}
+			data-ad-format="auto"
+			data-full-width-responsive="true"
+		></ins>
+		<script is:inline>
+			window.adsbygoogle = window.adsbygoogle || [];
+			window.adsbygoogle.push({});
+		</script>
+	</aside>
+)}

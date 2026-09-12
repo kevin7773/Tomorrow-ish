@@ -1,4 +1,6 @@
 ---
+import { env } from 'cloudflare:workers';
+import { ADSENSE_PUBLISHER_ID, shouldLoadAdSense, type AdPlacement } from '../ads/adsense';
 import Masthead from '../components/Masthead.astro';
 import SatireNotice from '../components/SatireNotice.astro';
 import { buildPageMetadata, serializeJsonLd } from '../lib/metadata';
@@ -14,10 +16,12 @@ interface Props {
 	publishedAt?: string;
 	section?: string;
 	tags?: string[];
+	adPlacements?: AdPlacement[];
 }
 
 const metadata = buildPageMetadata(Astro.props);
-const { noindex = false, publishedAt, section, tags = [] } = Astro.props;
+const { noindex = false, publishedAt, section, tags = [], adPlacements = [] } = Astro.props;
+const loadAdSense = shouldLoadAdSense(env, adPlacements);
 const publicationJsonLd = serializeJsonLd({
 	'@context': 'https://schema.org',
 	'@type': 'NewsMediaOrganization',
@@ -34,6 +38,7 @@ const publicationJsonLd = serializeJsonLd({
 		<meta name="viewport" content="width=device-width" />
 		<meta name="generator" content={Astro.generator} />
 		<meta name="description" content={metadata.description} />
+		<meta name="google-adsense-account" content={ADSENSE_PUBLISHER_ID} />
 		<meta name="robots" content={noindex ? 'noindex, follow' : 'index, follow'} />
 		<link rel="canonical" href={metadata.canonicalUrl} />
 		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -54,6 +59,14 @@ const publicationJsonLd = serializeJsonLd({
 		<meta name="twitter:title" content={metadata.title} />
 		<meta name="twitter:description" content={metadata.description} />
 		{metadata.imageUrl && <meta name="twitter:image" content={metadata.imageUrl} />}
+		{loadAdSense && (
+			<script
+				is:inline
+				async
+				src={`https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${ADSENSE_PUBLISHER_ID}`}
+				crossorigin="anonymous"
+			></script>
+		)}
 		<script is:inline type="application/ld+json" set:html={publicationJsonLd} />
 	</head>
 	<body>

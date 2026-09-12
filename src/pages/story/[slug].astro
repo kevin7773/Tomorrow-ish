@@ -1,11 +1,12 @@
 ---
 import AdSlot from '../../components/AdSlot.astro';
+import { getArticleInlinePlacements } from '../../ads/adsense';
 import NotFoundContent from '../../components/NotFoundContent.astro';
 import StoryCard from '../../components/StoryCard.astro';
 import StoryMeta from '../../components/StoryMeta.astro';
 import { getStoryRepository } from '../../data/runtime-story-repository';
 import SiteLayout from '../../layouts/SiteLayout.astro';
-import { renderStoryMarkdown } from '../../lib/markdown';
+import { renderStoryMarkdownBlocks } from '../../lib/markdown';
 import { absoluteSiteUrl, serializeJsonLd } from '../../lib/metadata';
 
 const slug = Astro.params.slug ?? '';
@@ -16,6 +17,23 @@ const relatedStories = story
 	: [];
 
 if (!story) Astro.response.status = 404;
+
+const storyBodyBlocks = story ? renderStoryMarkdownBlocks(story.bodyMarkdown) : [];
+const articleAdPlacements = getArticleInlinePlacements(
+	storyBodyBlocks.filter((block) => block.kind === 'paragraph').length,
+);
+let paragraphNumber = 0;
+const storyBody = storyBodyBlocks.map((block) => {
+	let adPlacement;
+	if (block.kind === 'paragraph') {
+		paragraphNumber += 1;
+		adPlacement = articleAdPlacements.find((placement) => placement.afterParagraph === paragraphNumber)?.placement;
+	}
+	return {
+		...block,
+		adPlacement,
+	};
+});
 
 const articleJsonLd = story
 	? serializeJsonLd({
@@ -48,6 +66,7 @@ const articleJsonLd = story
 	publishedAt={story?.publishedAt}
 	section={story?.category.name}
 	tags={story?.tags}
+	adPlacements={articleAdPlacements.map(({ placement }) => placement)}
 >
 	{story && articleJsonLd ? (
 		<>
@@ -61,7 +80,14 @@ const articleJsonLd = story
 				</header>
 
 				<div class="article-layout">
-					<div class="article-body" set:html={renderStoryMarkdown(story.bodyMarkdown)} />
+					<div class="article-body">
+						{storyBody.map((block) => (
+							<>
+								<Fragment set:html={block.html} />
+								{block.adPlacement && <AdSlot placement={block.adPlacement} />}
+							</>
+						))}
+					</div>
 
 					<aside class="article-context" aria-label="Story context">
 					<section class="source-list" aria-labelledby="source-heading">
@@ -86,8 +112,6 @@ const articleJsonLd = story
 					</aside>
 				</div>
 			</article>
-
-			<AdSlot format="leaderboard" />
 
 			{relatedStories.length > 0 && (
 				<section aria-labelledby="related-heading">

@@ -18,7 +18,11 @@
     "IMAGE_GENERATION_ENABLED": "true",
     "CLOUDFLARE_ACCOUNT_ID": "13fbf38daabf893cddf8e7214957bfce",
     "CLOUDFLARE_AI_GATEWAY_ID": "tomorrow-ish",
-    "IMAGE_WEBHOOK_ORIGIN": "https://tomorrow-ish.news"
+    "IMAGE_WEBHOOK_ORIGIN": "https://tomorrow-ish.news",
+    "ADS_ENABLED": "false",
+    "ADSENSE_ARTICLE_INLINE_1_SLOT": "",
+    "ADSENSE_ARTICLE_INLINE_2_SLOT": "",
+    "ADSENSE_DESKTOP_SIDEBAR_SLOT": ""
   },
   "routes": [
     {

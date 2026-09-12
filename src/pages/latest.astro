@@ -1,7 +1,6 @@
 ---
 import EmptyEdition from '../components/EmptyEdition.astro';
 import StoryCard from '../components/StoryCard.astro';
-import AdSlot from '../components/AdSlot.astro';
 import { getStoryRepository } from '../data/runtime-story-repository';
 import SiteLayout from '../layouts/SiteLayout.astro';
 
@@ -23,19 +22,13 @@ const stories = await repository.listPublished({ limit: 50 });
 	{stories.length ? (
 		<div class="feed-layout">
 			<section class="story-list" aria-label="Latest published stories">
-				{stories.map((story, index) => (
-					<>
-						<StoryCard story={story} />
-						{index === 1 && <AdSlot format="in-feed" />}
-					</>
-				))}
+				{stories.map((story) => <StoryCard story={story} />)}
 			</section>
 			<aside class="feed-layout__rail" aria-label="Archive discovery">
 				<p class="section-kicker">Missed a tomorrow?</p>
 				<h2>Browse complete editions.</h2>
 				<p>Every published dispatch, organized by the date it almost happened.</p>
 				<a class="text-link" href="/archive">Open the archive <span aria-hidden="true">→</span></a>
-				<AdSlot format="sidebar" />
 			</aside>
 		</div>
 	) : (

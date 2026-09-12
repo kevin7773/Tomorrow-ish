@@ -1,5 +1,4 @@
 ---
-import AdSlot from '../components/AdSlot.astro';
 import EmptyEdition from '../components/EmptyEdition.astro';
 import StoryCard from '../components/StoryCard.astro';
 import { getStoryRepository } from '../data/runtime-story-repository';
@@ -29,11 +28,8 @@ const recentStories = leadStory
 				<aside class="lead-grid__rail" aria-label="More from Tomorrow-ish">
 					<p class="section-kicker">Elsewhere in the edition</p>
 					{recentStories.slice(0, 2).map((story) => <StoryCard story={story} compact />)}
-					<AdSlot format="sidebar" />
 				</aside>
 			</section>
-
-			<AdSlot format="leaderboard" />
 
 			{recentStories.length > 0 && (
 				<section aria-labelledby="recent-heading">
@@ -46,8 +42,6 @@ const recentStories = leadStory
 					</div>
 				</section>
 			)}
-
-			<AdSlot format="in-feed" />
 
 			<section class="archive-promo" aria-labelledby="archive-promo-heading">
 				<p class="section-kicker">Every prediction, carefully preserved</p>

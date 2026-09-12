@@ -293,38 +293,22 @@ main {
 }
 
 .ad-slot {
-	background:
-		repeating-linear-gradient(135deg, transparent, transparent 8px, rgba(18, 18, 18, 0.035) 8px, rgba(18, 18, 18, 0.035) 9px),
-		var(--surface);
-	border: 1px solid var(--rule);
 	color: var(--muted-ink);
-	margin-block: 0 3rem;
-	padding: 1rem;
+	margin-block: 2.5rem;
+	min-height: 7rem;
 	text-align: center;
 }
 
-.ad-slot p {
-	font-family: var(--display);
-	font-size: 0.9rem;
-	font-style: italic;
-	margin: 0.2rem 0 0;
-}
-
-.ad-slot--leaderboard {
-	min-height: 7rem;
-	display: grid;
-	place-content: center;
-}
-
-.ad-slot--in-feed {
-	margin-block: 2rem 3rem;
+.ad-slot__label {
+	display: block;
+	font-size: 0.68rem;
+	letter-spacing: 0.08em;
+	margin-bottom: 0.45rem;
+	text-transform: uppercase;
 }
 
 .ad-slot--sidebar {
-	margin: 2rem 0 0;
 	min-height: 15rem;
-	display: grid;
-	place-content: center;
 }
 
 .section-heading {
