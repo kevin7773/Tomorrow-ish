@@ -41,7 +41,12 @@ export class AsyncArticleImageService {
 		if (!image) return 'unknown';
 		if (image.provider !== 'cloudflare-ai-gateway') return 'conflict';
 		if (image.status !== 'PENDING') {
-			return image.providerRequestId === callback.providerRequestId ? 'idempotent' : 'conflict';
+			if (image.providerRequestId !== callback.providerRequestId) return 'conflict';
+			const stored = await this.imageRepository.findWebhook(imageId);
+			if (stored?.providerRequestId === callback.providerRequestId) {
+				await this.imageRepository.markWebhookProcessed(imageId, callback.providerRequestId);
+			}
+			return 'idempotent';
 		}
 		if (image.providerRequestId && image.providerRequestId !== callback.providerRequestId) return 'conflict';
 		if (image.providerRequestId) {

@@ -7,6 +7,7 @@ import { isImageGenerationEnabled } from '../src/images/image-provider-factory';
 describe('article image persistence governance', () => {
 	const migration = readFileSync(join(process.cwd(), 'migrations/0005_governed_article_images.sql'), 'utf8');
 	const asyncMigration = readFileSync(join(process.cwd(), 'migrations/0007_async_article_images.sql'), 'utf8');
+	const webhookRetentionMigration = readFileSync(join(process.cwd(), 'migrations/0008_scrub_image_webhook_result_urls.sql'), 'utf8');
 	const repository = readFileSync(join(process.cwd(), 'src/data/d1-article-image-repository.ts'), 'utf8');
 
 	it('preserves immutable generation history and requires alt text on approval', () => {
@@ -21,6 +22,8 @@ describe('article image persistence governance', () => {
 		expect(asyncMigration).toMatch(/CREATE UNIQUE INDEX idx_article_images_one_pending_per_story[\s\S]*WHERE status = 'PENDING'/);
 		expect(asyncMigration).toMatch(/INSERT INTO article_images[\s\S]*FROM article_images_legacy/);
 		expect(asyncMigration).toContain('CREATE TABLE article_image_webhook_inbox');
+		expect(webhookRetentionMigration).toContain("CASE WHEN processing_state = 'PROCESSED' THEN NULL ELSE result_url END");
+		expect(webhookRetentionMigration).toContain("processing_state = 'PROCESSED' AND result_url IS NULL");
 	});
 
 	it('creates generated records unapproved and associates only explicit approvals to the story', () => {

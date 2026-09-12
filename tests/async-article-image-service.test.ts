@@ -81,7 +81,7 @@ function setup(initial = pendingImage()) {
 			}
 		}),
 		markWebhookProcessed: vi.fn(async () => {
-			if (inbox) inbox = { ...inbox, processingState: 'PROCESSED' };
+			if (inbox) inbox = { ...inbox, processingState: 'PROCESSED', resultUrl: null };
 		}),
 		completePending: vi.fn(async (record) => {
 			if (!image || image.status !== 'PENDING' || image.providerRequestId !== record.providerRequestId) return false;
@@ -134,6 +134,10 @@ describe('asynchronous article image completion', () => {
 			status: 'GENERATED', storyId: 'story-1', assetKey: 'article-images/story-1/image-1.webp',
 			altText: 'Editorial illustration of an office plant acting as a manager.', reviewedAt: null,
 		});
+		await expect(state.repository.findWebhook('image-1')).resolves.toMatchObject({
+			providerRequestId: 'run-1', processingState: 'PROCESSED', resultUrl: null,
+			receivedAt: now, metadata: { callbackState: 'completed' },
+		});
 	});
 
 	it('treats a duplicate success callback as idempotent without storing twice', async () => {
@@ -142,6 +146,9 @@ describe('asynchronous article image completion', () => {
 		await expect(state.service.acceptWebhook('image-1', successCallback())).resolves.toBe('idempotent');
 		expect(state.assetStore.put).toHaveBeenCalledOnce();
 		expect(state.repository.completePending).toHaveBeenCalledOnce();
+		await expect(state.repository.findWebhook('image-1')).resolves.toMatchObject({
+			processingState: 'PROCESSED', resultUrl: null,
+		});
 	});
 
 	it('marks provider failure terminally and never downloads or retries', async () => {
@@ -150,6 +157,26 @@ describe('asynchronous article image completion', () => {
 		expect(state.getImage()).toMatchObject({ status: 'GENERATION_FAILED', errorClassification: 'PROVIDER_FAILED' });
 		expect(state.fetcher).not.toHaveBeenCalled();
 		expect(state.assetStore.put).not.toHaveBeenCalled();
+		await expect(state.repository.findWebhook('image-1')).resolves.toMatchObject({
+			processingState: 'PROCESSED', resultUrl: null,
+			providerRequestId: 'run-1', errorClassification: 'PROVIDER_FAILED', receivedAt: now,
+		});
+	});
+
+	it('scrubs a recoverable result URL when a duplicate arrives after image completion', async () => {
+		const state = setup();
+		await state.service.acceptWebhook('image-1', successCallback());
+		const stored = await state.repository.findWebhook('image-1');
+		if (!stored) throw new Error('Expected a stored webhook.');
+		stored.processingState = 'PROCESSING';
+		stored.resultUrl = successCallback().resultUrl;
+
+		await expect(state.service.acceptWebhook('image-1', successCallback())).resolves.toBe('idempotent');
+		expect(state.repository.markWebhookProcessed).toHaveBeenCalledTimes(2);
+		await expect(state.repository.findWebhook('image-1')).resolves.toMatchObject({
+			processingState: 'PROCESSED', resultUrl: null,
+		});
+		expect(state.assetStore.put).toHaveBeenCalledOnce();
 	});
 
 	it('uses first terminal outcome wins for failure after success and success after failure', async () => {
@@ -187,6 +214,9 @@ describe('asynchronous article image completion', () => {
 		}));
 		expect(state.getImage()?.providerRequestId).toBe('run-1');
 		expect(state.assetStore.put).toHaveBeenCalledOnce();
+		await expect(state.repository.findWebhook('image-1')).resolves.toMatchObject({
+			providerRequestId: 'run-1', processingState: 'PROCESSED', resultUrl: null,
+		});
 	});
 
 	it.each([
@@ -199,6 +229,9 @@ describe('asynchronous article image completion', () => {
 		await expect(state.service.acceptWebhook('image-1', successCallback())).resolves.toBe('processed');
 		expect(state.getImage()?.status).toBe('GENERATION_FAILED');
 		expect(state.assetStore.put).not.toHaveBeenCalled();
+		await expect(state.repository.findWebhook('image-1')).resolves.toMatchObject({
+			processingState: 'PROCESSED', resultUrl: null,
+		});
 	});
 
 	it('rejects a malicious result host before issuing a download', async () => {

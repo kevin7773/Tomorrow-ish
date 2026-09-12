@@ -295,7 +295,8 @@ export class D1ArticleImageRepository implements ArticleImageRepository {
 
 	async markWebhookProcessed(imageId: string, providerRequestId: string): Promise<void> {
 		await this.db.prepare(`
-			UPDATE article_image_webhook_inbox SET processing_state = 'PROCESSED'
+			UPDATE article_image_webhook_inbox
+			SET processing_state = 'PROCESSED', result_url = NULL
 			WHERE image_id = ? AND provider_request_id = ? AND processing_state IN ('RECEIVED', 'PROCESSING')
 		`).bind(imageId, providerRequestId).run();
 	}
