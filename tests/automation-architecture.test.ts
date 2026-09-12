@@ -22,6 +22,13 @@ describe('automation architecture boundaries', () => {
 		expect(config).toMatch(/"crons": \[\]/);
 	});
 
+	it('presents mutually exclusive automation readiness states', () => {
+		const page = read('src/pages/editorial/automation.astro');
+		expect(page).toContain("? 'Disabled'");
+		expect(page).toContain("'Enabled and ready'");
+		expect(page).toContain("'Enabled — source not configured'");
+	});
+
 	it('uses the existing DRAFT-only candidate generation service', () => {
 		const runtime = read('src/automation/runtime-automation.ts');
 		expect(runtime).toContain('new GenerationService');

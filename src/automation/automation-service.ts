@@ -46,7 +46,7 @@ function emptyReport(input: RunAutomationInput, status: AutomationReport['status
 	return {
 		runId: null, trigger: input.trigger, dryRun: input.dryRun, status,
 		discoveredCount: 0, processedCount: 0, intakeCount: 0,
-		generatedCount: 0, skippedCount: 0, failedCount: 0, items: [],
+		generatedCount: 0, skippedCount: 0, failedCount: 0, failureReason: null, items: [],
 	};
 }
 
@@ -82,7 +82,7 @@ export class AutomationService {
 	}
 
 	async run(input: RunAutomationInput): Promise<AutomationReport> {
-		if (!this.options.enabled && !input.dryRun) return emptyReport(input, 'DISABLED');
+		if (!this.options.enabled) return emptyReport(input, 'DISABLED');
 		const cap = Math.min(Math.max(Math.trunc(input.maxItems ?? this.options.maxItemsPerRun), 1), this.options.maxItemsPerRun);
 		const startedAt = this.now();
 		const runId = input.dryRun ? null : this.createId();
@@ -104,12 +104,14 @@ export class AutomationService {
 			discovered = await this.sourceProvider.discover(cap);
 			report.discoveredCount = discovered.length;
 		} catch (error) {
+			const failureReason = boundedReason(error);
 			report.status = 'FAILED';
 			report.failedCount = 1;
+			report.failureReason = failureReason;
 			if (runId) await this.repository.completeRun({
 				id: runId, status: 'FAILED', discoveredCount: 0, processedCount: 0,
 				intakeCount: 0, generatedCount: 0, skippedCount: 0, failedCount: 1,
-				failureReason: boundedReason(error), completedAt: this.now(),
+				failureReason, completedAt: this.now(),
 			});
 			return report;
 		}

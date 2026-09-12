@@ -83,5 +83,6 @@ export interface AutomationReport {
 	generatedCount: number;
 	skippedCount: number;
 	failedCount: number;
+	failureReason: string | null;
 	items: AutomationItemResult[];
 }

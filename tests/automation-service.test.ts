@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CandidateGenerationPort } from '../src/automation/automation-service';
 import { AutomationService } from '../src/automation/automation-service';
-import type { AutomationSourceProvider } from '../src/automation/source-provider';
+import { AutomationSourceProviderError, type AutomationSourceProvider } from '../src/automation/source-provider';
 import type { AutomationRepository } from '../src/data/automation-repository';
 import type {
 	AutomationItemResult,
@@ -41,6 +41,7 @@ function harness(options: {
 	enabled?: boolean;
 	maxItems?: number;
 	failGenerationFor?: string;
+	discoveryError?: Error;
 } = {}) {
 	const registered = [...(options.registered ?? [])];
 	const runs: AutomationRun[] = [];
@@ -75,7 +76,10 @@ function harness(options: {
 		getLastRun: vi.fn(async () => runs.at(-1) ?? null),
 		listRunItems: vi.fn(async () => recorded),
 	};
-	const provider: AutomationSourceProvider = { discover: vi.fn(async (limit) => (options.items ?? []).slice(0, limit)) };
+	const provider: AutomationSourceProvider = { discover: vi.fn(async (limit) => {
+		if (options.discoveryError) throw options.discoveryError;
+		return (options.items ?? []).slice(0, limit);
+	}) };
 	const generated: string[] = [];
 	const candidateGenerator: CandidateGenerationPort = {
 		generate: vi.fn(async (input): Promise<{ runId: string; status: 'SUCCEEDED' | 'FAILED' }> => {
@@ -165,8 +169,33 @@ describe('governed intake automation', () => {
 		expect(test.writes).toEqual({ starts: 0, completes: 0, items: 0, intakes: 0, registrations: 0 });
 	});
 
-	it('performs no writes and no model calls in dry-run mode', async () => {
-		const test = harness({ items: [item('dry')], registered: [automationSource('dry')], enabled: false });
+	it('returns disabled without inspecting a blank feed during dry-run', async () => {
+		const test = harness({ enabled: false, discoveryError: new AutomationSourceProviderError('NOT_CONFIGURED') });
+		const report = await test.service.run({ trigger: 'MANUAL', dryRun: true });
+		expect(report).toMatchObject({ status: 'DISABLED', failureReason: null, items: [] });
+		expect(test.provider.discover).not.toHaveBeenCalled();
+		expect(test.writes).toEqual({ starts: 0, completes: 0, items: 0, intakes: 0, registrations: 0 });
+		expect(test.candidateGenerator.generate).not.toHaveBeenCalled();
+	});
+
+	it('returns disabled without inspecting a configured feed during dry-run', async () => {
+		const test = harness({ enabled: false, items: [item('configured')] });
+		const report = await test.service.run({ trigger: 'MANUAL', dryRun: true });
+		expect(report.status).toBe('DISABLED');
+		expect(test.provider.discover).not.toHaveBeenCalled();
+	});
+
+	it.each([true, false])('returns a bounded source failure when enabled with a blank feed (dryRun=%s)', async (dryRun) => {
+		const test = harness({ enabled: true, discoveryError: new AutomationSourceProviderError('NOT_CONFIGURED') });
+		const report = await test.service.run({ trigger: 'MANUAL', dryRun });
+		expect(report).toMatchObject({ status: 'FAILED', failureReason: 'SOURCE_NOT_CONFIGURED', failedCount: 1 });
+		expect(test.candidateGenerator.generate).not.toHaveBeenCalled();
+		if (dryRun) expect(test.writes).toEqual({ starts: 0, completes: 0, items: 0, intakes: 0, registrations: 0 });
+		else expect(test.repository.completeRun).toHaveBeenCalledWith(expect.objectContaining({ failureReason: 'SOURCE_NOT_CONFIGURED' }));
+	});
+
+	it('performs no writes and no model calls in enabled dry-run mode', async () => {
+		const test = harness({ items: [item('dry')], registered: [automationSource('dry')], enabled: true });
 		const report = await test.service.run({ trigger: 'MANUAL', dryRun: true });
 		expect(report.items[0]).toMatchObject({ outcome: 'GENERATED', reason: 'DRY_RUN_WOULD_GENERATE' });
 		expect(test.writes).toEqual({ starts: 0, completes: 0, items: 0, intakes: 0, registrations: 0 });

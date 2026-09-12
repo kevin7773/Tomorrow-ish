@@ -10,7 +10,10 @@ const lastRun = await repository.getLastRun();
 const items = lastRun ? await repository.listRunItems(lastRun.id) : [];
 const csrfToken = Astro.locals.csrfToken;
 const enabled = automationEnvironment.AUTOMATION_ENABLED === 'true';
-const configured = Boolean(automationEnvironment.AUTOMATION_SOURCE_URL?.trim());
+const configured = enabled && Boolean(automationEnvironment.AUTOMATION_SOURCE_URL?.trim());
+const operationalState = !enabled
+	? 'Disabled'
+	: configured ? 'Enabled and ready' : 'Enabled — source not configured';
 const cap = automationEnvironment.AUTOMATION_MAX_ITEMS_PER_RUN ?? '3';
 ---
 
@@ -18,7 +21,7 @@ const cap = automationEnvironment.AUTOMATION_MAX_ITEMS_PER_RUN ?? '3';
 	<div class="editorial-page-header"><div><p class="section-kicker">Governed automation</p><h1>Intake automation</h1><p>Discovery and candidate generation only. Normalization acceptance, candidate approval, conversion, and publication remain human actions.</p></div></div>
 	<section class="editorial-panel">
 		<h2>Operational controls</h2>
-		<p><strong>Status:</strong> {enabled ? 'Enabled' : 'Disabled'} · <strong>Source:</strong> {configured ? 'Configured' : 'Not configured'} · <strong>Maximum items:</strong> {cap}</p>
+		<p><strong>Status:</strong> {operationalState} · <strong>Maximum items:</strong> {cap}</p>
 		<form class="editorial-form" method="post" action="/editorial/actions/automation">
 			<input type="hidden" name="csrf_token" value={csrfToken} />
 			<label><span>Run cap</span><input type="number" name="maxItems" min="1" max={cap} value={cap} /></label>
