@@ -13,7 +13,8 @@ export const FEED_TIMEOUT_MS = 5_000;
 export const MAX_PARSED_ENTRIES_PER_SOURCE = 10;
 export const MAX_NORMALIZED_ITEMS = 30;
 
-type FeedFailureReason = 'TIMEOUT' | 'NETWORK' | 'HTTP_STATUS' | 'OVERSIZE' | 'XML_DECLARATION' | 'XML_PARSE';
+type FeedFailureReason = 'TIMEOUT' | 'FETCH_EXCEPTION' | 'HTTP_STATUS' | 'OVERSIZE' | 'XML_DECLARATION' | 'XML_PARSE';
+type FetchExceptionCode = 'ILLEGAL_INVOCATION' | 'ABORTED' | 'UNKNOWN';
 
 export interface SourceFeedDiagnostic {
 	sourceId: string;
@@ -24,6 +25,10 @@ export interface SourceFeedDiagnostic {
 	skippedReasons: Partial<Record<EntrySkipReason, number>>;
 	failureReason: FeedFailureReason | null;
 	httpStatus: number | null;
+	receivedHttpResponse: boolean;
+	redirected: boolean | null;
+	exceptionName: 'TypeError' | 'AbortError' | 'Error' | 'UnknownError' | null;
+	exceptionCode: FetchExceptionCode | null;
 }
 
 export interface SourceFeedAggregation {
@@ -43,9 +48,27 @@ export interface AggregateSourceFeedsOptions {
 }
 
 class FeedFetchError extends Error {
-	constructor(readonly reason: FeedFailureReason, readonly httpStatus: number | null = null) {
+	constructor(
+		readonly reason: FeedFailureReason,
+		readonly httpStatus: number | null = null,
+		readonly exceptionName: SourceFeedDiagnostic['exceptionName'] = null,
+		readonly exceptionCode: FetchExceptionCode | null = null,
+	) {
 		super(reason);
 	}
+}
+
+function describeFetchException(error: unknown): Pick<FeedFetchError, 'exceptionName' | 'exceptionCode'> {
+	if (error instanceof Error) {
+		const exceptionName = error.name === 'TypeError' || error.name === 'AbortError' || error.name === 'Error'
+			? error.name
+			: 'UnknownError';
+		const exceptionCode = /illegal invocation/i.test(error.message)
+			? 'ILLEGAL_INVOCATION'
+			: error.name === 'AbortError' ? 'ABORTED' : 'UNKNOWN';
+		return { exceptionName, exceptionCode };
+	}
+	return { exceptionName: 'UnknownError', exceptionCode: 'UNKNOWN' };
 }
 
 function asArray<T>(value: T | T[] | null | undefined): T[] {
@@ -156,10 +179,15 @@ async function fetchOne(
 ): Promise<{ items: AutomationFeedItem[]; diagnostic: SourceFeedDiagnostic }> {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
+	let receivedHttpResponse = false;
+	let redirected: boolean | null = null;
 	try {
 		let response: Response;
 		try {
-			response = await options.transport(source.feedUrl, {
+			// Cloudflare's global fetch validates its receiver. Detach it from the
+			// options object so it is invoked as a function, not as an object method.
+			const transport = options.transport;
+			response = await transport(source.feedUrl, {
 				headers: {
 					Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml',
 					'User-Agent': 'Tomorrow-ish governed source feed/1.0',
@@ -167,8 +195,16 @@ async function fetchOne(
 				signal: controller.signal,
 			});
 		} catch (error) {
-			throw new FeedFetchError(controller.signal.aborted ? 'TIMEOUT' : 'NETWORK');
+			const details = describeFetchException(error);
+			throw new FeedFetchError(
+				controller.signal.aborted ? 'TIMEOUT' : 'FETCH_EXCEPTION',
+				null,
+				details.exceptionName,
+				details.exceptionCode,
+			);
 		}
+		receivedHttpResponse = true;
+		redirected = response.redirected;
 		if (!response.ok) throw new FeedFetchError('HTTP_STATUS', response.status);
 		const xml = await readBoundedBody(response, options.maxResponseBytes);
 		const entries = parseFeedDocument(xml).slice(0, options.maxEntriesPerSource);
@@ -185,18 +221,21 @@ async function fetchOne(
 				sourceId: source.id, status: 'SUCCEEDED', parsedEntryCount: entries.length,
 				acceptedEntryCount: items.length, skippedEntryCount: entries.length - items.length,
 				skippedReasons, failureReason: null, httpStatus: response.status,
+				receivedHttpResponse, redirected, exceptionName: null, exceptionCode: null,
 			},
 		};
 	} catch (error) {
 		const failure = error instanceof FeedFetchError
 			? error
-			: new FeedFetchError(controller.signal.aborted ? 'TIMEOUT' : 'NETWORK');
+			: new FeedFetchError(controller.signal.aborted ? 'TIMEOUT' : 'FETCH_EXCEPTION');
 		return {
 			items: [],
 			diagnostic: {
 				sourceId: source.id, status: 'FAILED', parsedEntryCount: 0,
 				acceptedEntryCount: 0, skippedEntryCount: 0, skippedReasons: {},
 				failureReason: failure.reason, httpStatus: failure.httpStatus,
+				receivedHttpResponse, redirected,
+				exceptionName: failure.exceptionName, exceptionCode: failure.exceptionCode,
 			},
 		};
 	} finally {

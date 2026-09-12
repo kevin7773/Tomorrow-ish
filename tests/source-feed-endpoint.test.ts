@@ -59,6 +59,23 @@ describe('source-feed endpoint', () => {
 		expect(response.headers.get('Cache-Control')).toBe('no-store');
 	});
 
+	it('logs only bounded metadata for fetch exceptions', async () => {
+		const logger = { info: vi.fn(), warn: vi.fn() };
+		const response = await handleSourceFeedRequest(new Request('https://tomorrow-ish.news/api/automation/source-feed'), {
+			transport: async () => { throw new TypeError('Illegal invocation: private upstream detail'); },
+			cache: null,
+			logger,
+		});
+		expect(response.status).toBe(502);
+		expect(logger.warn).toHaveBeenCalled();
+		const diagnostic = logger.warn.mock.calls[0]?.[1];
+		expect(diagnostic).toMatchObject({
+			failureReason: 'FETCH_EXCEPTION', receivedHttpResponse: false,
+			exceptionName: 'TypeError', exceptionCode: 'ILLEGAL_INVOCATION',
+		});
+		expect(JSON.stringify(diagnostic)).not.toContain('private upstream detail');
+	});
+
 	it('returns a healthy empty contract when feeds have no recent usable entries', async () => {
 		const response = await handleSourceFeedRequest(new Request('https://tomorrow-ish.news/api/automation/source-feed'), {
 			transport: async (url) => feed(String(url), 'Tue, 01 Sep 2026 17:00:00 GMT'),

@@ -35,6 +35,48 @@ function response(body: string, status = 200): Response {
 }
 
 describe('governed source-feed adapter', () => {
+	it('detaches a receiver-sensitive Worker transport before invocation', async () => {
+		async function workerTransport(this: unknown): Promise<Response> {
+			if (this !== undefined) throw new TypeError('Illegal invocation: function called with incorrect this reference');
+			return response(rss([itemXml()]));
+		}
+		const result = await aggregateSourceFeeds({
+			sources: [source()], transport: workerTransport, now: () => NOW,
+		});
+		expect(result.items).toHaveLength(1);
+		expect(result.diagnostics[0]).toMatchObject({
+			status: 'SUCCEEDED', receivedHttpResponse: true, exceptionName: null, exceptionCode: null,
+		});
+	});
+
+	it('reports bounded fetch exception metadata without exposing exception text', async () => {
+		const result = await aggregateSourceFeeds({
+			sources: [source()],
+			transport: async () => { throw new TypeError('Illegal invocation: private upstream detail'); },
+			now: () => NOW,
+		});
+		expect(result.diagnostics[0]).toMatchObject({
+			status: 'FAILED', failureReason: 'FETCH_EXCEPTION', receivedHttpResponse: false,
+			httpStatus: null, redirected: null, exceptionName: 'TypeError', exceptionCode: 'ILLEGAL_INVOCATION',
+		});
+		expect(JSON.stringify(result.diagnostics[0])).not.toContain('private upstream detail');
+	});
+
+	it('distinguishes an aborted fetch timeout from other fetch exceptions', async () => {
+		const result = await aggregateSourceFeeds({
+			sources: [source()],
+			transport: async (_url, init) => new Promise<Response>((_resolve, reject) => {
+				init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+			}),
+			timeoutMs: 1,
+			now: () => NOW,
+		});
+		expect(result.diagnostics[0]).toMatchObject({
+			status: 'FAILED', failureReason: 'TIMEOUT', receivedHttpResponse: false,
+			exceptionName: 'AbortError', exceptionCode: 'ABORTED',
+		});
+	});
+
 	it('normalizes RSS metadata, strips HTML, removes only approved tracking, and uses the category fallback', async () => {
 		const transport = async () => response(rss([itemXml({
 			title: '  Original &amp; exact headline  ',

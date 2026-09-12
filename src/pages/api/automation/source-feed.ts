@@ -27,6 +27,10 @@ function logDiagnostics(logger: Pick<Console, 'info' | 'warn'>, diagnostics: Sou
 			skippedReasons: diagnostic.skippedReasons,
 			failureReason: diagnostic.failureReason,
 			httpStatus: diagnostic.httpStatus,
+			receivedHttpResponse: diagnostic.receivedHttpResponse,
+			redirected: diagnostic.redirected,
+			exceptionName: diagnostic.exceptionName,
+			exceptionCode: diagnostic.exceptionCode,
 		};
 		if (diagnostic.status === 'FAILED') logger.warn('[source-feed] source failed', details);
 		else logger.info('[source-feed] source completed', details);
