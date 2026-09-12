@@ -73,6 +73,38 @@ describe('governed AdSense configuration', () => {
 		expect(ADS_TXT_ENTRY).toBe('google.com, pub-4913684525326701, DIRECT, f08c47fec0942fa0');
 		expect(source('public/ads.txt')).toBe(`${ADS_TXT_ENTRY}\n`);
 	});
+
+	it('publishes accurate advertising privacy language and a real contact route', () => {
+		const privacy = source('src/pages/privacy.astro');
+		const contact = source('src/pages/contact.astro');
+		const layout = source('src/layouts/SiteLayout.astro');
+		const sitemap = source('src/pages/sitemap.xml.ts');
+
+		expect(privacy).toContain('Google AdSense');
+		expect(privacy).toContain('cookies, local storage, or similar technologies');
+		expect(privacy).toContain('consent or opt-out choices');
+		expect(privacy).not.toContain('does not currently use an analytics or advertising vendor');
+		expect(contact).toContain('export const prerender = true');
+		expect(contact).toContain('mailto:newsgoblin@tomorrow-ish.news');
+		expect(contact).toContain('editorial questions or feedback');
+		expect(contact).toContain('correction requests');
+		expect(contact).toContain('privacy or data questions');
+		expect(contact).toContain('advertising or other business inquiries');
+		expect(layout).toContain('<a href="/contact">Contact</a>');
+		expect(sitemap).toContain("'/contact'");
+	});
+
+	it('removes the exposed example source without changing hidden fixture stories', () => {
+		const seed = source('seed.sql');
+		const migration = source('migrations/0009_remove_public_fixture_source.sql');
+
+		expect(seed).not.toContain('source-moon-sample');
+		expect(migration).toContain("DELETE FROM sources");
+		expect(migration).toContain("id = 'source-moon-sample'");
+		expect(migration).toContain("story_id = 'story-moon-meeting'");
+		expect(migration).toContain("url = 'https://example.com/'");
+		expect(migration).not.toMatch(/DELETE FROM stories|UPDATE stories/);
+	});
 });
 
 describe('restrained article placement policy', () => {

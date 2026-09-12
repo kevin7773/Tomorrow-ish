@@ -26,9 +26,21 @@ Before setting `ADS_ENABLED=true`:
 
 1. Finish AdSense site review and create the desired responsive ad units.
 2. Configure the issued numeric slot IDs in Wrangler.
-3. Update the Privacy Policy before advertising is introduced.
-4. Decide the intended geographic ad-serving scope and configure a Google-certified
-   consent management platform where required, including EEA, UK, and Swiss traffic.
-5. Confirm Auto Ads remain disabled in AdSense unless separately reviewed.
-6. Re-run the public/editorial boundary tests and inspect representative short and
+3. Recheck the Privacy Policy against the final ad and analytics configuration.
+4. In AdSense **Privacy & messaging**, publish Google's certified European regulations
+   message for EEA, UK, and Swiss traffic before serving personalized ads there. Google's
+   own consent-management solution participates in the IAB TCF and satisfies Google's CMP
+   certification requirement; a custom site CMP is not needed for the current architecture.
+5. Review legal applicability for US state privacy laws, then configure AdSense's US state
+   regulations message, geographic targeting, and opt-out choices for all applicable states.
+   Google's Privacy & messaging tool can carry the resulting consent/opt-out signals; no
+   speculative consent script is added to the site while advertising remains disabled.
+6. Confirm Auto Ads remain disabled in AdSense unless separately reviewed.
+7. Re-run the public/editorial boundary tests and inspect representative short and
    long stories for layout stability.
+
+The Google-managed messages are configured and published in the AdSense account. Once
+the governed AdSense loader is deliberately enabled, Google serves those messages from
+the top-level page. Site code remains responsible for keeping the correct publisher tag,
+providing durable Privacy and Contact links, and avoiding any competing custom consent
+implementation. Legal obligations and geographic targeting still require publisher review.

@@ -165,10 +165,12 @@ $routes = @(
   'https://tomorrow-ish.news/latest',
   'https://tomorrow-ish.news/archive',
   'https://tomorrow-ish.news/about',
+  'https://tomorrow-ish.news/contact',
   'https://tomorrow-ish.news/privacy',
   'https://tomorrow-ish.news/terms',
   'https://tomorrow-ish.news/robots.txt',
-  'https://tomorrow-ish.news/sitemap.xml'
+  'https://tomorrow-ish.news/sitemap.xml',
+  'https://tomorrow-ish.news/ads.txt'
 )
 $routes | ForEach-Object { Invoke-WebRequest -Uri $_ -Method Head -MaximumRedirection 0 }
 ```

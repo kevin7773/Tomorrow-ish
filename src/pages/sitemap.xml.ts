@@ -2,7 +2,7 @@ import type { APIRoute } from 'astro';
 import { getStoryRepository } from '../data/runtime-story-repository';
 import { absoluteSiteUrl } from '../lib/metadata';
 
-const staticPaths = ['/', '/latest', '/archive', '/categories', '/about', '/privacy', '/terms'];
+const staticPaths = ['/', '/latest', '/archive', '/categories', '/about', '/contact', '/privacy', '/terms'];
 
 interface SitemapEntry {
 	location: string;

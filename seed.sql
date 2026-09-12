@@ -137,21 +137,3 @@ INSERT OR IGNORE INTO stories (
         '2026-09-10T12:00:00Z',
         '2026-09-10T12:00:00Z'
 	);
-
-INSERT OR IGNORE INTO sources (
-    id,
-    story_id,
-    title,
-    url,
-    publisher,
-    published_at,
-    created_at
-) VALUES (
-    'source-moon-sample',
-    'story-moon-meeting',
-    'Reserved example link — fictional seed content',
-    'https://example.com/',
-    'IANA Example Domain',
-    NULL,
-    '2026-09-10T11:00:00Z'
-);

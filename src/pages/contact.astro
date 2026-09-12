@@ -1,0 +1,34 @@
+---
+import SiteLayout from '../layouts/SiteLayout.astro';
+
+export const prerender = true;
+---
+
+<SiteLayout
+	title="Contact"
+	description="Contact Tomorrow-ish about editorial questions, corrections, privacy, or advertising."
+	canonicalPath="/contact"
+>
+	<header class="page-header">
+		<p class="section-kicker">A functioning line to the present</p>
+		<h1>Contact</h1>
+		<p>Questions, corrections, and reasonably foreseeable correspondence are welcome.</p>
+	</header>
+
+	<article class="prose-page">
+		<p class="prose-page__standfirst">
+			Email <a href="mailto:newsgoblin@tomorrow-ish.news">newsgoblin@tomorrow-ish.news</a>.
+		</p>
+		<p>Please use that address for:</p>
+		<ul>
+			<li>editorial questions or feedback;</li>
+			<li>correction requests;</li>
+			<li>privacy or data questions; and</li>
+			<li>advertising or other business inquiries.</li>
+		</ul>
+		<p>
+			Including the relevant story or page URL will help us understand your message. Tomorrow-ish does not accept
+			confidential tips or emergency reports through this mailbox.
+		</p>
+	</article>
+</SiteLayout>

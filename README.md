@@ -89,7 +89,7 @@ The project is pinned to Astro 7.3.2 and the matching official Cloudflare adapte
 
 M2 adds protected source intake, normalized source references, human-reviewed satire candidates, immutable candidate-to-story provenance, and an append-only audit log. M3 adds immutable normalized-event versions, assertion-level source provenance, model-run cost/usage records, and idempotent DRAFT-candidate generation behind a narrow repository boundary. The article-image subsystem adds immutable prompt/provider/asset provenance and explicit image review without gaining publication authority. Candidate conversion creates only a `DRAFT` story. `publishStory()` is the sole operation that can assign `PUBLISHED`, and it atomically records the authenticated editor and publication time.
 
-Automated discovery/ingestion, scraping, production model enablement, full-article generation, scheduled triggers, queues, workflows, social automation, advertising vendors, analytics vendors, public accounts, comments, and submissions remain intentionally out of scope. R2 is used only for reviewed article-image assets.
+Automated discovery/ingestion, scraping, full-article generation, scheduled triggers, queues, workflows, social automation, analytics vendors, public accounts, comments, and submissions remain intentionally out of scope. Governed AdSense verification and article-placement hooks exist behind `ADS_ENABLED=false`; no ad loader or slot renders until the flag and an issued numeric slot ID are both configured. R2 is used only for reviewed article-image assets.
 
 ## Production D1 migrations
 
