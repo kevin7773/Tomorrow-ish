@@ -1,0 +1,41 @@
+---
+import { env } from 'cloudflare:workers';
+import type { AutomationEnvironment } from '../../automation/runtime-automation';
+import { D1AutomationRepository } from '../../data/d1-automation-repository';
+import EditorialLayout from '../../layouts/EditorialLayout.astro';
+
+const automationEnvironment = env as AutomationEnvironment;
+const repository = new D1AutomationRepository(automationEnvironment.DB);
+const lastRun = await repository.getLastRun();
+const items = lastRun ? await repository.listRunItems(lastRun.id) : [];
+const csrfToken = Astro.locals.csrfToken;
+const enabled = automationEnvironment.AUTOMATION_ENABLED === 'true';
+const configured = Boolean(automationEnvironment.AUTOMATION_SOURCE_URL?.trim());
+const cap = automationEnvironment.AUTOMATION_MAX_ITEMS_PER_RUN ?? '3';
+---
+
+<EditorialLayout title="Intake automation">
+	<div class="editorial-page-header"><div><p class="section-kicker">Governed automation</p><h1>Intake automation</h1><p>Discovery and candidate generation only. Normalization acceptance, candidate approval, conversion, and publication remain human actions.</p></div></div>
+	<section class="editorial-panel">
+		<h2>Operational controls</h2>
+		<p><strong>Status:</strong> {enabled ? 'Enabled' : 'Disabled'} · <strong>Source:</strong> {configured ? 'Configured' : 'Not configured'} · <strong>Maximum items:</strong> {cap}</p>
+		<form class="editorial-form" method="post" action="/editorial/actions/automation">
+			<input type="hidden" name="csrf_token" value={csrfToken} />
+			<label><span>Run cap</span><input type="number" name="maxItems" min="1" max={cap} value={cap} /></label>
+			<div class="editorial-form__actions">
+				<button class="editorial-button editorial-button--quiet" type="submit" name="mode" value="dry-run">Run dry-run</button>
+				<button class="editorial-button" type="submit" name="mode" value="live" disabled={!enabled || !configured}>Run live automation</button>
+			</div>
+			<p class="editorial-form__help">The response is a no-store JSON report containing counts, item identities, and bounded reasons. Dry-run performs no database or model writes.</p>
+		</form>
+	</section>
+	<section class="editorial-panel">
+		<h2>Last persisted live run</h2>
+		{lastRun ? <>
+			<p><strong>{lastRun.status}</strong> · {lastRun.trigger} · Started {new Date(lastRun.startedAt).toLocaleString('en-US')}</p>
+			<p>Discovered {lastRun.discoveredCount} · Processed {lastRun.processedCount} · Intakes {lastRun.intakeCount} · Generated {lastRun.generatedCount} · Skipped {lastRun.skippedCount} · Failed {lastRun.failedCount}</p>
+			{lastRun.failureReason && <p><strong>Run failure:</strong> {lastRun.failureReason}</p>}
+			{items.length > 0 && <ul class="editorial-list">{items.map((item) => <li class="editorial-list-item"><div><h3>{item.outcome}</h3><p>{item.itemIdentity} · {item.reason}</p>{item.sourceUrl && <p>{item.sourceUrl}</p>}</div></li>)}</ul>}
+		</> : <p class="editorial-empty">No live automation run has been recorded.</p>}
+	</section>
+</EditorialLayout>
