@@ -36,6 +36,13 @@ export interface ArchiveEdition {
 	stories: Story[];
 }
 
+export function storySourceLabel(source: StorySource): string {
+	const title = source.title.trim();
+	const publisher = source.publisher?.trim() ?? '';
+	if (publisher && title) return `${publisher}: ${title}`;
+	return title || publisher || 'Original source article';
+}
+
 export function groupStoriesByEdition(stories: Story[]): ArchiveEdition[] {
 	const editions = new Map<string, Story[]>();
 

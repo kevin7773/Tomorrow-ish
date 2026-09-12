@@ -695,6 +695,24 @@ export class D1EditorialRepository implements EditorialRepository {
 				),
 			this.db
 				.prepare(`
+					INSERT INTO sources (id, story_id, title, url, publisher, published_at, created_at)
+					SELECT
+						candidate.id || ':' || reference.id,
+						story.id,
+						reference.source_title,
+						reference.source_url,
+						reference.publisher_name,
+						reference.published_at,
+						?
+					FROM stories AS story
+					JOIN satire_candidates AS candidate ON candidate.id = story.origin_candidate_id
+					JOIN source_references AS reference
+						ON reference.source_intake_id = candidate.source_intake_id
+					WHERE story.id = ? AND candidate.id = ? AND story.status = 'DRAFT'
+				`)
+				.bind(record.createdAt, record.storyId, record.candidateId),
+			this.db
+				.prepare(`
 					INSERT INTO editorial_audit_log (
 						id, actor_email, entity_type, entity_id, action, from_status, to_status, created_at
 					)

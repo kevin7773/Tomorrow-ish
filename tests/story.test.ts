@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Story } from '../src/domain/story';
-import { groupStoriesByEdition, storyParagraphs } from '../src/domain/story';
+import { groupStoriesByEdition, storyParagraphs, storySourceLabel } from '../src/domain/story';
 
 function story(id: string, editionDate: string): Story {
 	return {
@@ -38,5 +38,19 @@ describe('story presentation helpers', () => {
 			'First line continues.',
 			'Second paragraph.',
 		]);
+	});
+
+	it('labels sourced stories with publisher and source headline', () => {
+		expect(storySourceLabel({
+			id: 'source-1', title: 'Target changes self-checkout policy',
+			url: 'https://news.example.test/target', publisher: 'Regional Newsroom', publishedAt: null,
+		})).toBe('Regional Newsroom: Target changes self-checkout policy');
+	});
+
+	it('uses a neutral linked-source label when optional attribution is missing', () => {
+		expect(storySourceLabel({
+			id: 'source-2', title: ' ', url: 'https://news.example.test/report',
+			publisher: null, publishedAt: null,
+		})).toBe('Original source article');
 	});
 });

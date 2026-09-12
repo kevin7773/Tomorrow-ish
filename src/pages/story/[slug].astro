@@ -8,6 +8,7 @@ import { getStoryRepository } from '../../data/runtime-story-repository';
 import SiteLayout from '../../layouts/SiteLayout.astro';
 import { renderStoryMarkdownBlocks } from '../../lib/markdown';
 import { absoluteSiteUrl, serializeJsonLd } from '../../lib/metadata';
+import { storySourceLabel } from '../../domain/story';
 
 const slug = Astro.params.slug ?? '';
 const repository = getStoryRepository();
@@ -91,23 +92,28 @@ const articleJsonLd = story
 
 					<aside class="article-context" aria-label="Story context">
 					<section class="source-list" aria-labelledby="source-heading">
-						<h2 id="source-heading">Source and context</h2>
+						<h2 id="source-heading">Source Materials</h2>
 						{story.sources.length ? (
 							<ul>
 								{story.sources.map((source) => (
 									<li>
-										<a href={source.url} rel="noopener noreferrer">{source.title}</a>
-										{source.publisher && ` — ${source.publisher}`}
+										{source.url.trim()
+											? <a href={source.url} rel="noopener noreferrer">{storySourceLabel(source)}</a>
+											: <span>{storySourceLabel(source)}</span>}
 									</li>
 								))}
 							</ul>
 						) : (
-							<p>This wholly fictional story has no external source material attached.</p>
+							<p><strong>Purely satire.</strong> This story has no external source material attached.</p>
 						)}
 					</section>
 					<section class="article-disclosure" aria-labelledby="article-disclosure-heading">
 						<h2 id="article-disclosure-heading">A note from the future</h2>
-						<p>This article is satire. Its people, events, quotations, and institutions are fictional.</p>
+						{story.sources.length ? (
+							<p>This article is satire inspired by a real reported event. Details, quotes, characters, and circumstances in the Tomorrow-ish version may be fictionalized.</p>
+						) : (
+							<p>This article is satire. Its people, events, quotations, and institutions are fictional.</p>
+						)}
 					</section>
 					</aside>
 				</div>
