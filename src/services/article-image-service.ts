@@ -67,7 +67,20 @@ export class ArticleImageService {
 
 		const id = this.createId();
 		const requestedAt = this.now();
-		const prompt = produceArticleImagePrompt(story);
+		let promptGovernance;
+		if (story.originCandidateId) {
+			const candidate = await this.editorialRepository.findCandidateById(story.originCandidateId);
+			if (!candidate) throw new EditorialValidationError('The story image governance record was not found.', 'conflict');
+			const intake = await this.editorialRepository.findIntakeById(candidate.sourceIntakeId);
+			if (!intake) throw new EditorialValidationError('The story image source authority was not found.', 'conflict');
+			promptGovernance = {
+				satireSuitability: intake.satireSuitability,
+				guardrailFlags: intake.guardrailFlags,
+				editorialCautionDirection: candidate.editorialNotes,
+				satiricalMechanism: candidate.satiricalMechanism,
+			};
+		}
+		const prompt = produceArticleImagePrompt(story, promptGovernance);
 		if (this.provider.lifecycle === 'asynchronous') {
 			if (!this.createWebhookUrl) {
 				throw new ImageProviderError('Asynchronous image callbacks are not configured.', 'PROVIDER_CONFIGURATION');

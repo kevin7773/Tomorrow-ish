@@ -17,7 +17,7 @@ function story(status: EditorialStory['status'] = 'APPROVED'): EditorialStory {
 		editionDate: '2026-09-11', publishedAt: null,
 		category: { id: 'cat-1', slug: 'civic-life', name: 'Civic Life' }, status,
 		socialExcerpt: 'A fictional task force convenes.', tags: [], ogImageKey: null,
-		originCandidateId: 'candidate-1', updatedAt: '2026-09-11T12:00:00.000Z',
+		originCandidateId: null, updatedAt: '2026-09-11T12:00:00.000Z',
 	};
 }
 
@@ -35,6 +35,8 @@ function image(status: ArticleImage['status'] = 'GENERATED'): ArticleImage {
 function setup(options: { status?: EditorialStory['status']; providerError?: ImageProviderError; imageStatus?: ArticleImage['status'] } = {}) {
 	const editorialRepository = {
 		findEditorialStoryById: vi.fn().mockResolvedValue(story(options.status)),
+		findCandidateById: vi.fn(),
+		findIntakeById: vi.fn(),
 	} as unknown as EditorialRepository;
 	const imageRepository = {
 		findById: vi.fn().mockResolvedValue(image(options.imageStatus)),
@@ -76,6 +78,30 @@ function setup(options: { status?: EditorialStory['status']; providerError?: Ima
 }
 
 describe('governed article image service', () => {
+	it('loads persisted sensitive-source governance before producing the provider prompt', async () => {
+		const { service, editorialRepository, provider } = setup();
+		vi.mocked(editorialRepository.findEditorialStoryById).mockResolvedValueOnce({
+			...story(), originCandidateId: 'candidate-sensitive',
+			deck: 'Authorities said they arrested a 41-year-old man after an alleged incident.',
+		});
+		vi.mocked(editorialRepository.findCandidateById).mockResolvedValueOnce({
+			id: 'candidate-sensitive', sourceIntakeId: 'intake-sensitive',
+			editorialNotes: 'Focus satire on hypothetical retail dress-code / parking-lot policy, not on the accused person.',
+			satiricalMechanism: 'Treating a basic social norm as a narrowly contested policy question.',
+		} as never);
+		vi.mocked(editorialRepository.findIntakeById).mockResolvedValueOnce({
+			id: 'intake-sensitive', satireSuitability: 'SENSITIVE', guardrailFlags: ['UNRESOLVED_ALLEGATION'],
+		} as never);
+
+		await service.generate(identity, { storyId: 'story-1' });
+
+		const submittedPrompt = vi.mocked(provider.generate).mock.calls[0][0].prompt;
+		expect(submittedPrompt).toContain('hypothetical retail dress-code / parking-lot policy');
+		expect(submittedPrompt).not.toMatch(/41-year-old|arrested|alleged incident|accused person/i);
+		expect(editorialRepository.findCandidateById).toHaveBeenCalledWith('candidate-sensitive');
+		expect(editorialRepository.findIntakeById).toHaveBeenCalledWith('intake-sensitive');
+	});
+
 	it.each(['DRAFT', 'REVIEW', 'PUBLISHED', 'REJECTED', 'ARCHIVED'] as const)('blocks paid generation for a %s story', async (status) => {
 		const { service, provider } = setup({ status });
 		await expect(service.generate(identity, { storyId: 'story-1' })).rejects.toThrow('Only an approved story');

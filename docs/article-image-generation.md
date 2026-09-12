@@ -15,9 +15,9 @@ Only an authenticated editor viewing a story whose authoritative status is `APPR
 
 ## Prompt production
 
-`produceArticleImagePrompt()` derives a concise central visual concept from reader-facing story fields. It prefers a concrete deck, social excerpt, or opening body sentence, but excludes editorial lifecycle and test scaffolding; when no safe supporting detail remains, it requests a literal visual interpretation of the headline in the story's category setting. An internal-only headline fails closed instead of becoming provider input. The builder does not copy the full article body or fetch sources. Every prompt includes the Tomorrow-ish house direction and explicitly requests illustration rather than documentary evidence of a fabricated event.
+`produceArticleImagePrompt()` derives a concise central visual concept from reader-facing story fields. It prefers a concrete deck, social excerpt, or opening body sentence, but excludes editorial lifecycle and test scaffolding; when no safe supporting detail remains, it requests a literal visual interpretation of the headline in the story's category setting. An internal-only headline fails closed instead of becoming provider input. For stories originating from a `SENSITIVE` intake or carrying `UNRESOLVED_ALLEGATION`, the service instead loads the persisted candidate caution direction and satirical mechanism. That governed direction becomes the visual concept, while source allegations remain background-only and the prompt requires anonymous or symbolic, fully clothed subjects rather than an identifiable person or reconstruction. Missing sensitive-source caution fails closed. The builder does not copy the full article body or fetch sources. Every prompt includes the Tomorrow-ish house direction and explicitly requests illustration rather than documentary evidence of a fabricated event.
 
-The current prompt version is `tomorrow-ish-editorial-v2`. The exact submitted prompt and version are immutable provenance.
+The current prompt version is `tomorrow-ish-editorial-v3`. The exact submitted prompt and version are immutable provenance.
 
 ## Image lifecycle
 
