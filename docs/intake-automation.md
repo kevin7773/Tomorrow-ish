@@ -4,7 +4,7 @@ The automation subsystem discovers bounded source metadata, creates ordinary sou
 
 ## Authority and execution flow
 
-1. `HttpAutomationSourceProvider` fetches one bounded JSON document from `AUTOMATION_SOURCE_URL`.
+1. The Tomorrow-ish-owned source URL uses `GovernedAutomationSourceProvider` to call the shared governed feed aggregator in-process. Other configured URLs continue to use `HttpAutomationSourceProvider` and fetch one bounded JSON document from `AUTOMATION_SOURCE_URL`.
 2. Each valid source URL receives a deterministic SHA-256 item identity. Existing automation registrations and existing source-reference URLs are checked before intake creation.
 3. A new source is persisted as an ordinary `source_intakes` row with its ordinary `source_references` lineage and append-only audit entries. Its suitability is `UNREVIEWED`, scores begin at `1`, and it waits for editorial assessment and normalization acceptance.
 4. A later run may process a registered source only when it has an editor-accepted normalized-event version whose suitability is `SUITABLE` and no successful candidate-generation run exists.
@@ -39,7 +39,7 @@ The adapter does not scrape article pages, infer missing metadata, or reinterpre
 
 ## Governed source-feed adapter
 
-`GET /api/automation/source-feed` is the Tomorrow-ish-owned, read-only producer for the source document contract. It is intentionally not configured as `AUTOMATION_SOURCE_URL` yet. The endpoint accepts no feed URL or other query parameters and fetches only enabled entries in the checked-in registry at `src/source-feed/source-registry.ts`.
+`GET /api/automation/source-feed` is the Tomorrow-ish-owned, read-only producer for the source document contract. It remains available for diagnostics and testing. Runtime automation recognizes that owned URL and invokes the same aggregator in-process, avoiding a recursive same-Worker HTTP request. The endpoint accepts no feed URL or other query parameters and fetches only enabled entries in the checked-in registry at `src/source-feed/source-registry.ts`.
 
 The initial registry contains NASA News Releases, NPR National, NPR Science, BBC Science & Environment, ESPN Top Headlines, WFLA Florida News, and Yellowstone National Park. Publisher name, source tier/type, allowed article hosts, and fallback category come only from that registry. Feed metadata supplies the original title, item-level article URL, publication time, and description/summary; the adapter never fetches an article body or uses a model.
 
@@ -60,9 +60,9 @@ Successful generated responses are cached for five minutes. The endpoint is not 
 
 Checked-in production-safe defaults:
 
-- `AUTOMATION_ENABLED=false`
-- `AUTOMATION_SOURCE_URL=` (unconfigured)
-- `AUTOMATION_MAX_ITEMS_PER_RUN=3` (valid range 1–20)
+- `AUTOMATION_ENABLED=true`
+- `AUTOMATION_SOURCE_URL=https://tomorrow-ish.news/api/automation/source-feed`
+- `AUTOMATION_MAX_ITEMS_PER_RUN=1` (valid range 1–20)
 - `AUTOMATION_ACTOR_EMAIL=automation@tomorrow-ish.news`
 - `triggers.crons=[]`
 

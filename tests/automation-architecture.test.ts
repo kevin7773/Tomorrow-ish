@@ -18,7 +18,6 @@ describe('automation architecture boundaries', () => {
 
 	it('keeps the production cron trigger explicitly disabled', () => {
 		const config = read('wrangler.jsonc');
-		expect(config).toMatch(/"AUTOMATION_ENABLED": "false"/);
 		expect(config).toMatch(/"crons": \[\]/);
 	});
 

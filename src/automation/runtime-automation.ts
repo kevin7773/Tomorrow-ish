@@ -4,7 +4,7 @@ import { D1GenerationRepository } from '../data/d1-generation-repository';
 import type { AutomationReport, AutomationTrigger } from '../domain/automation';
 import { GenerationService } from '../services/generation-service';
 import { AutomationService, type CandidateGenerationPort } from './automation-service';
-import { HttpAutomationSourceProvider } from './http-source-provider';
+import { automationSourceProvider } from './governed-source-provider';
 
 export interface AutomationEnvironment extends ModelEnvironment {
 	DB: D1Database;
@@ -56,7 +56,7 @@ export async function runRuntimeAutomation(
 	const repository = new D1AutomationRepository(environment.DB);
 	const service = new AutomationService(
 		repository,
-		new HttpAutomationSourceProvider(environment.AUTOMATION_SOURCE_URL ?? ''),
+		automationSourceProvider(environment.AUTOMATION_SOURCE_URL ?? ''),
 		candidatePort(environment),
 		{
 			enabled: environment.AUTOMATION_ENABLED === 'true',

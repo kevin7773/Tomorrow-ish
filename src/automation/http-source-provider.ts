@@ -7,6 +7,27 @@ import { AutomationSourceProviderError, type AutomationSourceProvider } from './
 const MAX_RESPONSE_CHARACTERS = 1_000_000;
 const DISCOVERY_TIMEOUT_MS = 8_000;
 
+type SafeFetchDiagnostic = {
+	exceptionName: 'AbortError' | 'TypeError' | 'Error' | 'UnknownError';
+	errorCode: 'ABORTED' | 'CLOUDFLARE_1042' | 'ILLEGAL_INVOCATION' | 'UNKNOWN';
+	receivedHttpResponse: false;
+};
+
+function safeFetchDiagnostic(error: unknown): SafeFetchDiagnostic {
+	const name = error instanceof Error && ['AbortError', 'TypeError', 'Error'].includes(error.name)
+		? error.name as SafeFetchDiagnostic['exceptionName']
+		: 'UnknownError';
+	const message = error instanceof Error ? error.message : '';
+	const errorCode = name === 'AbortError'
+		? 'ABORTED'
+		: /\b1042\b/.test(message)
+			? 'CLOUDFLARE_1042'
+			: /illegal invocation/i.test(message)
+				? 'ILLEGAL_INVOCATION'
+				: 'UNKNOWN';
+	return { exceptionName: name, errorCode, receivedHttpResponse: false };
+}
+
 function canonicalIdentityUrl(value: string): string {
 	const parsed = new URL(value);
 	parsed.hash = '';
@@ -52,10 +73,15 @@ async function parseItem(raw: unknown, index: number): Promise<DiscoveryItem> {
 	}
 }
 
+export function discoveryItemsFromFeedItems(items: unknown[], limit: number): Promise<DiscoveryItem[]> {
+	return Promise.all(items.slice(0, limit).map(parseItem));
+}
+
 export class HttpAutomationSourceProvider implements AutomationSourceProvider {
 	constructor(
 		private readonly endpoint: string,
 		private readonly transport: typeof fetch = fetch,
+		private readonly logger: Pick<Console, 'warn'> = console,
 	) {}
 
 	async discover(limit: number): Promise<DiscoveryItem[]> {
@@ -68,11 +94,13 @@ export class HttpAutomationSourceProvider implements AutomationSourceProvider {
 		const timeout = setTimeout(() => controller.abort(), DISCOVERY_TIMEOUT_MS);
 		let response: Response;
 		try {
-			response = await this.transport(endpoint, {
+			const transport = this.transport;
+			response = await transport(endpoint, {
 				headers: { Accept: 'application/json', 'User-Agent': 'Tomorrow-ish source discovery/1.0' },
 				signal: controller.signal,
 			});
-		} catch {
+		} catch (error) {
+			this.logger.warn('[automation-source] HTTP discovery fetch failed', safeFetchDiagnostic(error));
 			throw new AutomationSourceProviderError('NETWORK');
 		} finally {
 			clearTimeout(timeout);
@@ -86,7 +114,6 @@ export class HttpAutomationSourceProvider implements AutomationSourceProvider {
 		if (!payload || typeof payload !== 'object' || !Array.isArray((payload as { items?: unknown }).items)) {
 			throw new AutomationSourceProviderError('MALFORMED_RESPONSE');
 		}
-		const bounded = (payload as { items: unknown[] }).items.slice(0, limit);
-		return Promise.all(bounded.map(parseItem));
+		return discoveryItemsFromFeedItems((payload as { items: unknown[] }).items, limit);
 	}
 }
