@@ -1,9 +1,10 @@
-import type { CandidateProposal, ModelOperation, ModelResult, NormalizationProposal } from '../domain/generation';
-import { parseCandidateBatch, parseNormalizationProposal } from './validation';
+import type { ArticleBodyProposal, CandidateProposal, ModelOperation, ModelResult, NormalizationProposal } from '../domain/generation';
+import { parseArticleBodyProposal, parseCandidateBatch, parseNormalizationProposal } from './validation';
 import {
 	ModelOutputError,
 	ModelProviderError,
 	type ProviderResponseDiagnostics,
+	type GenerateArticleBodyInput,
 	type GenerateCandidatesInput,
 	type ModelProvider,
 	type NormalizeEventInput,
@@ -16,6 +17,7 @@ const INPUT_MICRO_USD_PER_TOKEN = 2;
 const OUTPUT_MICRO_USD_PER_TOKEN = 12;
 const NORMALIZATION_MAX_OUTPUT_TOKENS = 3_000;
 const CANDIDATE_MAX_OUTPUT_TOKENS = 2_500;
+const ARTICLE_BODY_MAX_OUTPUT_TOKENS = 3_000;
 const PROMPT_OVERHEAD_CHARACTERS = 6_000;
 
 export type OpenAITransport = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -72,6 +74,17 @@ export const CANDIDATE_SCHEMA = {
 		} },
 	},
 	required: ['candidates'],
+} as const;
+
+export const ARTICLE_BODY_SCHEMA = {
+	type: 'object', additionalProperties: false,
+	properties: {
+		body_markdown: { type: 'string' },
+		factual_assertions_used: { type: 'array', maxItems: 30, items: { type: 'string' } },
+		satire_framing_summary: { type: 'string' },
+		safety_notes: { type: 'array', maxItems: 20, items: { type: 'string' } },
+	},
+	required: ['body_markdown', 'factual_assertions_used', 'satire_framing_summary', 'safety_notes'],
 } as const;
 
 interface OpenAIResponse {
@@ -189,7 +202,9 @@ export class OpenAIModelProvider implements ModelProvider {
 
 	estimateMaximumCostMicrousd(operation: ModelOperation, inputCharacters: number): number {
 		const conservativeInputTokens = Math.max(0, inputCharacters) + PROMPT_OVERHEAD_CHARACTERS;
-		const outputTokens = operation === 'NORMALIZE' ? NORMALIZATION_MAX_OUTPUT_TOKENS : CANDIDATE_MAX_OUTPUT_TOKENS;
+		const outputTokens = operation === 'NORMALIZE'
+			? NORMALIZATION_MAX_OUTPUT_TOKENS
+			: operation === 'GENERATE_ARTICLE_BODY' ? ARTICLE_BODY_MAX_OUTPUT_TOKENS : CANDIDATE_MAX_OUTPUT_TOKENS;
 		return conservativeInputTokens * INPUT_MICRO_USD_PER_TOKEN + outputTokens * OUTPUT_MICRO_USD_PER_TOKEN;
 	}
 
@@ -215,6 +230,19 @@ export class OpenAIModelProvider implements ModelProvider {
 		}, signal);
 	}
 
+	async generateArticleBody(input: GenerateArticleBodyInput, signal: AbortSignal): Promise<ModelResult<ArticleBodyProposal>> {
+		const instructions = `${HOUSE_VOICE_CONTRACT} Write one complete, original Tomorrow-ish satirical news article using the selected headline, deck, category, and framing without changing them. Return four to seven short, substantive prose paragraphs in Markdown with a clear setup, escalation, and closing beat. Use only the supplied source facts and accepted normalized FACT assertions as real-world factual substrate. Do not introduce unsupported names, ages, locations, charges, chronology, statistics, quotations, expert claims, or institutional statements. Preserve attribution for uncertainties, allegations, arrests, charges, and disputed claims; never imply guilt. Never fabricate quotations, expert statements, motives, or source details. Satirical narration must remain clearly separable from sourced facts and must follow the persisted editorial caution direction. Do not intensify sexual, violent, criminal, defamatory, humiliating, or tragic framing. Direct satire toward the persisted editorial target, not a person accused of unresolved conduct. Do not copy source prose, add headings, write an outline, preface the output with meta commentary, mention these instructions, or include placeholder text.`;
+		return this.request(
+			'GENERATE_ARTICLE_BODY',
+			instructions,
+			input,
+			'article_body',
+			ARTICLE_BODY_SCHEMA,
+			parseArticleBodyProposal,
+			signal,
+		);
+	}
+
 	private async request<T>(
 		operation: ModelOperation,
 		instructions: string,
@@ -237,7 +265,9 @@ export class OpenAIModelProvider implements ModelProvider {
 					tool_choice: 'none',
 					parallel_tool_calls: false,
 					reasoning: { effort: 'none' },
-					max_output_tokens: operation === 'NORMALIZE' ? NORMALIZATION_MAX_OUTPUT_TOKENS : CANDIDATE_MAX_OUTPUT_TOKENS,
+					max_output_tokens: operation === 'NORMALIZE'
+						? NORMALIZATION_MAX_OUTPUT_TOKENS
+						: operation === 'GENERATE_ARTICLE_BODY' ? ARTICLE_BODY_MAX_OUTPUT_TOKENS : CANDIDATE_MAX_OUTPUT_TOKENS,
 					instructions,
 					input: inputText,
 					text: { format: { type: 'json_schema', name: schemaName, strict: true, schema } },
@@ -262,6 +292,7 @@ export class OpenAIModelProvider implements ModelProvider {
 			provider: this.providerId,
 			model: this.modelId,
 			providerRevision: typeof envelope.model === 'string' ? envelope.model : null,
+			providerRequestId: safeIdentifier(response.headers.get('x-request-id')),
 			output,
 			usage: {
 				inputTokens,

@@ -82,6 +82,8 @@ interface CandidateRow {
 	rationale: string;
 	satirical_mechanism: string;
 	origin_kind: 'MANUAL' | 'MODEL';
+	body_generation_state: 'NOT_REQUESTED' | 'PENDING' | 'SUCCEEDED' | 'FAILED';
+	body_generation_run_id: string | null;
 }
 
 interface EditorialStoryRow {
@@ -138,7 +140,9 @@ const CANDIDATE_SELECT = `
 		candidate.generation_ordinal,
 		candidate.rationale,
 		candidate.satirical_mechanism,
-		candidate.origin_kind
+		candidate.origin_kind,
+		candidate.body_generation_state,
+		candidate.body_generation_run_id
 	FROM satire_candidates AS candidate
 	JOIN source_intakes AS intake ON intake.id = candidate.source_intake_id
 	JOIN categories AS category ON category.id = candidate.category_id
@@ -241,6 +245,8 @@ function mapCandidate(row: CandidateRow): SatireCandidate {
 		rationale: row.rationale,
 		satiricalMechanism: row.satirical_mechanism,
 		originKind: row.origin_kind,
+		bodyGenerationState: row.body_generation_state,
+		bodyGenerationRunId: row.body_generation_run_id,
 	};
 }
 

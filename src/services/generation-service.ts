@@ -1,11 +1,13 @@
 import type { ModelProvider } from '../ai/model-provider';
 import { ModelOutputError, ModelProviderError } from '../ai/model-provider';
-import { parseCandidateBatch, parseNormalizationProposal } from '../ai/validation';
+import { parseArticleBodyProposal, parseCandidateBatch, parseNormalizationProposal } from '../ai/validation';
 import {
 	CANDIDATE_PROMPT_VERSION,
+	ARTICLE_BODY_PROMPT_VERSION,
 	DEFAULT_MODEL_LIMITS,
 	HOUSE_VOICE_CONTRACT,
 	ModelExecutionError,
+	ModelLimitError,
 	NORMALIZATION_PROMPT_VERSION,
 	modelLimitsForOperation,
 	runWithLimits,
@@ -22,14 +24,18 @@ import {
 	type ModelOperation,
 	type NormalizationProposal,
 } from '../domain/generation';
+import type { GenerateArticleBodyInput } from '../ai/model-provider';
 import type { ProviderResponseDiagnostics } from '../ai/model-provider';
 import { EditorialValidationError, requiredText } from './validation';
+
+const STALE_BODY_GENERATION_MINIMUM_MS = 60 * 60 * 1_000;
 
 interface GenerationDependencies {
 	now?: () => string;
 	createId?: () => string;
 	limits?: Readonly<ModelLimits>;
 	dailyBudgetMicrousd?: number;
+	generationEnabled?: boolean;
 }
 
 function actor(identity: EditorialIdentity | null | undefined): string {
@@ -44,6 +50,7 @@ function idempotencyKey(value: unknown): string {
 function sanitizedFailure(error: unknown): string {
 	if (error instanceof ModelExecutionError) return sanitizedFailure(error.cause);
 	if (error instanceof ModelOutputError) return 'MALFORMED_OUTPUT';
+	if (error instanceof ModelLimitError) return 'MODEL_LIMIT';
 	if (error instanceof ModelProviderError) return error.failureClassification;
 	if (error instanceof DOMException && error.name === 'AbortError') return 'TIMEOUT';
 	return 'PROVIDER_FAILURE';
@@ -103,6 +110,7 @@ export class GenerationService {
 	private readonly createId: () => string;
 	private readonly limits: Readonly<ModelLimits>;
 	private readonly dailyBudgetMicrousd: number;
+	private readonly generationEnabled: boolean;
 
 	constructor(
 		private readonly repository: GenerationRepository,
@@ -113,6 +121,7 @@ export class GenerationService {
 		this.createId = dependencies.createId ?? (() => crypto.randomUUID());
 		this.limits = dependencies.limits ?? DEFAULT_MODEL_LIMITS;
 		this.dailyBudgetMicrousd = dependencies.dailyBudgetMicrousd ?? 1_000_000;
+		this.generationEnabled = dependencies.generationEnabled ?? true;
 		if (!Number.isSafeInteger(this.dailyBudgetMicrousd) || this.dailyBudgetMicrousd <= 0) {
 			throw new EditorialValidationError('The daily model budget is invalid.');
 		}
@@ -323,6 +332,179 @@ export class GenerationService {
 		}
 	}
 
+	async generateArticleBody(identity: EditorialIdentity, input: Record<string, unknown>): Promise<string> {
+		const requestedByEmail = actor(identity);
+		if (!this.generationEnabled) {
+			throw new EditorialValidationError('Model generation is disabled or is not configured.', 'model-disabled');
+		}
+		const candidateId = requiredText(input.candidateId, 'Candidate ID', 100);
+		const key = idempotencyKey(input.idempotencyKey);
+		const existing = await this.repository.findArticleBodyRunByIdempotencyKey(key);
+		if (existing) {
+			if (existing.candidateId !== candidateId) {
+				throw new EditorialValidationError('The idempotency key belongs to another operation.');
+			}
+			if (existing.status === 'SUCCEEDED') return existing.id;
+			if (existing.status === 'PENDING') {
+				throw new EditorialValidationError('Article body generation is already in progress.', 'conflict');
+			}
+			throw new EditorialValidationError('The prior article body request failed. Reload to retry.', 'operation-failed');
+		}
+
+		const context = await this.repository.findCandidateForBodyGeneration(candidateId);
+		if (!context) throw new EditorialValidationError('The candidate or its source intake was not found.', 'not-found');
+		const { candidate, intake, version } = context;
+		if (candidate.status !== 'DRAFT') throw new EditorialValidationError('Only a DRAFT candidate may generate an article body.');
+		if (candidate.draftBodyMarkdown.trim()) throw new EditorialValidationError('The candidate already has an article body.', 'conflict');
+		if (candidate.bodyGenerationState === 'PENDING') throw new EditorialValidationError('Article body generation is already in progress.', 'conflict');
+		if (intake.references.length === 0) throw new EditorialValidationError('At least one source reference is required.');
+		if (!candidate.normalizedEventVersionId || !version
+			|| version.id !== candidate.normalizedEventVersionId
+			|| version.sourceIntakeId !== intake.id
+			|| version.reviewState !== 'ACCEPTED') {
+			throw new EditorialValidationError('An accepted normalized-event version is required.');
+		}
+		if (!intake.assessmentReviewedAt || !['SUITABLE', 'SENSITIVE'].includes(intake.satireSuitability)) {
+			throw new EditorialValidationError('The source suitability must be reviewed before body generation.');
+		}
+		const facts = version.assertions.filter((assertion) => assertion.kind === 'FACT');
+		if (facts.length === 0 || facts.some((assertion) => !hasAuthoritativeFactSupport(assertion, intake.references))) {
+			throw new EditorialValidationError('Every generated article requires authoritative factual support.');
+		}
+		const sensitive = intake.satireSuitability === 'SENSITIVE';
+		const cautionReason = sensitive ? candidate.editorialNotes.trim() || null : null;
+		if (sensitive && !cautionReason) {
+			throw new EditorialValidationError('Sensitive-source body generation requires a persisted editorial caution reason.');
+		}
+
+		const modelInput: GenerateArticleBodyInput = {
+			source: {
+				title: intake.title, neutralBrief: intake.neutralBrief,
+				significanceScore: intake.significanceScore, satirePotentialScore: intake.satirePotentialScore,
+				satireSuitability: intake.satireSuitability, suitabilityReason: intake.suitabilityReason,
+				guardrailFlags: intake.guardrailFlags, editorialNotes: intake.editorialNotes,
+				references: intake.references.map((reference) => ({
+					id: reference.id, sourceTitle: reference.sourceTitle, sourceUrl: reference.sourceUrl,
+					publisherName: reference.publisherName, sourceTier: reference.sourceTier,
+					sourceType: reference.sourceType, publishedAt: reference.publishedAt,
+				})),
+			},
+			normalizedEvent: {
+				id: version.id, eventStatement: version.eventStatement,
+				proposedSuitability: version.proposedSuitability,
+				suitabilityReason: version.suitabilityReason,
+				guardrailFlags: version.guardrailFlags,
+				assertions: version.assertions.map(({ kind, statement, sources }) => ({ kind, statement, sources })),
+				reviewReason: version.reviewReason,
+			},
+			candidate: {
+				headline: candidate.proposedHeadline, deck: candidate.proposedDeck,
+				rationale: candidate.rationale, satiricalMechanism: candidate.satiricalMechanism,
+				category: candidate.categoryName, editorialNotes: candidate.editorialNotes,
+			},
+			governance: {
+				sensitive,
+				unresolvedAllegation: intake.guardrailFlags.includes('UNRESOLVED_ALLEGATION')
+					|| version.guardrailFlags.includes('UNRESOLVED_ALLEGATION'),
+				editorialCautionReason: cautionReason,
+			},
+		};
+		const inputText = JSON.stringify(modelInput);
+		const createdAt = this.now();
+		const reservedCostMicrousd = await this.requireBudget('GENERATE_ARTICLE_BODY', inputText.length, createdAt);
+		const runId = this.createId();
+		const claimed = await this.repository.claimArticleBodyGeneration({
+			id: runId, candidateId, sourceIntakeId: intake.id, normalizedEventVersionId: version.id,
+			provider: this.provider.providerId, model: this.provider.modelId,
+			promptVersion: ARTICLE_BODY_PROMPT_VERSION,
+			inputHash: await sha256(`${ARTICLE_BODY_PROMPT_VERSION}\n${inputText}`),
+			inputCharacters: inputText.length, estimatedCostMicrousd: reservedCostMicrousd,
+			idempotencyKey: key, requestedByEmail, sourceWasSensitive: sensitive,
+			cautionReason, createdAt, auditId: this.createId(),
+		});
+		if (!claimed) {
+			throw new EditorialValidationError('The candidate changed or body generation is already in progress.', 'conflict');
+		}
+
+		let executed: { result: ModelResult<unknown>; retryCount: number; latencyMs: number } | null = null;
+		try {
+			executed = await runWithLimits(
+				(signal) => this.provider.generateArticleBody(modelInput, signal),
+				inputText.length,
+				modelLimitsForOperation('GENERATE_ARTICLE_BODY', this.limits),
+			);
+			const proposal = parseArticleBodyProposal(executed.result.output);
+			const supportedFacts = new Set(facts.map((fact) => fact.statement));
+			if (proposal.factualAssertionsUsed.length === 0
+				|| proposal.factualAssertionsUsed.some((assertion) => !supportedFacts.has(assertion))) {
+				throw new ModelOutputError('Article body cited a fact outside the accepted normalization.');
+			}
+			const outputText = JSON.stringify(proposal);
+			const completedAt = this.now();
+			const run = await this.runRecord({
+				id: runId, operation: 'GENERATE_ARTICLE_BODY', sourceIntakeId: intake.id,
+				normalizedEventVersionId: version.id, key, requestedByEmail, createdAt, completedAt,
+				promptVersion: ARTICLE_BODY_PROMPT_VERSION, inputText, outputText, executed,
+			});
+			const completed = await this.repository.completeArticleBodyGeneration({
+				run, candidateId, bodyMarkdown: proposal.bodyMarkdown, actorEmail: requestedByEmail,
+				completedAt, auditId: this.createId(),
+			});
+			if (!completed) {
+				await this.repository.failArticleBodyGeneration({
+					runId, candidateId, providerRevision: run.providerRevision,
+					inputTokens: run.inputTokens, outputTokens: run.outputTokens,
+					outputCharacters: run.outputCharacters, latencyMs: run.latencyMs,
+					estimatedCostMicrousd: run.estimatedCostMicrousd,
+					failureClassification: 'CONCURRENT_EDIT', providerHttpStatus: null,
+					providerErrorType: null, providerErrorCode: null, providerErrorMessage: null,
+					providerRequestId: run.providerRequestId, providerRetryAfter: null,
+					actorEmail: requestedByEmail, completedAt, auditId: this.createId(),
+				});
+				throw new EditorialValidationError('The candidate changed while its body was being generated.', 'conflict');
+			}
+			return runId;
+		} catch (error) {
+			if (error instanceof EditorialValidationError && error.code === 'conflict') throw error;
+			const completedAt = this.now();
+			const diagnostics = persistedProviderDiagnostics(error);
+			await this.repository.failArticleBodyGeneration({
+				runId, candidateId, providerRevision: executed?.result.providerRevision ?? null,
+				inputTokens: executed?.result.usage.inputTokens ?? null,
+				outputTokens: executed?.result.usage.outputTokens ?? null,
+				outputCharacters: executed?.result.usage.outputCharacters ?? 0,
+				latencyMs: error instanceof ModelExecutionError ? error.latencyMs : executed?.latencyMs ?? 0,
+				estimatedCostMicrousd: executed?.result.usage.estimatedCostMicrousd ?? reservedCostMicrousd,
+				failureClassification: sanitizedFailure(error), ...diagnostics,
+				providerErrorMessage: null,
+				providerRequestId: diagnostics.providerRequestId ?? executed?.result.providerRequestId ?? null,
+				actorEmail: requestedByEmail, completedAt, auditId: this.createId(),
+			});
+			throw editorialModelFailure(error);
+		}
+	}
+
+	async resolveStaleArticleBodyGeneration(identity: EditorialIdentity, input: Record<string, unknown>): Promise<void> {
+		const actorEmail = actor(identity);
+		const candidateId = requiredText(input.candidateId, 'Candidate ID', 100);
+		const context = await this.repository.findCandidateForBodyGeneration(candidateId);
+		if (!context || context.candidate.bodyGenerationState !== 'PENDING'
+			|| !context.candidate.bodyGenerationRunId) {
+			throw new EditorialValidationError('The article-body request is not pending.', 'conflict');
+		}
+		const resolvedAt = this.now();
+		const resolvedAtMs = Date.parse(resolvedAt);
+		if (!Number.isFinite(resolvedAtMs)) throw new EditorialValidationError('The current time is invalid.');
+		const staleBefore = new Date(resolvedAtMs - STALE_BODY_GENERATION_MINIMUM_MS).toISOString();
+		const resolved = await this.repository.resolveStaleArticleBodyGeneration({
+			runId: context.candidate.bodyGenerationRunId, candidateId, actorEmail,
+			staleBefore, resolvedAt, auditId: this.createId(),
+		});
+		if (!resolved) {
+			throw new EditorialValidationError('A pending article-body request can be resolved only after one hour.', 'conflict');
+		}
+	}
+
 	private async requireBudget(operation: ModelOperation, inputCharacters: number, requestedAt: string): Promise<number> {
 		const reserved = this.provider.estimateMaximumCostMicrousd(operation, inputCharacters);
 		if (!Number.isSafeInteger(reserved) || reserved < 0 || reserved > this.limits.maxEstimatedCostMicrousd) {
@@ -356,7 +538,8 @@ export class GenerationService {
 			candidateCount: input.operation === 'GENERATE_CANDIDATES' ? this.limits.defaultCandidateCount : 0,
 			idempotencyKey: input.key, requestedByEmail: input.requestedByEmail,
 			failureClassification: null, providerHttpStatus: null, providerErrorType: null,
-			providerErrorCode: null, providerErrorMessage: null, providerRequestId: null,
+			providerErrorCode: null, providerErrorMessage: null,
+			providerRequestId: input.executed.result.providerRequestId ?? null,
 			providerRetryAfter: null, createdAt: input.createdAt, completedAt: input.completedAt };
 	}
 }

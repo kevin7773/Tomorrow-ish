@@ -1,4 +1,5 @@
 import type {
+	ArticleBodyProposal,
 	CandidateProposal,
 	ModelResult,
 	NormalizationProposal,
@@ -22,6 +23,54 @@ export interface GenerateCandidatesInput {
 	count: number;
 }
 
+export interface GenerateArticleBodyInput {
+	source: {
+		title: string;
+		neutralBrief: string;
+		significanceScore: number;
+		satirePotentialScore: number;
+		satireSuitability: string;
+		suitabilityReason: string;
+		guardrailFlags: string[];
+		editorialNotes: string;
+		references: Array<{
+			id: string;
+			sourceTitle: string;
+			sourceUrl: string;
+			publisherName: string;
+			sourceTier: string;
+			sourceType: string;
+			publishedAt: string | null;
+		}>;
+	};
+	normalizedEvent: {
+		id: string;
+		eventStatement: string;
+		proposedSuitability: string;
+		suitabilityReason: string;
+		guardrailFlags: string[];
+		assertions: Array<{
+			kind: string;
+			statement: string;
+			sources: Array<{ sourceReferenceId: string; relationship: string }>;
+		}>;
+		reviewReason: string | null;
+	};
+	candidate: {
+		headline: string;
+		deck: string;
+		rationale: string;
+		satiricalMechanism: string;
+		category: string;
+		editorialNotes: string;
+	};
+	governance: {
+		sensitive: boolean;
+		unresolvedAllegation: boolean;
+		editorialCautionReason: string | null;
+	};
+}
+
 export interface ModelProvider {
 	readonly providerId: string;
 	readonly modelId: string;
@@ -30,6 +79,10 @@ export interface ModelProvider {
 		input: GenerateCandidatesInput,
 		signal: AbortSignal,
 	): Promise<ModelResult<CandidateProposal[]>>;
+	generateArticleBody(
+		input: GenerateArticleBodyInput,
+		signal: AbortSignal,
+	): Promise<ModelResult<ArticleBodyProposal>>;
 	estimateMaximumCostMicrousd(operation: ModelOperation, inputCharacters: number): number;
 }
 

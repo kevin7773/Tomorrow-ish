@@ -26,6 +26,7 @@ class DisabledModelProvider implements ModelProvider {
 	estimateMaximumCostMicrousd(): number { return 0; }
 	async normalizeEvent(): Promise<never> { throw new ModelProviderError('PROVIDER_DISABLED', false, 'Model generation is disabled.'); }
 	async generateCandidates(): Promise<never> { throw new ModelProviderError('PROVIDER_DISABLED', false, 'Model generation is disabled.'); }
+	async generateArticleBody(): Promise<never> { throw new ModelProviderError('PROVIDER_DISABLED', false, 'Model generation is disabled.'); }
 }
 
 function dailyBudget(value: string | undefined): number {

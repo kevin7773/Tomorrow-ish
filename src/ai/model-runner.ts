@@ -3,6 +3,7 @@ import { ModelProviderError } from './model-provider';
 
 export const NORMALIZATION_PROMPT_VERSION = 'normalize-v1';
 export const CANDIDATE_PROMPT_VERSION = 'candidates-v1';
+export const ARTICLE_BODY_PROMPT_VERSION = 'article-body-v1';
 
 export const HOUSE_VOICE_CONTRACT = [
 	'Dry, calm, and institutional.',
@@ -36,7 +37,11 @@ export function modelLimitsForOperation(
 	operation: ModelOperation,
 	limits: Readonly<ModelLimits> = DEFAULT_MODEL_LIMITS,
 ): Readonly<ModelLimits> {
-	return operation === 'GENERATE_CANDIDATES' ? { ...limits, timeoutMs: limits.candidateTimeoutMs } : limits;
+	if (operation === 'GENERATE_CANDIDATES') return { ...limits, timeoutMs: limits.candidateTimeoutMs };
+	if (operation === 'GENERATE_ARTICLE_BODY') {
+		return { ...limits, timeoutMs: limits.candidateTimeoutMs, maxAttempts: 1 };
+	}
+	return limits;
 }
 
 export class ModelLimitError extends Error {

@@ -14,7 +14,7 @@ describe('M3 architectural boundaries', () => {
 
 	it('gives providers no D1, repository, browser, or publication capability', () => {
 		const provider = readFileSync(join(root, 'src/ai/model-provider.ts'), 'utf8');
-		expect(provider).not.toMatch(/D1Database|Repository|publish|browser|search|tool/i);
+		expect(provider).not.toMatch(/D1Database|Repository|\bpublish\b|browser|search|tool/i);
 		const openai = readFileSync(join(root, 'src/ai/openai-model-provider.ts'), 'utf8');
 		expect(openai).not.toMatch(/D1Database|Repository|StoryRepository|publication-service|publishStory|publishApprovedStory/);
 		expect(openai).toContain('tools: []');

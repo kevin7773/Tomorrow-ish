@@ -55,6 +55,9 @@ source intake
   -> model normalization proposal
   -> editor-accepted immutable normalized-event version
   -> five model-authored DRAFT candidates
+  -> editor selects one empty-body candidate
+  -> one governed article body generation remains DRAFT
+  -> human edit and candidate REVIEW
   -> existing human review and publication workflow
 ```
 
@@ -89,7 +92,7 @@ The project is pinned to Astro 7.3.2 and the matching official Cloudflare adapte
 
 M2 adds protected source intake, normalized source references, human-reviewed satire candidates, immutable candidate-to-story provenance, and an append-only audit log. M3 adds immutable normalized-event versions, assertion-level source provenance, model-run cost/usage records, and idempotent DRAFT-candidate generation behind a narrow repository boundary. The article-image subsystem adds immutable prompt/provider/asset provenance and explicit image review without gaining publication authority. Candidate conversion creates only a `DRAFT` story. `publishStory()` is the sole operation that can assign `PUBLISHED`, and it atomically records the authenticated editor and publication time.
 
-Automated discovery/ingestion, scraping, full-article generation, scheduled triggers, queues, workflows, social automation, analytics vendors, public accounts, comments, and submissions remain intentionally out of scope. Governed AdSense verification and article-placement hooks exist behind `ADS_ENABLED=false`; no ad loader or slot renders until the flag and an issued numeric slot ID are both configured. R2 is used only for reviewed article-image assets.
+Automated discovery/ingestion, scraping, scheduled triggers, queues, workflows, social automation, analytics vendors, public accounts, comments, and submissions remain intentionally out of scope. Article-body generation is an explicit, single-candidate newsroom action that cannot overwrite existing copy or advance status; see the [article-body generation runbook](./docs/article-body-generation.md). Governed AdSense verification and article-placement hooks exist behind `ADS_ENABLED=false`; no ad loader or slot renders until the flag and an issued numeric slot ID are both configured. R2 is used only for reviewed article-image assets.
 
 ## Production D1 migrations
 
@@ -128,7 +131,7 @@ Migration `0003_governed_generation.sql` is not applied by deployment. Before an
 
 The [M3 provider runbook](./docs/m3-provider-review.md) records the prepared OpenAI adapter, request contract, budget, secret command, and separately reviewed enablement steps. Production generation remains disabled, and `OPENAI_API_KEY` must never be committed.
 
-Migration `0005_governed_article_images.sql`, the `tomorrow-ish-images` R2 bucket, and `IMAGE_GENERATION_ENABLED=true` are separate manual production steps. Migration `0007_async_article_images.sql` adds the pending/callback lifecycle and must likewise be reviewed and applied separately after `0001`–`0006`. Migration `0008_scrub_image_webhook_result_urls.sql` preserves the normalized callback audit record while clearing temporary provider URLs from processed inbox rows. The active Cloudflare AI Gateway adapter requires a Workers AI-scoped Cloudflare token, a webhook signing secret, and an explicit choice of default-alias BYOK or funded Unified Billing; the retained direct OpenAI and Replicate adapters remain available. See the [article-image generation runbook](./docs/article-image-generation.md). No migration, Gateway/billing setup, secret creation, paid request, deployment, or production enablement is automatic.
+Migration `0005_governed_article_images.sql`, the `tomorrow-ish-images` R2 bucket, and `IMAGE_GENERATION_ENABLED=true` are separate manual production steps. Migration `0007_async_article_images.sql` adds the pending/callback lifecycle and must likewise be reviewed and applied separately after `0001`–`0006`. Migration `0008_scrub_image_webhook_result_urls.sql` preserves the normalized callback audit record while clearing temporary provider URLs from processed inbox rows. Migration `0010_governed_article_body_generation.sql` adds the separate pending/terminal article-body run history and candidate claim fields; it must be reviewed and applied before deploying the corresponding code. The active Cloudflare AI Gateway adapter requires a Workers AI-scoped Cloudflare token, a webhook signing secret, and an explicit choice of default-alias BYOK or funded Unified Billing; the retained direct OpenAI and Replicate adapters remain available. See the [article-image generation runbook](./docs/article-image-generation.md). No migration, Gateway/billing setup, secret creation, paid request, deployment, or production enablement is automatic.
 
 Migration `0006_add_editorial_categories.sql` adds Sports (`sports`), Weather (`weather`), and Community (`community`) as ordinary category reference rows. It is additive and idempotent, preserves every existing category and story relationship, and must be applied through the same separately reviewed production migration process.
 

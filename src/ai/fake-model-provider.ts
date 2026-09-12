@@ -1,5 +1,5 @@
-import type { ModelProvider, NormalizeEventInput, GenerateCandidatesInput } from './model-provider';
-import type { CandidateProposal, ModelResult, NormalizationProposal } from '../domain/generation';
+import type { ModelProvider, NormalizeEventInput, GenerateArticleBodyInput, GenerateCandidatesInput } from './model-provider';
+import type { ArticleBodyProposal, CandidateProposal, ModelOperation, ModelResult, NormalizationProposal } from '../domain/generation';
 
 const revision = 'fake-v1';
 
@@ -18,8 +18,8 @@ function usage(input: unknown, output: unknown, cost: number) {
 export class FakeModelProvider implements ModelProvider {
 	readonly providerId = 'fake';
 	readonly modelId = 'tomorrow-ish-deterministic';
-	estimateMaximumCostMicrousd(operation: 'NORMALIZE' | 'GENERATE_CANDIDATES'): number {
-		return operation === 'NORMALIZE' ? 7 : 11;
+	estimateMaximumCostMicrousd(operation: ModelOperation): number {
+		return operation === 'NORMALIZE' ? 7 : operation === 'GENERATE_ARTICLE_BODY' ? 13 : 11;
 	}
 
 	async normalizeEvent(input: NormalizeEventInput, signal: AbortSignal): Promise<ModelResult<NormalizationProposal>> {
@@ -79,5 +79,22 @@ export class FakeModelProvider implements ModelProvider {
 			satiricalMechanism,
 		}));
 		return { provider: 'fake', model: 'tomorrow-ish-deterministic', providerRevision: revision, output, usage: usage(input, output, 11) };
+	}
+
+	async generateArticleBody(input: GenerateArticleBodyInput, signal: AbortSignal): Promise<ModelResult<ArticleBodyProposal>> {
+		if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+		const facts = input.normalizedEvent.assertions.filter((assertion) => assertion.kind === 'FACT').map((assertion) => assertion.statement);
+		const output: ArticleBodyProposal = {
+			bodyMarkdown: [
+				`${input.candidate.headline} began as a routine development and was promptly assigned a folder.`,
+				`Officials reviewed the available facts with the calm precision normally reserved for a copier warranty.`,
+				`The resulting process expanded into a modest institutional response with several carefully labeled consequences.`,
+				`By late afternoon, the matter had been declared understandable enough to schedule another meeting.`,
+			].join('\n\n'),
+			factualAssertionsUsed: facts.slice(0, 1),
+			satireFramingSummary: input.candidate.satiricalMechanism,
+			safetyNotes: input.governance.sensitive ? ['Preserve attribution and follow the editorial caution direction.'] : [],
+		};
+		return { provider: 'fake', model: 'tomorrow-ish-deterministic', providerRevision: revision, providerRequestId: null, output, usage: usage(input, output, 13) };
 	}
 }

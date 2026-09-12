@@ -87,6 +87,8 @@ export interface SatireCandidate {
 	rationale: string;
 	satiricalMechanism: string;
 	originKind: 'MANUAL' | 'MODEL';
+	bodyGenerationState: 'NOT_REQUESTED' | 'PENDING' | 'SUCCEEDED' | 'FAILED';
+	bodyGenerationRunId: string | null;
 }
 
 export interface EditorialStory {

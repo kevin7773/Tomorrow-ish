@@ -3,6 +3,7 @@ import {
 	ASSERTION_KINDS,
 	GUARDRAIL_FLAGS,
 	SOURCE_RELATIONSHIPS,
+	type ArticleBodyProposal,
 	type CandidateProposal,
 	type NormalizationProposal,
 } from '../domain/generation';
@@ -85,4 +86,33 @@ export function parseCandidateBatch(value: unknown, expectedCount = 5): Candidat
 		throw new ModelOutputError('Candidate headlines must be distinct.');
 	}
 	return candidates;
+}
+
+function textArray(value: unknown, maximumItems: number, maximumItemLength: number): string[] {
+	if (!Array.isArray(value) || value.length > maximumItems) throw new ModelOutputError();
+	return value.map((item) => text(item, maximumItemLength));
+}
+
+export function parseArticleBodyProposal(value: unknown): ArticleBodyProposal {
+	const input = record(value);
+	const bodyMarkdown = text(input.body_markdown ?? input.bodyMarkdown, 20_000);
+	const paragraphs = bodyMarkdown.split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean);
+	if (paragraphs.length < 4 || paragraphs.length > 7) {
+		throw new ModelOutputError('Article bodies must contain four to seven paragraphs.');
+	}
+	if (bodyMarkdown.length < 240 || paragraphs.some((paragraph) => paragraph.length < 20)) {
+		throw new ModelOutputError('Article body paragraphs must contain substantive prose.');
+	}
+	if (paragraphs.some((paragraph) => /^(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>\s)/.test(paragraph))) {
+		throw new ModelOutputError('Article bodies must be prose paragraphs, not an outline.');
+	}
+	if (/\b(?:lorem ipsum|placeholder text|insert (?:joke|copy|text) here|as an ai|here is (?:the|your|a) article)\b/i.test(bodyMarkdown)) {
+		throw new ModelOutputError('Article body contains placeholder or meta language.');
+	}
+	return {
+		bodyMarkdown,
+		factualAssertionsUsed: textArray(input.factual_assertions_used ?? input.factualAssertionsUsed, 30, 2_000),
+		satireFramingSummary: text(input.satire_framing_summary ?? input.satireFramingSummary, 2_000),
+		safetyNotes: textArray(input.safety_notes ?? input.safetyNotes, 20, 1_000),
+	};
 }

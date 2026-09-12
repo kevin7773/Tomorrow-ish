@@ -2,6 +2,9 @@
 import EditorialMessage from '../../../components/EditorialMessage.astro';
 import { CANDIDATE_STATUSES, canTransitionCandidate } from '../../../domain/editorial';
 import { getEditorialRepository } from '../../../data/runtime-editorial-repository';
+import { getGenerationRepository } from '../../../data/runtime-generation-repository';
+import { isRuntimeModelGenerationAvailable } from '../../../ai/runtime-model-provider';
+import { hasAuthoritativeFactSupport } from '../../../domain/generation';
 import EditorialLayout from '../../../layouts/EditorialLayout.astro';
 
 const id = Astro.params.id ?? '';
@@ -11,6 +14,7 @@ const [candidate, categories] = await Promise.all([
 	repository.listCategories(),
 ]);
 if (!candidate) return Astro.redirect('/editorial/candidates?error=not-found');
+const bodyGenerationContext = await getGenerationRepository().findCandidateForBodyGeneration(candidate.id);
 const auditEntries = await repository.listAuditEntries('SATIRE_CANDIDATE', candidate.id);
 const csrfToken = Astro.locals.csrfToken;
 const returnPath = `/editorial/candidates/${candidate.id}`;
@@ -23,6 +27,20 @@ const suggestedSlug = candidate.proposedHeadline
 	.replace(/-$/g, '');
 const tomorrow = new Date();
 tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+const modelGenerationAvailable = isRuntimeModelGenerationAvailable();
+const acceptedFacts = bodyGenerationContext?.version?.assertions.filter((assertion) => assertion.kind === 'FACT') ?? [];
+const bodyGenerationSourceEligible = Boolean(
+	bodyGenerationContext?.version
+	&& bodyGenerationContext.version.reviewState === 'ACCEPTED'
+	&& bodyGenerationContext.version.id === candidate.normalizedEventVersionId
+	&& bodyGenerationContext.version.sourceIntakeId === bodyGenerationContext.intake.id
+	&& bodyGenerationContext.intake.references.length > 0
+	&& acceptedFacts.length > 0
+	&& acceptedFacts.every((assertion) => hasAuthoritativeFactSupport(assertion, bodyGenerationContext.intake.references))
+	&& bodyGenerationContext.intake.assessmentReviewedAt
+	&& ['SUITABLE', 'SENSITIVE'].includes(bodyGenerationContext.intake.satireSuitability)
+	&& (bodyGenerationContext.intake.satireSuitability !== 'SENSITIVE' || candidate.editorialNotes.trim()),
+);
 ---
 
 <EditorialLayout title={candidate.proposedHeadline}>
@@ -41,6 +59,7 @@ tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
 		{candidate.satiricalMechanism && <p><strong>Satirical mechanism:</strong> {candidate.satiricalMechanism}</p>}
 		{candidate.originModelRunId && <p><a href={`/editorial/model-runs/${candidate.originModelRunId}`}>Open provider, cost, and generation provenance</a></p>}
 		{candidate.normalizedEventVersionId && <p>Normalized-event version: <code>{candidate.normalizedEventVersionId}</code></p>}
+		{candidate.bodyGenerationRunId && candidate.bodyGenerationState !== 'PENDING' && <p><a href={`/editorial/model-runs/${candidate.bodyGenerationRunId}`}>Open article-body generation provenance</a></p>}
 	</section>
 
 	{candidate.convertedStoryId ? (
@@ -49,6 +68,37 @@ tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
 		</div>
 	) : (
 		<>
+			{candidate.status === 'DRAFT' && !candidate.draftBodyMarkdown.trim() && (
+				<section class="editorial-panel" aria-labelledby="body-generation-heading">
+					<h2 id="body-generation-heading">Generate article body</h2>
+					{candidate.bodyGenerationState === 'PENDING' ? (
+						<>
+							<p class="editorial-alert">Article body generation is in progress. Another request cannot be submitted.</p>
+							<form class="editorial-form" method="post" action="/editorial/actions/generation">
+								<input type="hidden" name="csrf_token" value={csrfToken} />
+								<input type="hidden" name="action" value="resolve-body-pending" />
+								<input type="hidden" name="candidateId" value={candidate.id} />
+								<input type="hidden" name="returnPath" value={returnPath} />
+								<p class="editorial-form__help">If the request remains pending after one hour, close it without contacting the provider so a deliberate manual retry can be requested.</p>
+								<button class="editorial-button editorial-button--quiet" type="submit">Resolve stale request</button>
+							</form>
+						</>
+					) : !bodyGenerationSourceEligible ? (
+						<p class="editorial-alert editorial-alert--error">This candidate does not have the reviewed source authority required for body generation.</p>
+					) : (
+						<form class="editorial-form" method="post" action="/editorial/actions/generation">
+							<input type="hidden" name="csrf_token" value={csrfToken} />
+							<input type="hidden" name="action" value="generate-body" />
+							<input type="hidden" name="candidateId" value={candidate.id} />
+							<input type="hidden" name="idempotencyKey" value={`body:${candidate.id}:${crypto.randomUUID()}`} />
+							<input type="hidden" name="returnPath" value={returnPath} />
+							<p>Uses persisted source facts, governance, and the selected candidate framing. It will not change status or overwrite an existing body.</p>
+							<button class="editorial-button" type="submit" disabled={!modelGenerationAvailable}>{modelGenerationAvailable ? 'Generate article body' : 'Article body generation disabled'}</button>
+							{!modelGenerationAvailable && <p class="editorial-form__help">No production newsroom model is configured; article body generation is disabled.</p>}
+						</form>
+					)}
+				</section>
+			)}
 			<form class="editorial-form editorial-panel" method="post" action="/editorial/actions/candidates">
 				<input type="hidden" name="csrf_token" value={csrfToken} />
 				<input type="hidden" name="action" value="update" />

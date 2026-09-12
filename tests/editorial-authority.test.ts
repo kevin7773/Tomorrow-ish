@@ -29,6 +29,7 @@ function candidate(overrides: Partial<SatireCandidate> = {}): SatireCandidate {
 		rationale: '',
 		satiricalMechanism: '',
 		originKind: 'MANUAL',
+		bodyGenerationState: 'NOT_REQUESTED', bodyGenerationRunId: null,
 		...overrides,
 	};
 }

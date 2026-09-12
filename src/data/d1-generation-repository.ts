@@ -11,8 +11,12 @@ import type {
 } from '../domain/generation';
 import type {
 	CreateEditorRevisionRecord,
+	ClaimArticleBodyGenerationRecord,
+	CompleteArticleBodyGenerationRecord,
 	CreateGeneratedCandidatesRecord,
 	CreateNormalizationRecord,
+	FailArticleBodyGenerationRecord,
+	ResolveStaleArticleBodyGenerationRecord,
 	GenerationRepository,
 	ModelRunRecord,
 	ReviewNormalizationRecord,
@@ -51,6 +55,28 @@ interface ModelRunRow {
 	provider_error_message: string | null; provider_request_id: string | null; provider_retry_after: string | null;
 }
 
+interface BodyGenerationCandidateRow {
+	id: string; source_intake_id: string; proposed_headline: string; proposed_deck: string;
+	draft_body_markdown: string; category_id: string; category_name: string; editorial_notes: string;
+	status: import('../domain/editorial').CandidateStatus; normalized_event_version_id: string | null;
+	rationale: string; satirical_mechanism: string;
+	body_generation_state: 'NOT_REQUESTED' | 'PENDING' | 'SUCCEEDED' | 'FAILED';
+	body_generation_run_id: string | null;
+}
+
+interface BodyGenerationRunRow {
+	id: string; operation: 'GENERATE_ARTICLE_BODY'; status: 'PENDING' | 'SUCCEEDED' | 'FAILED';
+	candidate_id: string; source_intake_id: string; normalized_event_version_id: string;
+	provider: string; model: string; provider_revision: string | null; prompt_version: string;
+	input_hash: string; output_hash: string | null; input_tokens: number | null; output_tokens: number | null;
+	input_characters: number; output_characters: number; latency_ms: number; retry_count: number;
+	estimated_cost_microusd: number; idempotency_key: string; requested_by_email: string;
+	failure_classification: string | null; provider_http_status: number | null;
+	provider_error_type: string | null; provider_error_code: string | null; provider_error_message: string | null;
+	provider_request_id: string | null; provider_retry_after: string | null;
+	created_at: string; completed_at: string | null;
+}
+
 function jsonFlags(value: string): GuardrailFlag[] {
 	try { const parsed: unknown = JSON.parse(value); return Array.isArray(parsed) ? parsed as GuardrailFlag[] : []; }
 	catch { return []; }
@@ -86,6 +112,23 @@ function mapRun(row: ModelRunRow): ModelRun {
 		providerErrorCode: row.provider_error_code, providerErrorMessage: row.provider_error_message,
 		providerRequestId: row.provider_request_id, providerRetryAfter: row.provider_retry_after,
 		createdAt: row.created_at, completedAt: row.completed_at };
+}
+
+function mapBodyRun(row: BodyGenerationRunRow): ModelRun | null {
+	if (row.status === 'PENDING' || row.completed_at === null) return null;
+	return {
+		id: row.id, operation: row.operation, status: row.status, sourceIntakeId: row.source_intake_id,
+		normalizedEventVersionId: row.normalized_event_version_id, provider: row.provider, model: row.model,
+		providerRevision: row.provider_revision, promptVersion: row.prompt_version, inputHash: row.input_hash,
+		outputHash: row.output_hash, inputTokens: row.input_tokens, outputTokens: row.output_tokens,
+		inputCharacters: row.input_characters, outputCharacters: row.output_characters, latencyMs: row.latency_ms,
+		retryCount: row.retry_count, estimatedCostMicrousd: row.estimated_cost_microusd, candidateCount: 0,
+		idempotencyKey: row.idempotency_key, requestedByEmail: row.requested_by_email,
+		failureClassification: row.failure_classification, providerHttpStatus: row.provider_http_status,
+		providerErrorType: row.provider_error_type, providerErrorCode: row.provider_error_code,
+		providerErrorMessage: row.provider_error_message, providerRequestId: row.provider_request_id,
+		providerRetryAfter: row.provider_retry_after, createdAt: row.created_at, completedAt: row.completed_at,
+	};
 }
 
 function insertRun(db: D1Database, run: ModelRunRecord): D1PreparedStatement {
@@ -158,7 +201,9 @@ export class D1GenerationRepository implements GenerationRepository {
 
 	async findModelRun(id: string): Promise<ModelRun | null> {
 		const row = await this.db.prepare('SELECT * FROM model_runs WHERE id = ? LIMIT 1').bind(id).first<ModelRunRow>();
-		return row ? mapRun(row) : null;
+		if (row) return mapRun(row);
+		const bodyRun = await this.db.prepare('SELECT * FROM candidate_body_generation_runs WHERE id = ? LIMIT 1').bind(id).first<BodyGenerationRunRow>();
+		return bodyRun ? mapBodyRun(bodyRun) : null;
 	}
 
 	async findModelRunByIdempotencyKey(key: string): Promise<ModelRun | null> {
@@ -166,12 +211,52 @@ export class D1GenerationRepository implements GenerationRepository {
 		return row ? mapRun(row) : null;
 	}
 
+	async findArticleBodyRunByIdempotencyKey(key: string) {
+		const row = await this.db.prepare('SELECT id, candidate_id, status FROM candidate_body_generation_runs WHERE idempotency_key = ? LIMIT 1')
+			.bind(key).first<{ id: string; candidate_id: string; status: 'PENDING' | 'SUCCEEDED' | 'FAILED' }>();
+		return row ? { id: row.id, candidateId: row.candidate_id, status: row.status } : null;
+	}
+
+	async findCandidateForBodyGeneration(id: string) {
+		const candidate = await this.db.prepare(`SELECT candidate.id, candidate.source_intake_id,
+			candidate.proposed_headline, candidate.proposed_deck, candidate.draft_body_markdown,
+			candidate.category_id, category.name AS category_name, candidate.editorial_notes,
+			candidate.status, candidate.normalized_event_version_id, candidate.rationale,
+			candidate.satirical_mechanism, candidate.body_generation_state, candidate.body_generation_run_id
+			FROM satire_candidates AS candidate
+			JOIN categories AS category ON category.id = candidate.category_id
+			WHERE candidate.id = ? LIMIT 1`).bind(id).first<BodyGenerationCandidateRow>();
+		if (!candidate) return null;
+		const intake = await this.findIntakeForGeneration(candidate.source_intake_id);
+		if (!intake) return null;
+		const version = candidate.normalized_event_version_id
+			? await this.findNormalizedVersion(candidate.normalized_event_version_id)
+			: null;
+		return {
+			candidate: {
+				id: candidate.id, sourceIntakeId: candidate.source_intake_id,
+				proposedHeadline: candidate.proposed_headline, proposedDeck: candidate.proposed_deck,
+				draftBodyMarkdown: candidate.draft_body_markdown, categoryId: candidate.category_id,
+				categoryName: candidate.category_name, editorialNotes: candidate.editorial_notes,
+				status: candidate.status, normalizedEventVersionId: candidate.normalized_event_version_id,
+				rationale: candidate.rationale, satiricalMechanism: candidate.satirical_mechanism,
+				bodyGenerationState: candidate.body_generation_state,
+				bodyGenerationRunId: candidate.body_generation_run_id,
+			},
+			intake,
+			version,
+		};
+	}
+
 	async createModelRun(run: ModelRunRecord): Promise<void> {
 		await insertRun(this.db, run).run();
 	}
 
 	async sumModelRunCostSince(createdAt: string): Promise<number> {
-		const row = await this.db.prepare('SELECT COALESCE(SUM(estimated_cost_microusd), 0) AS cost FROM model_runs WHERE created_at >= ?').bind(createdAt).first<{ cost: number }>();
+		const row = await this.db.prepare(`SELECT
+			(SELECT COALESCE(SUM(estimated_cost_microusd), 0) FROM model_runs WHERE created_at >= ?)
+			+ (SELECT COALESCE(SUM(estimated_cost_microusd), 0) FROM candidate_body_generation_runs WHERE created_at >= ?)
+			AS cost`).bind(createdAt, createdAt).first<{ cost: number }>();
 		return row?.cost ?? 0;
 	}
 
@@ -270,6 +355,145 @@ export class D1GenerationRepository implements GenerationRepository {
 		});
 		const results = await this.db.batch(statements);
 		return results[0].meta.changes === 1;
+	}
+
+	async claimArticleBodyGeneration(record: ClaimArticleBodyGenerationRecord): Promise<boolean> {
+		const results = await this.db.batch([
+			this.db.prepare(`INSERT INTO candidate_body_generation_runs (
+				id, operation, status, candidate_id, source_intake_id, normalized_event_version_id,
+				provider, model, prompt_version, input_hash, input_characters, estimated_cost_microusd,
+				idempotency_key, requested_by_email, source_was_sensitive, caution_reason, created_at
+			) SELECT ?, 'GENERATE_ARTICLE_BODY', 'PENDING', candidate.id, candidate.source_intake_id,
+				candidate.normalized_event_version_id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+			FROM satire_candidates AS candidate
+			JOIN source_intakes AS intake ON intake.id = candidate.source_intake_id
+			WHERE candidate.id = ? AND candidate.source_intake_id = ?
+			AND candidate.normalized_event_version_id = ?
+			AND candidate.status = 'DRAFT'
+			AND trim(candidate.draft_body_markdown, char(9) || char(10) || char(11) || char(12) || char(13) || ' ') = ''
+			AND candidate.body_generation_state IN ('NOT_REQUESTED', 'FAILED')
+			AND intake.satire_suitability IN ('SUITABLE', 'SENSITIVE')
+			AND intake.assessment_reviewed_at IS NOT NULL
+			AND EXISTS (SELECT 1 FROM source_references WHERE source_intake_id = intake.id)
+			AND EXISTS (SELECT 1 FROM normalized_event_versions AS version
+				WHERE version.id = candidate.normalized_event_version_id
+				AND version.source_intake_id = candidate.source_intake_id
+				AND version.review_state = 'ACCEPTED')
+			AND (intake.satire_suitability <> 'SENSITIVE' OR trim(COALESCE(?, '')) <> '')
+			AND NOT EXISTS (SELECT 1 FROM candidate_body_generation_runs AS run
+				WHERE run.candidate_id = candidate.id AND run.status = 'PENDING')`)
+				.bind(record.id, record.provider, record.model, record.promptVersion, record.inputHash,
+					record.inputCharacters, record.estimatedCostMicrousd, record.idempotencyKey,
+					record.requestedByEmail, record.sourceWasSensitive ? 1 : 0, record.cautionReason,
+					record.createdAt, record.candidateId, record.sourceIntakeId,
+					record.normalizedEventVersionId, record.cautionReason),
+			this.db.prepare(`UPDATE satire_candidates
+				SET body_generation_state = 'PENDING', body_generation_run_id = ?,
+					updated_by_email = ?, updated_at = ?
+				WHERE id = ? AND status = 'DRAFT'
+				AND trim(draft_body_markdown, char(9) || char(10) || char(11) || char(12) || char(13) || ' ') = ''
+				AND body_generation_state IN ('NOT_REQUESTED', 'FAILED')
+				AND EXISTS (SELECT 1 FROM candidate_body_generation_runs
+					WHERE id = ? AND candidate_id = satire_candidates.id AND status = 'PENDING')`)
+				.bind(record.id, record.requestedByEmail, record.createdAt, record.candidateId, record.id),
+			this.db.prepare(`INSERT INTO editorial_audit_log
+				(id, actor_email, entity_type, entity_id, action, reason, created_at)
+				SELECT ?, ?, 'SATIRE_CANDIDATE', ?, 'ARTICLE_BODY_GENERATION_REQUESTED', ?, ?
+				WHERE EXISTS (SELECT 1 FROM satire_candidates
+					WHERE id = ? AND body_generation_state = 'PENDING' AND body_generation_run_id = ?)`)
+				.bind(record.auditId, record.requestedByEmail, record.candidateId,
+					record.cautionReason, record.createdAt, record.candidateId, record.id),
+		]);
+		return results.every((result) => result.meta.changes === 1);
+	}
+
+	async completeArticleBodyGeneration(record: CompleteArticleBodyGenerationRecord): Promise<boolean> {
+		const run = record.run;
+		const results = await this.db.batch([
+			this.db.prepare(`UPDATE satire_candidates
+				SET draft_body_markdown = ?, body_generation_state = 'SUCCEEDED',
+					updated_by_email = ?, updated_at = ?
+				WHERE id = ? AND status = 'DRAFT'
+				AND trim(draft_body_markdown, char(9) || char(10) || char(11) || char(12) || char(13) || ' ') = ''
+				AND body_generation_state = 'PENDING' AND body_generation_run_id = ?`)
+				.bind(record.bodyMarkdown, record.actorEmail, record.completedAt, record.candidateId, run.id),
+			this.db.prepare(`UPDATE candidate_body_generation_runs SET
+				status = 'SUCCEEDED', provider_revision = ?, output_hash = ?, input_tokens = ?,
+				output_tokens = ?, output_characters = ?, latency_ms = ?, estimated_cost_microusd = ?,
+				provider_request_id = ?, completed_at = ?
+				WHERE id = ? AND candidate_id = ? AND status = 'PENDING'
+				AND EXISTS (SELECT 1 FROM satire_candidates AS candidate
+					WHERE candidate.id = candidate_body_generation_runs.candidate_id
+					AND candidate.body_generation_state = 'SUCCEEDED'
+					AND candidate.body_generation_run_id = candidate_body_generation_runs.id)`)
+				.bind(run.providerRevision, run.outputHash, run.inputTokens, run.outputTokens,
+					run.outputCharacters, run.latencyMs, run.estimatedCostMicrousd,
+					run.providerRequestId, record.completedAt, run.id, record.candidateId),
+			this.db.prepare(`INSERT INTO editorial_audit_log
+				(id, actor_email, entity_type, entity_id, action, reason, created_at)
+				SELECT ?, ?, 'SATIRE_CANDIDATE', ?, 'ARTICLE_BODY_GENERATED', ?, ?
+				WHERE EXISTS (SELECT 1 FROM candidate_body_generation_runs
+					WHERE id = ? AND candidate_id = ? AND status = 'SUCCEEDED')`)
+				.bind(record.auditId, record.actorEmail, record.candidateId,
+					`Model run ${run.id}`, record.completedAt, run.id, record.candidateId),
+		]);
+		return results.every((result) => result.meta.changes === 1);
+	}
+
+	async failArticleBodyGeneration(record: FailArticleBodyGenerationRecord): Promise<boolean> {
+		const results = await this.db.batch([
+			this.db.prepare(`UPDATE candidate_body_generation_runs SET
+				status = 'FAILED', provider_revision = ?, input_tokens = ?, output_tokens = ?,
+				output_characters = ?, latency_ms = ?, estimated_cost_microusd = ?,
+				failure_classification = ?, provider_http_status = ?, provider_error_type = ?,
+				provider_error_code = ?, provider_error_message = ?, provider_request_id = ?,
+				provider_retry_after = ?, completed_at = ?
+				WHERE id = ? AND candidate_id = ? AND status = 'PENDING'`)
+				.bind(record.providerRevision, record.inputTokens, record.outputTokens,
+					record.outputCharacters, record.latencyMs, record.estimatedCostMicrousd,
+					record.failureClassification, record.providerHttpStatus, record.providerErrorType,
+					record.providerErrorCode, record.providerErrorMessage, record.providerRequestId,
+					record.providerRetryAfter, record.completedAt, record.runId, record.candidateId),
+			this.db.prepare(`UPDATE satire_candidates
+				SET body_generation_state = 'FAILED', updated_by_email = ?, updated_at = ?
+				WHERE id = ? AND body_generation_state = 'PENDING' AND body_generation_run_id = ?
+				AND EXISTS (SELECT 1 FROM candidate_body_generation_runs
+					WHERE id = ? AND candidate_id = satire_candidates.id AND status = 'FAILED')`)
+				.bind(record.actorEmail, record.completedAt, record.candidateId, record.runId, record.runId),
+			this.db.prepare(`INSERT INTO editorial_audit_log
+				(id, actor_email, entity_type, entity_id, action, reason, created_at)
+				SELECT ?, ?, 'SATIRE_CANDIDATE', ?, 'ARTICLE_BODY_GENERATION_FAILED', ?, ?
+				WHERE EXISTS (SELECT 1 FROM candidate_body_generation_runs
+					WHERE id = ? AND candidate_id = ? AND status = 'FAILED')`)
+				.bind(record.auditId, record.actorEmail, record.candidateId,
+					record.failureClassification, record.completedAt, record.runId, record.candidateId),
+		]);
+		return results.every((result) => result.meta.changes === 1);
+	}
+
+	async resolveStaleArticleBodyGeneration(record: ResolveStaleArticleBodyGenerationRecord): Promise<boolean> {
+		const results = await this.db.batch([
+			this.db.prepare(`UPDATE candidate_body_generation_runs SET
+				status = 'FAILED', failure_classification = 'STALE_PENDING', completed_at = ?
+				WHERE id = ? AND candidate_id = ? AND status = 'PENDING' AND created_at <= ?`)
+				.bind(record.resolvedAt, record.runId, record.candidateId, record.staleBefore),
+			this.db.prepare(`UPDATE satire_candidates
+				SET body_generation_state = 'FAILED', updated_by_email = ?, updated_at = ?
+				WHERE id = ? AND body_generation_state = 'PENDING' AND body_generation_run_id = ?
+				AND EXISTS (SELECT 1 FROM candidate_body_generation_runs
+					WHERE id = ? AND candidate_id = satire_candidates.id
+					AND status = 'FAILED' AND failure_classification = 'STALE_PENDING')`)
+				.bind(record.actorEmail, record.resolvedAt, record.candidateId, record.runId, record.runId),
+			this.db.prepare(`INSERT INTO editorial_audit_log
+				(id, actor_email, entity_type, entity_id, action, reason, created_at)
+				SELECT ?, ?, 'SATIRE_CANDIDATE', ?, 'ARTICLE_BODY_GENERATION_FAILED', 'STALE_PENDING', ?
+				WHERE EXISTS (SELECT 1 FROM candidate_body_generation_runs
+					WHERE id = ? AND candidate_id = ? AND status = 'FAILED'
+					AND failure_classification = 'STALE_PENDING')`)
+				.bind(record.auditId, record.actorEmail, record.candidateId, record.resolvedAt,
+					record.runId, record.candidateId),
+		]);
+		return results.every((result) => result.meta.changes === 1);
 	}
 
 	async countGeneratedCandidates(runId: string): Promise<number> {

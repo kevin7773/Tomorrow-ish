@@ -19,7 +19,7 @@ export const SOURCE_RELATIONSHIPS = ['SUPPORTS', 'CONTRADICTS', 'CONTEXT'] as co
 export type SourceRelationship = (typeof SOURCE_RELATIONSHIPS)[number];
 export type NormalizedEventOrigin = 'EDITOR' | 'MODEL';
 export type NormalizedEventReviewState = 'PROPOSED' | 'ACCEPTED' | 'REJECTED' | 'SUPERSEDED';
-export type ModelOperation = 'NORMALIZE' | 'GENERATE_CANDIDATES';
+export type ModelOperation = 'NORMALIZE' | 'GENERATE_CANDIDATES' | 'GENERATE_ARTICLE_BODY';
 
 export interface AssertionSourceLink {
 	sourceReferenceId: string;
@@ -66,6 +66,13 @@ export interface CandidateProposal {
 	satiricalMechanism: string;
 }
 
+export interface ArticleBodyProposal {
+	bodyMarkdown: string;
+	factualAssertionsUsed: string[];
+	satireFramingSummary: string;
+	safetyNotes: string[];
+}
+
 export interface ModelUsage {
 	inputTokens: number | null;
 	outputTokens: number | null;
@@ -79,6 +86,7 @@ export interface ModelResult<T> {
 	provider: string;
 	model: string;
 	providerRevision: string | null;
+	providerRequestId?: string | null;
 	usage: ModelUsage;
 }
 
