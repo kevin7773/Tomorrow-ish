@@ -37,6 +37,25 @@ The configured endpoint must return JSON shaped as follows:
 
 The adapter does not scrape article pages, infer missing metadata, or reinterpret source authority. Invalid records are reported independently as `MALFORMED`. The response is limited to 1,000,000 characters, the request times out after eight seconds, and the configured per-run item cap is applied before processing.
 
+## Governed source-feed adapter
+
+`GET /api/automation/source-feed` is the Tomorrow-ish-owned, read-only producer for the source document contract. It is intentionally not configured as `AUTOMATION_SOURCE_URL` yet. The endpoint accepts no feed URL or other query parameters and fetches only enabled entries in the checked-in registry at `src/source-feed/source-registry.ts`.
+
+The initial registry contains NASA News Releases, NPR National, NPR Science, BBC Science & Environment, ESPN Top Headlines, WFLA Florida News, and Yellowstone National Park. Publisher name, source tier/type, allowed article hosts, and fallback category come only from that registry. Feed metadata supplies the original title, item-level article URL, publication time, and description/summary; the adapter never fetches an article body or uses a model.
+
+The adapter:
+
+- accepts RSS and Atom while rejecting DTD/entity declarations;
+- applies a 5-second and 1 MiB limit to each source;
+- examines at most 10 entries per source and emits at most 30 items;
+- requires a usable plain-text summary, an allowed article host, and a valid publication date within 72 hours;
+- removes URL fragments and only the governed tracking parameters (`utm_*`, `fbclid`, `gclid`, `dclid`, `mc_cid`, `mc_eid`, `igshid`, and `mkt_tok`);
+- orders items by publication time descending with deterministic URL/registry tie-breakers, then suppresses duplicate canonical URLs;
+- isolates individual source failures and logs only bounded classifications and counts; and
+- returns a bounded `502` when every enabled source fails, or `200 {"items":[]}` when healthy sources simply have no eligible recent entries.
+
+Successful generated responses are cached for five minutes. The endpoint is not a general-purpose feed proxy and provides no user-controlled upstream request surface.
+
 ## Operational controls
 
 Checked-in production-safe defaults:
