@@ -65,9 +65,9 @@ Checked-in production-safe defaults:
 - `AUTOMATION_SOURCE_URL=https://tomorrow-ish.news/api/automation/source-feed`
 - `AUTOMATION_MAX_ITEMS_PER_RUN=3` (valid range 1–20)
 - `AUTOMATION_ACTOR_EMAIL=automation@tomorrow-ish.news`
-- `triggers.crons=[]`
+- `triggers.crons=["0 13 * * *", "0 21 * * *"]`
 
-The proposed production schedule is `0 13 * * 1-5` (13:00 UTC, Monday through Friday). It is documentation only. Activation requires a separate review that changes `triggers.crons` from `[]`, verifies the source endpoint and operational limits, and explicitly deploys that configuration.
+Production automation is configured to run twice daily at `0 13 * * *` and `0 21 * * *`, or 13:00 UTC and 21:00 UTC. Cloudflare Cron Triggers are UTC-only and do not automatically adjust for daylight-saving time. These runs occur at 9:00 AM and 5:00 PM Eastern during EDT (UTC-4), and at 8:00 AM and 4:00 PM Eastern during EST (UTC-5). This seasonal one-hour drift is intentional.
 
 ## Manual and dry-run operation
 

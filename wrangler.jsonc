@@ -36,7 +36,10 @@
     }
   ],
   "triggers": {
-    "crons": []
+    "crons": [
+      "0 13 * * *",
+      "0 21 * * *"
+    ]
   },
   "assets": {
     "binding": "ASSETS",
