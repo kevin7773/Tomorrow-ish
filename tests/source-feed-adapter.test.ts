@@ -147,6 +147,68 @@ describe('governed source-feed adapter', () => {
 		expect(result.items.map((item) => item.sourceTitle)).toEqual(['Newest', 'Newer duplicate', 'Same time A', 'Same time B']);
 	});
 
+	it('interleaves publisher buckets while preserving newest-first order within each publisher', async () => {
+		const sources = [
+			source({ id: 'alpha', publisherName: 'Alpha', feedUrl: 'https://feeds.example.test/alpha.xml' }),
+			source({ id: 'beta', publisherName: 'Beta', feedUrl: 'https://feeds.example.test/beta.xml' }),
+		];
+		const feeds = {
+			alpha: rss([
+				itemXml({ title: 'Alpha newest', link: 'https://example.test/alpha-new', date: 'Sat, 12 Sep 2026 17:00:00 GMT' }),
+				itemXml({ title: 'Alpha older', link: 'https://example.test/alpha-old', date: 'Sat, 12 Sep 2026 15:00:00 GMT' }),
+			]),
+			beta: rss([
+				itemXml({ title: 'Beta newest', link: 'https://example.test/beta-new', date: 'Sat, 12 Sep 2026 16:00:00 GMT' }),
+				itemXml({ title: 'Beta older', link: 'https://example.test/beta-old', date: 'Sat, 12 Sep 2026 14:00:00 GMT' }),
+			]),
+		};
+		const run = () => aggregateSourceFeeds({
+			sources, now: () => NOW,
+			transport: async (url) => response(String(url).includes('alpha') ? feeds.alpha : feeds.beta),
+		});
+		const first = await run();
+		const second = await run();
+		expect(first.items.map((item) => item.sourceTitle)).toEqual([
+			'Alpha newest', 'Beta newest', 'Alpha older', 'Beta older',
+		]);
+		expect(second.items).toEqual(first.items);
+	});
+
+	it('uses registry order to break equal publisher-head timestamps', async () => {
+		const sources = [
+			source({ id: 'registry-first', publisherName: 'Zulu', feedUrl: 'https://feeds.example.test/first.xml' }),
+			source({ id: 'registry-second', publisherName: 'Alpha', feedUrl: 'https://feeds.example.test/second.xml' }),
+		];
+		const result = await aggregateSourceFeeds({
+			sources, now: () => NOW,
+			transport: async (url) => response(rss([itemXml({
+				title: String(url).includes('first') ? 'Registry first' : 'Registry second',
+				link: String(url).includes('first') ? 'https://example.test/first' : 'https://example.test/second',
+				date: 'Sat, 12 Sep 2026 17:00:00 GMT',
+			})])),
+		});
+		expect(result.items.map((item) => item.sourceTitle)).toEqual(['Registry first', 'Registry second']);
+	});
+
+	it('treats multiple feeds with the same publisher name as one round-robin bucket', async () => {
+		const sources = [
+			source({ id: 'npr-national', publisherName: 'NPR', feedUrl: 'https://feeds.example.test/npr-national.xml' }),
+			source({ id: 'npr-science', publisherName: 'NPR', feedUrl: 'https://feeds.example.test/npr-science.xml' }),
+			source({ id: 'bbc', publisherName: 'BBC News', feedUrl: 'https://feeds.example.test/bbc.xml' }),
+		];
+		const result = await aggregateSourceFeeds({
+			sources, now: () => NOW,
+			transport: async (url) => {
+				const value = String(url);
+				if (value.includes('national')) return response(rss([itemXml({ title: 'NPR national', link: 'https://example.test/npr-national', date: 'Sat, 12 Sep 2026 17:00:00 GMT' })]));
+				if (value.includes('science')) return response(rss([itemXml({ title: 'NPR science', link: 'https://example.test/npr-science', date: 'Sat, 12 Sep 2026 16:00:00 GMT' })]));
+				return response(rss([itemXml({ title: 'BBC', link: 'https://example.test/bbc', date: 'Sat, 12 Sep 2026 15:00:00 GMT' })]));
+			},
+		});
+		expect(result.items.map((item) => item.publisherName)).toEqual(['NPR', 'BBC News', 'NPR']);
+		expect(result.items.map((item) => item.sourceTitle)).toEqual(['NPR national', 'BBC', 'NPR science']);
+	});
+
 	it('rejects old entries and disallowed article hosts', async () => {
 		const xml = rss([
 			itemXml({ title: 'Old', link: 'https://example.test/old', date: 'Tue, 08 Sep 2026 17:00:00 GMT' }),

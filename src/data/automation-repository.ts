@@ -4,8 +4,19 @@ import type {
 	AutomationRun,
 	AutomationSource,
 	AutomationTrigger,
+	DiscoveryItem,
 	DiscoveredSource,
 } from '../domain/automation';
+
+export interface KnownAutomationDiscovery {
+	itemIdentity: string;
+	sourceUrl: string;
+	source: AutomationSource | null;
+	sourceIntakeIds: string[];
+	normalizedEventVersionId: string | null;
+	suitability: AutomationReadiness['suitability'];
+	successfulGenerationRuns: number;
+}
 
 export interface StartAutomationRunRecord {
 	id: string;
@@ -43,6 +54,7 @@ export interface AutomationRepository {
 	categoryExists(categoryId: string): Promise<boolean>;
 	findSource(itemIdentity: string, sourceUrl: string): Promise<AutomationSource | null>;
 	findIntakeIdsBySourceUrl(sourceUrl: string): Promise<string[]>;
+	findKnownSources(items: readonly Pick<DiscoveryItem, 'itemIdentity' | 'sourceUrl'>[]): Promise<KnownAutomationDiscovery[]>;
 	registerExistingSource(source: DiscoveredSource, intakeId: string, seenAt: string): Promise<boolean>;
 	createAutomatedIntake(record: CreateAutomatedIntakeRecord): Promise<boolean>;
 	listGenerationReadySources(limit: number): Promise<AutomationSource[]>;

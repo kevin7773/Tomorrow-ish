@@ -1,4 +1,4 @@
-import type { AutomationRepository } from '../data/automation-repository';
+import type { AutomationRepository, KnownAutomationDiscovery } from '../data/automation-repository';
 import type {
 	AutomationItemResult,
 	AutomationReport,
@@ -11,6 +11,12 @@ import { EditorialValidationError } from '../services/validation';
 import { AutomationSourceProviderError, type AutomationSourceProvider } from './source-provider';
 
 const STALE_RUN_MS = 30 * 60 * 1_000;
+const DISCOVERY_HORIZON = 30;
+
+interface PlannedWork {
+	item: DiscoveryItem;
+	result: AutomationItemResult | null;
+}
 
 export interface CandidateGenerationPort {
 	generate(input: {
@@ -101,7 +107,7 @@ export class AutomationService {
 		report.runId = runId;
 		let discovered: DiscoveryItem[];
 		try {
-			discovered = await this.sourceProvider.discover(cap);
+			discovered = await this.sourceProvider.discover(DISCOVERY_HORIZON);
 			report.discoveredCount = discovered.length;
 		} catch (error) {
 			const failureReason = boundedReason(error);
@@ -117,16 +123,12 @@ export class AutomationService {
 		}
 
 		const work = await this.buildWork(discovered, cap);
-		const seen = new Set<string>();
-		for (const [index, item] of work.entries()) {
+		for (const [index, planned] of work.entries()) {
+			const { item } = planned;
 			let result: AutomationItemResult;
-			if (seen.has(item.itemIdentity)) {
-				result = itemResult(item, 'DUPLICATE', 'DUPLICATE_ITEM_IN_RUN');
-			} else {
-				seen.add(item.itemIdentity);
-				try { result = await this.processItem(item, input.dryRun, startedAt); }
-				catch (error) { result = itemResult(item, 'FAILED', boundedReason(error)); }
-			}
+			if (planned.result) result = planned.result;
+			else try { result = await this.processItem(item, input.dryRun, startedAt); }
+			catch (error) { result = itemResult(item, 'FAILED', boundedReason(error)); }
 			report.items.push(result);
 			report.processedCount += 1;
 			if (result.outcome === 'INTAKE_CREATED') report.intakeCount += 1;
@@ -148,19 +150,75 @@ export class AutomationService {
 		return report;
 	}
 
-	private async buildWork(discovered: DiscoveryItem[], cap: number): Promise<DiscoveryItem[]> {
-		const work: DiscoveryItem[] = [];
+	private async buildWork(discovered: DiscoveryItem[], cap: number): Promise<PlannedWork[]> {
+		const work: PlannedWork[] = [];
 		const readyIdentities = new Set<string>();
 		for (const source of await this.repository.listGenerationReadySources(cap)) {
-			work.push({ itemIdentity: source.itemIdentity, sourceUrl: source.sourceUrl, source: null, errorReason: null });
+			work.push({
+				item: { itemIdentity: source.itemIdentity, sourceUrl: source.sourceUrl, source: null, errorReason: null },
+				result: null,
+			});
 			readyIdentities.add(source.itemIdentity);
 		}
+		let usefulWorkCount = work.length;
+		const knownByDiscovery = new Map((await this.repository.findKnownSources(discovered)).map((known) => [
+			this.discoveryKey(known.itemIdentity, known.sourceUrl), known,
+		]));
+		const seenDiscoveryIdentities = new Set<string>();
 		for (const item of discovered) {
-			if (work.length >= cap) break;
 			if (readyIdentities.has(item.itemIdentity)) continue;
-			work.push(item);
+			if (seenDiscoveryIdentities.has(item.itemIdentity)) {
+				work.push({ item, result: itemResult(item, 'DUPLICATE', 'DUPLICATE_ITEM_IN_RUN') });
+				continue;
+			}
+			seenDiscoveryIdentities.add(item.itemIdentity);
+			if (item.errorReason) {
+				work.push({ item, result: null });
+				continue;
+			}
+			const known = item.sourceUrl
+				? knownByDiscovery.get(this.discoveryKey(item.itemIdentity, item.sourceUrl))
+				: null;
+			if (known?.source) {
+				const observation = this.knownSourceObservation(item, known);
+				if (observation) {
+					work.push({ item, result: observation });
+					continue;
+				}
+			}
+			if (usefulWorkCount >= cap) continue;
+			work.push({ item, result: null });
+			usefulWorkCount += 1;
 		}
 		return work;
+	}
+
+	private discoveryKey(itemIdentity: string, sourceUrl: string): string {
+		return `${itemIdentity}\n${sourceUrl}`;
+	}
+
+	private knownSourceObservation(
+		item: DiscoveryItem,
+		known: KnownAutomationDiscovery,
+	): AutomationItemResult | null {
+		if (!known.source) return null;
+		const context = {
+			sourceIntakeId: known.source.sourceIntakeId,
+			normalizedEventVersionId: known.normalizedEventVersionId,
+		};
+		if (known.successfulGenerationRuns > 0) {
+			return itemResult(item, 'ALREADY_GENERATED', 'SUCCESSFUL_GENERATION_EXISTS', context);
+		}
+		if (!known.normalizedEventVersionId) {
+			return itemResult(item, 'DUPLICATE', 'SOURCE_ALREADY_REGISTERED', context);
+		}
+		if (known.suitability === 'SENSITIVE') {
+			return itemResult(item, 'INELIGIBLE', 'HUMAN_CAUTION_REQUIRED', context);
+		}
+		if (known.suitability !== 'SUITABLE') {
+			return itemResult(item, 'INELIGIBLE', `SUITABILITY_${known.suitability ?? 'UNKNOWN'}`, context);
+		}
+		return null;
 	}
 
 	private async processItem(item: DiscoveryItem, dryRun: boolean, seenAt: string): Promise<AutomationItemResult> {

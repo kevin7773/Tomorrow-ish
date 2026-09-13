@@ -35,7 +35,7 @@ The configured endpoint must return JSON shaped as follows:
 }
 ```
 
-The adapter does not scrape article pages, infer missing metadata, or reinterpret source authority. Invalid records are reported independently as `MALFORMED`. The response is limited to 1,000,000 characters, the request times out after eight seconds, and the configured per-run item cap is applied before processing.
+The adapter does not scrape article pages, infer missing metadata, or reinterpret source authority. Invalid records are reported independently as `MALFORMED`. The response is limited to 1,000,000 characters and the request times out after eight seconds. Automation scans at most 30 returned records, while the configured per-run item cap limits useful work rather than raw discovery rows.
 
 ## Governed source-feed adapter
 
@@ -50,7 +50,8 @@ The adapter:
 - examines at most 10 entries per source and emits at most 30 items;
 - requires a usable plain-text summary, an allowed article host, and a valid publication date within 72 hours;
 - removes URL fragments and only the governed tracking parameters (`utm_*`, `fbclid`, `gclid`, `dclid`, `mc_cid`, `mc_eid`, `igshid`, and `mkt_tok`);
-- orders items by publication time descending with deterministic URL/registry tie-breakers, then suppresses duplicate canonical URLs;
+- suppresses duplicate canonical URLs, groups items by governed publisher name, and emits one newest-first item per publisher per round;
+- orders publisher buckets by their newest item, then registry order and publisher name, with deterministic URL/registry tie-breakers inside each bucket;
 - isolates individual source failures and logs only bounded classifications and counts; and
 - returns a bounded `502` when every enabled source fails, or `200 {"items":[]}` when healthy sources simply have no eligible recent entries.
 
@@ -62,7 +63,7 @@ Checked-in production-safe defaults:
 
 - `AUTOMATION_ENABLED=true`
 - `AUTOMATION_SOURCE_URL=https://tomorrow-ish.news/api/automation/source-feed`
-- `AUTOMATION_MAX_ITEMS_PER_RUN=1` (valid range 1–20)
+- `AUTOMATION_MAX_ITEMS_PER_RUN=3` (valid range 1–20)
 - `AUTOMATION_ACTOR_EMAIL=automation@tomorrow-ish.news`
 - `triggers.crons=[]`
 
@@ -86,7 +87,9 @@ With the checked-in settings this returns a disabled no-op and makes no automati
 
 ## Observability and failure behavior
 
-`automation_runs` records bounded counts and terminal status for live runs. `automation_run_items` records immutable per-item outcomes and references to any intake, accepted normalized version, and model run. The editorial automation page shows the most recent persisted live run. Dry-runs intentionally do not become persisted “last runs” because their contract is zero writes.
+`automation_runs` records bounded counts and terminal status for live runs. `discoveredCount` is the broader bounded discovery set, up to 30. `AUTOMATION_MAX_ITEMS_PER_RUN` limits useful work: creating a new intake, registering a legacy source reference for automation, or attempting governed generation for a generation-ready source. A registered source still awaiting normalization is logged as `DUPLICATE / SOURCE_ALREADY_REGISTERED` without consuming useful-work capacity. Because `processedCount` includes these known-item observations, immutable logged-item count may exceed the useful-work cap.
+
+`automation_run_items` records immutable per-item outcomes and references to any intake, accepted normalized version, and model run. The editorial automation page shows the most recent persisted live run. Dry-runs intentionally do not become persisted “last runs” because their contract is zero writes.
 
 One malformed or failed item does not abort later items. Provider-level discovery failure ends the run as `FAILED`; mixed item results end it as `PARTIAL`. Provider/model diagnostics remain in the existing model-run records, while automation records store bounded classifications rather than raw response bodies or exception text.
 

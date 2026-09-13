@@ -9,8 +9,11 @@ import type {
 	AutomationRepository,
 	CompleteAutomationRunRecord,
 	CreateAutomatedIntakeRecord,
+	KnownAutomationDiscovery,
 	StartAutomationRunRecord,
 } from './automation-repository';
+
+const MAX_DISCOVERY_LOOKUP_ITEMS = 30;
 
 interface SourceRow {
 	item_identity: string; source_url: string; source_intake_id: string; category_id: string;
@@ -28,6 +31,15 @@ interface ItemRow {
 	item_identity: string; source_url: string | null; outcome: AutomationItemResult['outcome'];
 	reason: string; source_intake_id: string | null; normalized_event_version_id: string | null;
 	model_run_id: string | null;
+}
+
+interface KnownDiscoveryRow {
+	input_ordinal: number; discovery_item_identity: string; discovery_source_url: string;
+	registered_item_identity: string | null; registered_source_url: string | null;
+	registered_source_intake_id: string | null; registered_category_id: string | null;
+	registered_first_seen_at: string | null; registered_last_seen_at: string | null;
+	reference_intake_id: string | null; version_id: string | null;
+	suitability: AutomationReadiness['suitability']; successful_runs: number | null;
 }
 
 function mapSource(row: SourceRow): AutomationSource {
@@ -110,6 +122,75 @@ export class D1AutomationRepository implements AutomationRepository {
 			FROM source_references WHERE source_url = ? ORDER BY source_intake_id LIMIT 2`)
 			.bind(sourceUrl).all<{ source_intake_id: string }>();
 		return rows.results.map((row) => row.source_intake_id);
+	}
+
+	async findKnownSources(
+		items: readonly Pick<import('../domain/automation').DiscoveryItem, 'itemIdentity' | 'sourceUrl'>[],
+	): Promise<KnownAutomationDiscovery[]> {
+		const bounded = items.filter((item): item is typeof item & { sourceUrl: string } => Boolean(item.sourceUrl))
+			.slice(0, MAX_DISCOVERY_LOOKUP_ITEMS);
+		if (bounded.length === 0) return [];
+		const values = bounded.map(() => '(?, ?, ?)').join(', ');
+		const bindings = bounded.flatMap((item, inputOrdinal) => [inputOrdinal, item.itemIdentity, item.sourceUrl]);
+		const rows = await this.db.prepare(`WITH discovered(input_ordinal, item_identity, source_url) AS (
+			VALUES ${values}
+		)
+		SELECT discovered.input_ordinal,
+			discovered.item_identity AS discovery_item_identity,
+			discovered.source_url AS discovery_source_url,
+			registered.item_identity AS registered_item_identity,
+			registered.source_url AS registered_source_url,
+			registered.source_intake_id AS registered_source_intake_id,
+			registered.category_id AS registered_category_id,
+			registered.first_seen_at AS registered_first_seen_at,
+			registered.last_seen_at AS registered_last_seen_at,
+			reference.source_intake_id AS reference_intake_id,
+			version.id AS version_id,
+			version.proposed_suitability AS suitability,
+			(SELECT COUNT(*) FROM model_runs AS run
+			 WHERE run.normalized_event_version_id = version.id
+			 AND run.operation = 'GENERATE_CANDIDATES' AND run.status = 'SUCCEEDED') AS successful_runs
+		FROM discovered
+		LEFT JOIN automation_sources AS registered
+			ON registered.item_identity = discovered.item_identity OR registered.source_url = discovered.source_url
+		LEFT JOIN source_references AS reference ON reference.source_url = discovered.source_url
+		LEFT JOIN normalized_event_versions AS version
+			ON version.source_intake_id = COALESCE(registered.source_intake_id, reference.source_intake_id)
+			AND version.review_state = 'ACCEPTED'
+		WHERE registered.item_identity IS NOT NULL OR reference.source_intake_id IS NOT NULL
+		ORDER BY discovered.input_ordinal, reference.source_intake_id`)
+			.bind(...bindings).all<KnownDiscoveryRow>();
+		const known = new Map<number, KnownAutomationDiscovery>();
+		for (const row of rows.results) {
+			let match = known.get(row.input_ordinal);
+			if (!match) {
+				const source = row.registered_item_identity && row.registered_source_url
+					&& row.registered_source_intake_id && row.registered_category_id
+					&& row.registered_first_seen_at && row.registered_last_seen_at
+					? mapSource({
+						item_identity: row.registered_item_identity,
+						source_url: row.registered_source_url,
+						source_intake_id: row.registered_source_intake_id,
+						category_id: row.registered_category_id,
+						first_seen_at: row.registered_first_seen_at,
+						last_seen_at: row.registered_last_seen_at,
+					})
+					: null;
+				match = {
+					itemIdentity: row.discovery_item_identity,
+					sourceUrl: row.discovery_source_url,
+					source,
+					sourceIntakeIds: [],
+					normalizedEventVersionId: row.version_id,
+					suitability: row.suitability,
+					successfulGenerationRuns: row.successful_runs ?? 0,
+				};
+				known.set(row.input_ordinal, match);
+			}
+			const intakeId = row.registered_source_intake_id ?? row.reference_intake_id;
+			if (intakeId && !match.sourceIntakeIds.includes(intakeId)) match.sourceIntakeIds.push(intakeId);
+		}
+		return [...known.values()];
 	}
 
 	async registerExistingSource(source: import('../domain/automation').DiscoveredSource, intakeId: string, seenAt: string): Promise<boolean> {

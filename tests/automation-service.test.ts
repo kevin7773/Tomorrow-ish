@@ -42,6 +42,7 @@ function harness(options: {
 	maxItems?: number;
 	failGenerationFor?: string;
 	discoveryError?: Error;
+	legacyReferences?: Record<string, string[]>;
 } = {}) {
 	const registered = [...(options.registered ?? [])];
 	const runs: AutomationRun[] = [];
@@ -55,8 +56,44 @@ function harness(options: {
 		recordItem: vi.fn(async (_runId, _itemNumber, result) => { writes.items += 1; recorded.push(result); }),
 		categoryExists: vi.fn(async (id) => id === 'cat-civic-life'),
 		findSource: vi.fn(async (identity, url) => registered.find((entry) => entry.itemIdentity === identity || entry.sourceUrl === url) ?? null),
-		findIntakeIdsBySourceUrl: vi.fn(async (url) => registered.filter((entry) => entry.sourceUrl === url).map((entry) => entry.sourceIntakeId)),
-		registerExistingSource: vi.fn(async () => { writes.registrations += 1; return true; }),
+		findIntakeIdsBySourceUrl: vi.fn(async (url) => [
+			...registered.filter((entry) => entry.sourceUrl === url).map((entry) => entry.sourceIntakeId),
+			...(options.legacyReferences?.[url] ?? []),
+		]),
+		findKnownSources: vi.fn(async (items: readonly Pick<DiscoveryItem, 'itemIdentity' | 'sourceUrl'>[]) => items.flatMap((discovered) => {
+			if (!discovered.sourceUrl) return [];
+			const found = registered.find((entry) => entry.itemIdentity === discovered.itemIdentity || entry.sourceUrl === discovered.sourceUrl);
+			const intakeIds = found
+				? [found.sourceIntakeId]
+				: options.legacyReferences?.[discovered.sourceUrl] ?? [];
+			if (!found && intakeIds.length === 0) return [];
+			const readiness = found ? options.readiness?.[found.itemIdentity] : undefined;
+			const normalizedEventVersionId = found
+				? readiness && Object.hasOwn(readiness, 'normalizedEventVersionId')
+					? readiness.normalizedEventVersionId ?? null
+					: `version-${found.itemIdentity}`
+				: null;
+			return [{
+				itemIdentity: discovered.itemIdentity,
+				sourceUrl: discovered.sourceUrl,
+				source: found ?? null,
+				sourceIntakeIds: intakeIds,
+				normalizedEventVersionId,
+				suitability: found ? readiness?.suitability ?? 'SUITABLE' : null,
+				successfulGenerationRuns: found ? readiness?.successfulGenerationRuns ?? 0 : 0,
+			}];
+		})),
+		registerExistingSource: vi.fn(async (discovered, intakeId, seenAt) => {
+			writes.registrations += 1;
+			if (!registered.some((entry) => entry.itemIdentity === discovered.itemIdentity || entry.sourceUrl === discovered.sourceUrl)) {
+				registered.push({
+					itemIdentity: discovered.itemIdentity, sourceUrl: discovered.sourceUrl,
+					sourceIntakeId: intakeId, categoryId: discovered.categoryId,
+					firstSeenAt: seenAt, lastSeenAt: seenAt,
+				});
+			}
+			return true;
+		}),
 		createAutomatedIntake: vi.fn(async (record) => { writes.intakes += 1; registered.push({
 			itemIdentity: record.source.itemIdentity, sourceUrl: record.source.sourceUrl,
 			sourceIntakeId: record.intakeId, categoryId: record.source.categoryId,
@@ -128,6 +165,44 @@ describe('governed intake automation', () => {
 		expect(vi.mocked(test.repository.recordItem).mock.calls.map((call) => call[1])).toEqual([1, 2]);
 	});
 
+	it('does not let a registered unnormalized source consume useful-work capacity', async () => {
+		const test = harness({
+			items: [item('known'), item('new-one'), item('new-two')],
+			registered: [automationSource('known')],
+			readiness: { known: { normalizedEventVersionId: null, suitability: null } },
+			maxItems: 2,
+		});
+		const report = await test.service.run({ trigger: 'MANUAL', dryRun: false });
+		expect(report.discoveredCount).toBe(3);
+		expect(report.processedCount).toBe(3);
+		expect(report.intakeCount).toBe(2);
+		expect(report.items).toEqual(expect.arrayContaining([
+			expect.objectContaining({ itemIdentity: 'known', outcome: 'DUPLICATE', reason: 'SOURCE_ALREADY_REGISTERED' }),
+			expect.objectContaining({ itemIdentity: 'new-one', outcome: 'INTAKE_CREATED' }),
+			expect.objectContaining({ itemIdentity: 'new-two', outcome: 'INTAKE_CREATED' }),
+		]));
+		expect(test.repository.findKnownSources).toHaveBeenCalledTimes(1);
+		expect(test.provider.discover).toHaveBeenCalledWith(30);
+	});
+
+	it('registers a reference-only legacy item once without creating another intake', async () => {
+		const legacy = item('legacy');
+		const test = harness({
+			items: [legacy],
+			legacyReferences: { [legacy.sourceUrl!]: ['intake-legacy'] },
+			readiness: { legacy: { normalizedEventVersionId: null, suitability: null } },
+			maxItems: 1,
+		});
+		const first = await test.service.run({ trigger: 'MANUAL', dryRun: false });
+		const second = await test.service.run({ trigger: 'MANUAL', dryRun: false });
+		expect(first.items[0]).toMatchObject({
+			outcome: 'INELIGIBLE', reason: 'AWAITING_EDITORIAL_NORMALIZATION', sourceIntakeId: 'intake-legacy',
+		});
+		expect(second.items[0]).toMatchObject({ outcome: 'DUPLICATE', reason: 'SOURCE_ALREADY_REGISTERED' });
+		expect(test.writes.registrations).toBe(1);
+		expect(test.writes.intakes).toBe(0);
+	});
+
 	it('does not duplicate candidates for an already-processed source', async () => {
 		const test = harness({ items: [item('done')], registered: [automationSource('done')],
 			readiness: { done: { successfulGenerationRuns: 1 } } });
@@ -141,6 +216,21 @@ describe('governed intake automation', () => {
 			readiness: { unsafe: { suitability: 'UNSUITABLE' } } });
 		const report = await test.service.run({ trigger: 'SCHEDULED', dryRun: false });
 		expect(report.items[0]).toMatchObject({ outcome: 'INELIGIBLE', reason: 'SUITABILITY_UNSUITABLE' });
+		expect(test.candidateGenerator.generate).not.toHaveBeenCalled();
+	});
+
+	it('keeps a registered sensitive source human-only without consuming useful work', async () => {
+		const test = harness({
+			items: [item('sensitive'), item('new')],
+			registered: [automationSource('sensitive')],
+			readiness: { sensitive: { suitability: 'SENSITIVE' } },
+			maxItems: 1,
+		});
+		const report = await test.service.run({ trigger: 'SCHEDULED', dryRun: false });
+		expect(report.items).toEqual(expect.arrayContaining([
+			expect.objectContaining({ itemIdentity: 'sensitive', outcome: 'INELIGIBLE', reason: 'HUMAN_CAUTION_REQUIRED' }),
+			expect.objectContaining({ itemIdentity: 'new', outcome: 'INTAKE_CREATED' }),
+		]));
 		expect(test.candidateGenerator.generate).not.toHaveBeenCalled();
 	});
 
@@ -207,5 +297,14 @@ describe('governed intake automation', () => {
 		const report = await test.service.run({ trigger: 'MANUAL', dryRun: false, maxItems: 20 });
 		expect(report.processedCount).toBe(2);
 		expect(test.writes.intakes).toBe(2);
+	});
+
+	it('uses the useful-work cap while scanning the fixed discovery horizon', async () => {
+		const test = harness({ items: Array.from({ length: 35 }, (_, index) => item(`item-${index}`)), maxItems: 3 });
+		const report = await test.service.run({ trigger: 'MANUAL', dryRun: false });
+		expect(test.provider.discover).toHaveBeenCalledWith(30);
+		expect(report.discoveredCount).toBe(30);
+		expect(report.intakeCount).toBe(3);
+		expect(test.writes.intakes).toBe(3);
 	});
 });

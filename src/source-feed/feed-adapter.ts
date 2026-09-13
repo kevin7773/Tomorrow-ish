@@ -258,18 +258,40 @@ export async function aggregateSourceFeeds(options: AggregateSourceFeedsOptions)
 		item,
 		sourceOrder: registryOrder.get(result.diagnostic.sourceId) ?? Number.MAX_SAFE_INTEGER,
 	})));
-	candidates.sort((left, right) =>
+	const compareCandidates = (left: (typeof candidates)[number], right: (typeof candidates)[number]) =>
 		Date.parse(right.item.publishedAt) - Date.parse(left.item.publishedAt)
 		|| left.item.sourceUrl.localeCompare(right.item.sourceUrl)
-		|| left.sourceOrder - right.sourceOrder,
-	);
+		|| left.sourceOrder - right.sourceOrder;
+	candidates.sort(compareCandidates);
 	const seen = new Set<string>();
-	const items: AutomationFeedItem[] = [];
-	for (const candidate of candidates) {
-		if (seen.has(candidate.item.sourceUrl)) continue;
+	const unique = candidates.filter((candidate) => {
+		if (seen.has(candidate.item.sourceUrl)) return false;
 		seen.add(candidate.item.sourceUrl);
-		items.push(candidate.item);
-		if (items.length >= (options.maxItems ?? MAX_NORMALIZED_ITEMS)) break;
+		return true;
+	});
+	const publisherBuckets = new Map<string, typeof unique>();
+	for (const candidate of unique) {
+		const bucket = publisherBuckets.get(candidate.item.publisherName) ?? [];
+		bucket.push(candidate);
+		publisherBuckets.set(candidate.item.publisherName, bucket);
+	}
+	const buckets = [...publisherBuckets.entries()].map(([publisherName, entries]) => ({
+		publisherName,
+		entries: entries.sort(compareCandidates),
+		registryOrder: Math.min(...entries.map((entry) => entry.sourceOrder)),
+	})).sort((left, right) =>
+		Date.parse(right.entries[0].item.publishedAt) - Date.parse(left.entries[0].item.publishedAt)
+		|| left.registryOrder - right.registryOrder
+		|| left.publisherName.localeCompare(right.publisherName),
+	);
+	const items: AutomationFeedItem[] = [];
+	const maximumItems = options.maxItems ?? MAX_NORMALIZED_ITEMS;
+	while (items.length < maximumItems && buckets.some((bucket) => bucket.entries.length > 0)) {
+		for (const bucket of buckets) {
+			const candidate = bucket.entries.shift();
+			if (candidate) items.push(candidate.item);
+			if (items.length >= maximumItems) break;
+		}
 	}
 	return {
 		items,
