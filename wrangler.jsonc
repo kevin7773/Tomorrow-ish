@@ -14,7 +14,7 @@
     "MODEL_NAME": "gpt-5.6-terra",
     "MODEL_GENERATION_ENABLED": "true",
     "MODEL_DAILY_BUDGET_MICRO_USD": "1000000",
-    "AUTOMATION_ENABLED": "false",
+    "AUTOMATION_ENABLED": "true",
     "AUTOMATION_SOURCE_URL": "https://tomorrow-ish.news/api/automation/source-feed",
     "AUTOMATION_MAX_ITEMS_PER_RUN": "3",
     "AUTOMATION_ACTOR_EMAIL": "automation@tomorrow-ish.news",
