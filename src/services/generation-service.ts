@@ -47,8 +47,19 @@ function idempotencyKey(value: unknown): string {
 	return requiredText(value, 'Idempotency key', 200);
 }
 
+type ArticleBodyFactFailureClassification =
+	| 'MALFORMED_OUTPUT_FACTS_EMPTY'
+	| 'MALFORMED_OUTPUT_FACT_NOT_ACCEPTED';
+
+class ArticleBodyFactValidationError extends ModelOutputError {
+	constructor(readonly failureClassification: ArticleBodyFactFailureClassification) {
+		super('Article body factual provenance is invalid.');
+	}
+}
+
 function sanitizedFailure(error: unknown): string {
 	if (error instanceof ModelExecutionError) return sanitizedFailure(error.cause);
+	if (error instanceof ArticleBodyFactValidationError) return error.failureClassification;
 	if (error instanceof ModelOutputError) return 'MALFORMED_OUTPUT';
 	if (error instanceof ModelLimitError) return 'MODEL_LIMIT';
 	if (error instanceof ModelProviderError) return error.failureClassification;
@@ -83,7 +94,7 @@ function editorialModelFailure(error: unknown): EditorialValidationError {
 	if (['PROVIDER_AUTHENTICATION', 'PROVIDER_REQUEST'].includes(classification)) {
 		return new EditorialValidationError('The model provider rejected the request.', 'provider-rejected');
 	}
-	if (classification === 'MALFORMED_OUTPUT') {
+	if (classification === 'MALFORMED_OUTPUT' || classification.startsWith('MALFORMED_OUTPUT_')) {
 		return new EditorialValidationError('The model provider returned invalid output.', 'provider-invalid-output');
 	}
 	if (['PROVIDER_CONFIGURATION', 'PROVIDER_DISABLED'].includes(classification)) {
@@ -435,9 +446,11 @@ export class GenerationService {
 			);
 			const proposal = parseArticleBodyProposal(executed.result.output);
 			const supportedFacts = new Set(facts.map((fact) => fact.statement));
-			if (proposal.factualAssertionsUsed.length === 0
-				|| proposal.factualAssertionsUsed.some((assertion) => !supportedFacts.has(assertion))) {
-				throw new ModelOutputError('Article body cited a fact outside the accepted normalization.');
+			if (proposal.factualAssertionsUsed.length === 0) {
+				throw new ArticleBodyFactValidationError('MALFORMED_OUTPUT_FACTS_EMPTY');
+			}
+			if (proposal.factualAssertionsUsed.some((assertion) => !supportedFacts.has(assertion))) {
+				throw new ArticleBodyFactValidationError('MALFORMED_OUTPUT_FACT_NOT_ACCEPTED');
 			}
 			const outputText = JSON.stringify(proposal);
 			const completedAt = this.now();

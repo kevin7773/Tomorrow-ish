@@ -16,9 +16,12 @@ describe('automation architecture boundaries', () => {
 		}
 	});
 
-	it('keeps the production cron trigger explicitly disabled', () => {
-		const config = read('wrangler.jsonc');
-		expect(config).toMatch(/"crons": \[\]/);
+	it('keeps exactly the approved production cron schedule', () => {
+		const config = JSON.parse(read('wrangler.jsonc')) as { triggers?: { crons?: unknown } };
+		expect(config.triggers?.crons).toEqual([
+			'0 13 * * *',
+			'0 21 * * *',
+		]);
 	});
 
 	it('presents mutually exclusive automation readiness states', () => {

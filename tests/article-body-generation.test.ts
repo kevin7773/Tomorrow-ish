@@ -285,21 +285,46 @@ describe('governed article body generation', () => {
 		expect(original.candidate.draftBodyMarkdown).toBe('');
 	});
 
+	it('classifies an empty factual-provenance list without retrying or persisting a body', async () => {
+		const original = context();
+		const { repo, complete, fail } = repository(original);
+		const provider = new FakeModelProvider();
+		const underlying = provider.generateArticleBody.bind(provider);
+		const generate = vi.spyOn(provider, 'generateArticleBody').mockImplementation(async (input, signal) => {
+			const result = await underlying(input, signal);
+			return { ...result, output: { ...result.output, factualAssertionsUsed: [] } };
+		});
+		await expect(service(repo, provider).generateArticleBody(identity, {
+			candidateId: 'candidate-target', idempotencyKey: 'body-empty-facts',
+		})).rejects.toMatchObject({ code: 'provider-invalid-output' });
+		expect(generate).toHaveBeenCalledTimes(1);
+		expect(complete).not.toHaveBeenCalled();
+		expect(fail).toHaveBeenCalledWith(expect.objectContaining({
+			failureClassification: 'MALFORMED_OUTPUT_FACTS_EMPTY',
+		}));
+		expect(original.candidate.draftBodyMarkdown).toBe('');
+		expect(original.candidate.status).toBe('DRAFT');
+	});
+
 	it('rejects self-reported factual assertions outside the accepted source substrate', async () => {
 		const original = context();
 		const { repo, complete, fail } = repository(original);
 		const provider = new FakeModelProvider();
 		const underlying = provider.generateArticleBody.bind(provider);
-		vi.spyOn(provider, 'generateArticleBody').mockImplementation(async (input, signal) => {
+		const generate = vi.spyOn(provider, 'generateArticleBody').mockImplementation(async (input, signal) => {
 			const result = await underlying(input, signal);
 			return { ...result, output: { ...result.output, factualAssertionsUsed: ['An unsupported factual claim.'] } };
 		});
 		await expect(service(repo, provider).generateArticleBody(identity, {
 			candidateId: 'candidate-target', idempotencyKey: 'body-unsupported-fact',
 		})).rejects.toMatchObject({ code: 'provider-invalid-output' });
+		expect(generate).toHaveBeenCalledTimes(1);
 		expect(complete).not.toHaveBeenCalled();
-		expect(fail).toHaveBeenCalledWith(expect.objectContaining({ failureClassification: 'MALFORMED_OUTPUT' }));
+		expect(fail).toHaveBeenCalledWith(expect.objectContaining({
+			failureClassification: 'MALFORMED_OUTPUT_FACT_NOT_ACCEPTED',
+		}));
 		expect(original.candidate.draftBodyMarkdown).toBe('');
+		expect(original.candidate.status).toBe('DRAFT');
 	});
 
 	it('preserves a body populated by another actor during generation', async () => {
