@@ -12,6 +12,7 @@ import { DEFAULT_MODEL_LIMITS } from '../src/ai/model-runner';
 
 const identity = { email: 'editor@example.com' };
 const fact = 'Deputies said they arrested a 41-year-old man after responding to a reported incident.';
+const secondFact = 'The reported incident occurred in a retail parking lot.';
 
 const intake: SourceIntake = {
 	id: 'intake-target',
@@ -46,7 +47,9 @@ const version: NormalizedEventVersion = {
 	reviewState: 'ACCEPTED', origin: 'MODEL', eventStatement: intake.title,
 	assertions: [
 		{ id: 'fact-1', kind: 'FACT', statement: fact, sources: [{ sourceReferenceId: 'source-target', relationship: 'SUPPORTS' }] },
+		{ id: 'fact-2', kind: 'FACT', statement: secondFact, sources: [{ sourceReferenceId: 'source-target', relationship: 'SUPPORTS' }] },
 		{ id: 'uncertainty-1', kind: 'UNCERTAINTY', statement: 'The allegation has not been adjudicated.', sources: [{ sourceReferenceId: 'source-target', relationship: 'SUPPORTS' }] },
+		{ id: 'context-1', kind: 'CONTEXT', statement: 'The source is a regional newsroom.', sources: [{ sourceReferenceId: 'source-target', relationship: 'CONTEXT' }] },
 	],
 	proposedSignificanceScore: 2, proposedSatirePotentialScore: 4, proposedSuitability: 'SENSITIVE',
 	suitabilityReason: intake.suitabilityReason, guardrailFlags: ['UNRESOLVED_ALLEGATION'],
@@ -129,6 +132,11 @@ describe('governed article body generation', () => {
 			},
 			normalizedEvent: {
 				proposedSuitability: 'SENSITIVE', guardrailFlags: ['UNRESOLVED_ALLEGATION'],
+				assertions: expect.arrayContaining([
+					expect.objectContaining({ id: 'fact-1', kind: 'FACT', statement: fact }),
+					expect.objectContaining({ id: 'context-1', kind: 'CONTEXT' }),
+					expect.objectContaining({ id: 'uncertainty-1', kind: 'UNCERTAINTY' }),
+				]),
 			},
 			governance: {
 				sensitive: true, unresolvedAllegation: true,
@@ -138,6 +146,7 @@ describe('governed article body generation', () => {
 		expect(claim).toHaveBeenCalledWith(expect.objectContaining({
 			id: runId, candidateId: original.candidate.id, sourceWasSensitive: true,
 			cautionReason: original.candidate.editorialNotes, requestedByEmail: identity.email,
+			promptVersion: 'article-body-v2',
 		}));
 		expect(complete).toHaveBeenCalledWith(expect.objectContaining({
 			candidateId: original.candidate.id,
@@ -149,6 +158,28 @@ describe('governed article body generation', () => {
 			status: 'DRAFT', proposedHeadline: expect.any(String), proposedDeck: expect.any(String),
 			categoryId: 'cat-florida-probably', sourceIntakeId: intake.id,
 		});
+	});
+
+	it('persists the exact returned body after multiple accepted FACT IDs validate', async () => {
+		const original = context();
+		const { repo, complete, fail } = repository(original);
+		const provider = new FakeModelProvider();
+		const underlying = provider.generateArticleBody.bind(provider);
+		let expectedBody = '';
+		const generate = vi.spyOn(provider, 'generateArticleBody').mockImplementation(async (input, signal) => {
+			const result = await underlying(input, signal);
+			expectedBody = result.output.bodyMarkdown;
+			return { ...result, output: { ...result.output, factualAssertionIdsUsed: ['fact-1', 'fact-2'] } };
+		});
+		await service(repo, provider).generateArticleBody(identity, {
+			candidateId: original.candidate.id, idempotencyKey: 'body-multiple-facts',
+		});
+		expect(generate).toHaveBeenCalledTimes(1);
+		expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+			candidateId: original.candidate.id, bodyMarkdown: expectedBody,
+		}));
+		expect(fail).not.toHaveBeenCalled();
+		expect(original.candidate.status).toBe('DRAFT');
 	});
 
 	it.each(['REVIEW', 'APPROVED', 'REJECTED'] as const)('rejects a %s candidate before provider invocation', async (status) => {
@@ -288,43 +319,29 @@ describe('governed article body generation', () => {
 		expect(original.candidate.draftBodyMarkdown).toBe('');
 	});
 
-	it('classifies an empty factual-provenance list without retrying or persisting a body', async () => {
+	it.each([
+		['empty ID list', [], 'MALFORMED_OUTPUT_FACT_IDS_EMPTY'],
+		['unknown ID', ['unknown-id'], 'MALFORMED_OUTPUT_FACT_ID_NOT_ACCEPTED'],
+		['CONTEXT assertion ID', ['context-1'], 'MALFORMED_OUTPUT_FACT_ID_NOT_ACCEPTED'],
+		['UNCERTAINTY assertion ID', ['uncertainty-1'], 'MALFORMED_OUTPUT_FACT_ID_NOT_ACCEPTED'],
+		['ID from another normalized-event version', ['other-version-fact-1'], 'MALFORMED_OUTPUT_FACT_ID_NOT_ACCEPTED'],
+		['duplicate accepted ID', ['fact-1', 'fact-1'], 'MALFORMED_OUTPUT_FACT_ID_DUPLICATE'],
+	] as const)('rejects %s without retrying or persisting a body', async (_label, factualAssertionIdsUsed, classification) => {
 		const original = context();
 		const { repo, complete, fail } = repository(original);
 		const provider = new FakeModelProvider();
 		const underlying = provider.generateArticleBody.bind(provider);
 		const generate = vi.spyOn(provider, 'generateArticleBody').mockImplementation(async (input, signal) => {
 			const result = await underlying(input, signal);
-			return { ...result, output: { ...result.output, factualAssertionsUsed: [] } };
+			return { ...result, output: { ...result.output, factualAssertionIdsUsed: [...factualAssertionIdsUsed] } };
 		});
 		await expect(service(repo, provider).generateArticleBody(identity, {
-			candidateId: 'candidate-target', idempotencyKey: 'body-empty-facts',
+			candidateId: 'candidate-target', idempotencyKey: `body-invalid-${_label}`,
 		})).rejects.toMatchObject({ code: 'provider-invalid-output' });
 		expect(generate).toHaveBeenCalledTimes(1);
 		expect(complete).not.toHaveBeenCalled();
 		expect(fail).toHaveBeenCalledWith(expect.objectContaining({
-			failureClassification: 'MALFORMED_OUTPUT_FACTS_EMPTY',
-		}));
-		expect(original.candidate.draftBodyMarkdown).toBe('');
-		expect(original.candidate.status).toBe('DRAFT');
-	});
-
-	it('rejects self-reported factual assertions outside the accepted source substrate', async () => {
-		const original = context();
-		const { repo, complete, fail } = repository(original);
-		const provider = new FakeModelProvider();
-		const underlying = provider.generateArticleBody.bind(provider);
-		const generate = vi.spyOn(provider, 'generateArticleBody').mockImplementation(async (input, signal) => {
-			const result = await underlying(input, signal);
-			return { ...result, output: { ...result.output, factualAssertionsUsed: ['An unsupported factual claim.'] } };
-		});
-		await expect(service(repo, provider).generateArticleBody(identity, {
-			candidateId: 'candidate-target', idempotencyKey: 'body-unsupported-fact',
-		})).rejects.toMatchObject({ code: 'provider-invalid-output' });
-		expect(generate).toHaveBeenCalledTimes(1);
-		expect(complete).not.toHaveBeenCalled();
-		expect(fail).toHaveBeenCalledWith(expect.objectContaining({
-			failureClassification: 'MALFORMED_OUTPUT_FACT_NOT_ACCEPTED',
+			failureClassification: classification,
 		}));
 		expect(original.candidate.draftBodyMarkdown).toBe('');
 		expect(original.candidate.status).toBe('DRAFT');
@@ -380,7 +397,7 @@ describe('governed article body generation', () => {
 
 	it('rejects meta wrappers and trivial paragraphs before persistence', () => {
 		const validMetadata = {
-			factual_assertions_used: [fact], satire_framing_summary: 'Retail policy framing.', safety_notes: [],
+			factual_assertion_ids_used: ['fact-1'], satire_framing_summary: 'Retail policy framing.', safety_notes: [],
 		};
 		expect(() => parseArticleBodyProposal({
 			...validMetadata,
@@ -395,6 +412,7 @@ describe('governed article body generation', () => {
 	it('keeps database claims, completion, and audit history fail-closed', () => {
 		const migration = readFileSync(join(process.cwd(), 'migrations/0010_governed_article_body_generation.sql'), 'utf8');
 		const repositorySource = readFileSync(join(process.cwd(), 'src/data/d1-generation-repository.ts'), 'utf8');
+		const serviceSource = readFileSync(join(process.cwd(), 'src/services/generation-service.ts'), 'utf8');
 		expect(migration).toContain('CREATE UNIQUE INDEX idx_candidate_body_generation_pending');
 		expect(migration).toContain('candidate_body_generation_runs_no_delete');
 		expect(migration).toContain('candidate_body_generation_runs_provenance_immutable');
@@ -405,6 +423,10 @@ describe('governed article body generation', () => {
 		expect(repositorySource).toContain('created_at <= ?');
 		expect(repositorySource).toMatch(/SET draft_body_markdown = \?, body_generation_state = 'SUCCEEDED'[\s\S]*status = 'DRAFT'[\s\S]*trim\(draft_body_markdown, char\(9\)/);
 		expect(repositorySource).not.toMatch(/SET[\s\S]{0,150}proposed_headline\s*=/);
+		expect(repositorySource).toContain('SELECT * FROM candidate_body_generation_runs WHERE id = ? LIMIT 1');
+		expect(repositorySource).not.toMatch(/(?:INSERT INTO|UPDATE) stories/);
+		expect(serviceSource).not.toMatch(/PublicationService|publishStory|createStory/);
+		expect(migration).not.toContain('article-body-v2');
 	});
 
 	it('shows an accurate governed control without changing the existing five-alternative action', () => {

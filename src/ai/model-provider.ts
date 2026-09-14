@@ -50,6 +50,7 @@ export interface GenerateArticleBodyInput {
 		suitabilityReason: string;
 		guardrailFlags: string[];
 		assertions: Array<{
+			id: string;
 			kind: string;
 			statement: string;
 			sources: Array<{ sourceReferenceId: string; relationship: string }>;

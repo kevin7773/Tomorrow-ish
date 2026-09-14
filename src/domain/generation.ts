@@ -68,7 +68,7 @@ export interface CandidateProposal {
 
 export interface ArticleBodyProposal {
 	bodyMarkdown: string;
-	factualAssertionsUsed: string[];
+	factualAssertionIdsUsed: string[];
 	satireFramingSummary: string;
 	safetyNotes: string[];
 }

@@ -74,6 +74,9 @@ describe('OpenAI Responses provider', () => {
 		expect(CANDIDATE_SCHEMA.additionalProperties).toBe(false);
 		expect(bodySchema).not.toMatch(/uniqueItems|minLength|maxLength/);
 		expect(ARTICLE_BODY_SCHEMA.additionalProperties).toBe(false);
+		expect(ARTICLE_BODY_SCHEMA.properties.factual_assertion_ids_used).toMatchObject({ minItems: 1, maxItems: 30 });
+		expect(ARTICLE_BODY_SCHEMA.required).toContain('factual_assertion_ids_used');
+		expect(ARTICLE_BODY_SCHEMA.properties).not.toHaveProperty('factual_assertions_used');
 	});
 
 	it('uses a receiver-safe native fetch wrapper by default', async () => {
@@ -149,7 +152,7 @@ describe('OpenAI Responses provider', () => {
 				'Administrators then expanded the process into a broader policy exercise whose labels were substantially clearer than its consequences.',
 				'By late afternoon, the matter was considered resolved enough to require one final meeting and a fresh version of the same diagram.',
 			].join('\n\n'),
-			factual_assertions_used: ['Authorities reported an arrest.'],
+			factual_assertion_ids_used: ['fact-1'],
 			satire_framing_summary: 'Retail policy absorbs the absurdity.',
 			safety_notes: ['Preserve attribution.'],
 		};
@@ -171,7 +174,7 @@ describe('OpenAI Responses provider', () => {
 				id: 'version-1', eventStatement: 'Authorities reported an arrest.',
 				proposedSuitability: 'SENSITIVE', suitabilityReason: 'Unresolved allegation.',
 				guardrailFlags: ['UNRESOLVED_ALLEGATION'],
-				assertions: [{ kind: 'FACT', statement: 'Authorities reported an arrest.', sources: [{ sourceReferenceId: 'source-1', relationship: 'SUPPORTS' }] }],
+				assertions: [{ id: 'fact-1', kind: 'FACT', statement: 'Authorities reported an arrest.', sources: [{ sourceReferenceId: 'source-1', relationship: 'SUPPORTS' }] }],
 				reviewReason: 'Use careful attribution.',
 			},
 			candidate: {
@@ -186,10 +189,11 @@ describe('OpenAI Responses provider', () => {
 		expect(request.text.format).toMatchObject({ type: 'json_schema', name: 'article_body', strict: true });
 		expect(request.max_output_tokens).toBe(3_000);
 		expect(request.instructions).toMatch(/four to seven|never imply guilt|Never fabricate quotations|persisted editorial caution/i);
+		expect(request.instructions).toMatch(/factual_assertion_ids_used|immutable IDs|never select CONTEXT or UNCERTAINTY/i);
 		expect(JSON.parse(request.input)).toEqual(input);
 		expect(result.output).toEqual({
 			bodyMarkdown: output.body_markdown,
-			factualAssertionsUsed: output.factual_assertions_used,
+			factualAssertionIdsUsed: output.factual_assertion_ids_used,
 			satireFramingSummary: output.satire_framing_summary,
 			safetyNotes: output.safety_notes,
 		});
@@ -198,7 +202,7 @@ describe('OpenAI Responses provider', () => {
 
 	it('rejects an incomplete article body response', async () => {
 		const output = {
-			body_markdown: ['One.', 'Two.', 'Three.'].join('\n\n'), factual_assertions_used: ['Fact.'],
+			body_markdown: ['One.', 'Two.', 'Three.'].join('\n\n'), factual_assertion_ids_used: ['fact-1'],
 			satire_framing_summary: 'Framing.', safety_notes: [],
 		};
 		const provider = new OpenAIModelProvider('test-key', OPENAI_MODEL, async () => response(output));
@@ -207,6 +211,35 @@ describe('OpenAI Responses provider', () => {
 				satireSuitability: 'SUITABLE', suitabilityReason: 'Reviewed.', guardrailFlags: [], editorialNotes: '', references: [] },
 			normalizedEvent: { id: 'v1', eventStatement: 'Event', proposedSuitability: 'SUITABLE',
 				suitabilityReason: 'Reviewed.', guardrailFlags: [], assertions: [], reviewReason: 'Reviewed.' },
+			candidate: { headline: 'Headline', deck: 'Deck', rationale: 'Reason', satiricalMechanism: 'Mechanism', category: 'Science', editorialNotes: '' },
+			governance: { sensitive: false, unresolvedAllegation: false, editorialCautionReason: null },
+		}, signal)).rejects.toBeInstanceOf(ModelOutputError);
+	});
+
+	it.each([
+		['missing v2 provenance field', {}],
+		['article-body-v1 provenance field only', { factual_assertions_used: ['Authorities reported an arrest.'] }],
+		['both v2 and forbidden v1 provenance fields', {
+			factual_assertion_ids_used: ['fact-1'], factual_assertions_used: ['Authorities reported an arrest.'],
+		}],
+	])('rejects %s', async (_label, provenance) => {
+		const output = {
+			body_markdown: [
+				'Authorities described the reported event in careful terms while the institution opened a routine review of its procedures.',
+				'The review soon acquired a binder, a working group, and a diagram explaining which ordinary rule had become unexpectedly philosophical.',
+				'Administrators then expanded the process into a broader policy exercise whose labels were substantially clearer than its consequences.',
+				'By late afternoon, the matter was considered resolved enough to require one final meeting and a fresh version of the same diagram.',
+			].join('\n\n'),
+			...provenance,
+			satire_framing_summary: 'Retail policy absorbs the absurdity.',
+			safety_notes: [],
+		};
+		const provider = new OpenAIModelProvider('test-key', OPENAI_MODEL, async () => response(output));
+		await expect(provider.generateArticleBody({
+			source: { title: 'Event', neutralBrief: 'Fact.', significanceScore: 1, satirePotentialScore: 1,
+				satireSuitability: 'SUITABLE', suitabilityReason: 'Reviewed.', guardrailFlags: [], editorialNotes: '', references: [] },
+			normalizedEvent: { id: 'v1', eventStatement: 'Event', proposedSuitability: 'SUITABLE',
+				suitabilityReason: 'Reviewed.', guardrailFlags: [], assertions: [{ id: 'fact-1', kind: 'FACT', statement: 'Fact.', sources: [] }], reviewReason: 'Reviewed.' },
 			candidate: { headline: 'Headline', deck: 'Deck', rationale: 'Reason', satiricalMechanism: 'Mechanism', category: 'Science', editorialNotes: '' },
 			governance: { sensitive: false, unresolvedAllegation: false, editorialCautionReason: null },
 		}, signal)).rejects.toBeInstanceOf(ModelOutputError);

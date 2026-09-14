@@ -48,8 +48,9 @@ function idempotencyKey(value: unknown): string {
 }
 
 type ArticleBodyFactFailureClassification =
-	| 'MALFORMED_OUTPUT_FACTS_EMPTY'
-	| 'MALFORMED_OUTPUT_FACT_NOT_ACCEPTED';
+	| 'MALFORMED_OUTPUT_FACT_IDS_EMPTY'
+	| 'MALFORMED_OUTPUT_FACT_ID_NOT_ACCEPTED'
+	| 'MALFORMED_OUTPUT_FACT_ID_DUPLICATE';
 
 class ArticleBodyFactValidationError extends ModelOutputError {
 	constructor(readonly failureClassification: ArticleBodyFactFailureClassification) {
@@ -405,7 +406,7 @@ export class GenerationService {
 				proposedSuitability: version.proposedSuitability,
 				suitabilityReason: version.suitabilityReason,
 				guardrailFlags: version.guardrailFlags,
-				assertions: version.assertions.map(({ kind, statement, sources }) => ({ kind, statement, sources })),
+				assertions: version.assertions.map(({ id, kind, statement, sources }) => ({ id, kind, statement, sources })),
 				reviewReason: version.reviewReason,
 			},
 			candidate: {
@@ -445,12 +446,15 @@ export class GenerationService {
 				modelLimitsForOperation('GENERATE_ARTICLE_BODY', this.limits),
 			);
 			const proposal = parseArticleBodyProposal(executed.result.output);
-			const supportedFacts = new Set(facts.map((fact) => fact.statement));
-			if (proposal.factualAssertionsUsed.length === 0) {
-				throw new ArticleBodyFactValidationError('MALFORMED_OUTPUT_FACTS_EMPTY');
+			const acceptedFactIds = new Set(facts.map((fact) => fact.id));
+			if (proposal.factualAssertionIdsUsed.length === 0) {
+				throw new ArticleBodyFactValidationError('MALFORMED_OUTPUT_FACT_IDS_EMPTY');
 			}
-			if (proposal.factualAssertionsUsed.some((assertion) => !supportedFacts.has(assertion))) {
-				throw new ArticleBodyFactValidationError('MALFORMED_OUTPUT_FACT_NOT_ACCEPTED');
+			if (new Set(proposal.factualAssertionIdsUsed).size !== proposal.factualAssertionIdsUsed.length) {
+				throw new ArticleBodyFactValidationError('MALFORMED_OUTPUT_FACT_ID_DUPLICATE');
+			}
+			if (proposal.factualAssertionIdsUsed.some((assertionId) => !acceptedFactIds.has(assertionId))) {
+				throw new ArticleBodyFactValidationError('MALFORMED_OUTPUT_FACT_ID_NOT_ACCEPTED');
 			}
 			const outputText = JSON.stringify(proposal);
 			const completedAt = this.now();

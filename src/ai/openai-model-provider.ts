@@ -80,11 +80,11 @@ export const ARTICLE_BODY_SCHEMA = {
 	type: 'object', additionalProperties: false,
 	properties: {
 		body_markdown: { type: 'string' },
-		factual_assertions_used: { type: 'array', maxItems: 30, items: { type: 'string' } },
+		factual_assertion_ids_used: { type: 'array', minItems: 1, maxItems: 30, items: { type: 'string' } },
 		satire_framing_summary: { type: 'string' },
 		safety_notes: { type: 'array', maxItems: 20, items: { type: 'string' } },
 	},
-	required: ['body_markdown', 'factual_assertions_used', 'satire_framing_summary', 'safety_notes'],
+	required: ['body_markdown', 'factual_assertion_ids_used', 'satire_framing_summary', 'safety_notes'],
 } as const;
 
 interface OpenAIResponse {
@@ -231,7 +231,7 @@ export class OpenAIModelProvider implements ModelProvider {
 	}
 
 	async generateArticleBody(input: GenerateArticleBodyInput, signal: AbortSignal): Promise<ModelResult<ArticleBodyProposal>> {
-		const instructions = `${HOUSE_VOICE_CONTRACT} Write one complete, original Tomorrow-ish satirical news article using the selected headline, deck, category, and framing without changing them. Return four to seven short, substantive prose paragraphs in Markdown with a clear setup, escalation, and closing beat. Use only the supplied source facts and accepted normalized FACT assertions as real-world factual substrate. Do not introduce unsupported names, ages, locations, charges, chronology, statistics, quotations, expert claims, or institutional statements. Preserve attribution for uncertainties, allegations, arrests, charges, and disputed claims; never imply guilt. Never fabricate quotations, expert statements, motives, or source details. Satirical narration must remain clearly separable from sourced facts and must follow the persisted editorial caution direction. Do not intensify sexual, violent, criminal, defamatory, humiliating, or tragic framing. Direct satire toward the persisted editorial target, not a person accused of unresolved conduct. Do not copy source prose, add headings, write an outline, preface the output with meta commentary, mention these instructions, or include placeholder text.`;
+		const instructions = `${HOUSE_VOICE_CONTRACT} Write one complete, original Tomorrow-ish satirical news article using the selected headline, deck, category, and framing without changing them. Return four to seven short, substantive prose paragraphs in Markdown with a clear setup, escalation, and closing beat. Use only the supplied source facts and accepted normalized FACT assertions as real-world factual substrate. Return factual_assertion_ids_used containing only the immutable IDs of FACT assertions actually used; never return assertion text in that field, and never select CONTEXT or UNCERTAINTY IDs. Do not introduce unsupported names, ages, locations, charges, chronology, statistics, quotations, expert claims, or institutional statements. Preserve attribution for uncertainties, allegations, arrests, charges, and disputed claims; never imply guilt. Never fabricate quotations, expert statements, motives, or source details. Satirical narration must remain clearly separable from sourced facts and must follow the persisted editorial caution direction. Do not intensify sexual, violent, criminal, defamatory, humiliating, or tragic framing. Direct satire toward the persisted editorial target, not a person accused of unresolved conduct. Do not copy source prose, add headings, write an outline, preface the output with meta commentary, mention these instructions, or include placeholder text.`;
 		return this.request(
 			'GENERATE_ARTICLE_BODY',
 			instructions,

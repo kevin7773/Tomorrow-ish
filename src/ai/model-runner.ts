@@ -3,7 +3,7 @@ import { ModelProviderError } from './model-provider';
 
 export const NORMALIZATION_PROMPT_VERSION = 'normalize-v1';
 export const CANDIDATE_PROMPT_VERSION = 'candidates-v1';
-export const ARTICLE_BODY_PROMPT_VERSION = 'article-body-v1';
+export const ARTICLE_BODY_PROMPT_VERSION = 'article-body-v2';
 
 export const HOUSE_VOICE_CONTRACT = [
 	'Dry, calm, and institutional.',

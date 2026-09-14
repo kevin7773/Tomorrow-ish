@@ -95,6 +95,9 @@ function textArray(value: unknown, maximumItems: number, maximumItemLength: numb
 
 export function parseArticleBodyProposal(value: unknown): ArticleBodyProposal {
 	const input = record(value);
+	if ('factual_assertions_used' in input || 'factualAssertionsUsed' in input) {
+		throw new ModelOutputError('Article-body-v1 factual provenance is not accepted by article-body-v2.');
+	}
 	const bodyMarkdown = text(input.body_markdown ?? input.bodyMarkdown, 20_000);
 	const paragraphs = bodyMarkdown.split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean);
 	if (paragraphs.length < 4 || paragraphs.length > 7) {
@@ -111,7 +114,11 @@ export function parseArticleBodyProposal(value: unknown): ArticleBodyProposal {
 	}
 	return {
 		bodyMarkdown,
-		factualAssertionsUsed: textArray(input.factual_assertions_used ?? input.factualAssertionsUsed, 30, 2_000),
+		factualAssertionIdsUsed: textArray(
+			input.factual_assertion_ids_used ?? input.factualAssertionIdsUsed,
+			30,
+			200,
+		),
 		satireFramingSummary: text(input.satire_framing_summary ?? input.satireFramingSummary, 2_000),
 		safetyNotes: textArray(input.safety_notes ?? input.safetyNotes, 20, 1_000),
 	};

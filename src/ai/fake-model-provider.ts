@@ -83,7 +83,7 @@ export class FakeModelProvider implements ModelProvider {
 
 	async generateArticleBody(input: GenerateArticleBodyInput, signal: AbortSignal): Promise<ModelResult<ArticleBodyProposal>> {
 		if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-		const facts = input.normalizedEvent.assertions.filter((assertion) => assertion.kind === 'FACT').map((assertion) => assertion.statement);
+		const factIds = input.normalizedEvent.assertions.filter((assertion) => assertion.kind === 'FACT').map((assertion) => assertion.id);
 		const output: ArticleBodyProposal = {
 			bodyMarkdown: [
 				`${input.candidate.headline} began as a routine development and was promptly assigned a folder.`,
@@ -91,7 +91,7 @@ export class FakeModelProvider implements ModelProvider {
 				`The resulting process expanded into a modest institutional response with several carefully labeled consequences.`,
 				`By late afternoon, the matter had been declared understandable enough to schedule another meeting.`,
 			].join('\n\n'),
-			factualAssertionsUsed: facts.slice(0, 1),
+			factualAssertionIdsUsed: factIds.slice(0, 1),
 			satireFramingSummary: input.candidate.satiricalMechanism,
 			safetyNotes: input.governance.sensitive ? ['Preserve attribution and follow the editorial caution direction.'] : [],
 		};
