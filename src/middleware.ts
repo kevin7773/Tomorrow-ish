@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { defineMiddleware } from 'astro:middleware';
 import { authenticateEditorialRequest, type EditorialAccessEnvironment } from './security/editorial-auth';
+import { archiveMutationSecurityFailureResponse } from './lib/editorial-archive-action';
 import {
 	createCsrfToken,
 	csrfCookieName,
@@ -60,7 +61,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
 			} else {
 				console.warn(`[editorial-security] mutation rejected: ${error.reason}`);
 			}
-			return forbidden();
+			return archiveMutationSecurityFailureResponse(context.url.pathname, context.request.method) ?? forbidden();
 		}
 		return forbidden();
 	}

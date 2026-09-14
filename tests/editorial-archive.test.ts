@@ -5,6 +5,12 @@ import { describe, expect, it } from 'vitest';
 import { D1AutomationRepository } from '../src/data/d1-automation-repository';
 import { D1EditorialRepository } from '../src/data/d1-editorial-repository';
 import { D1GenerationRepository } from '../src/data/d1-generation-repository';
+import {
+	archiveMutationSecurityFailureResponse,
+	handleEditorialArchiveAction,
+} from '../src/lib/editorial-archive-action';
+import { createCsrfToken, verifySameOriginMutation } from '../src/security/csrf';
+import { authenticateEditorialRequest } from '../src/security/editorial-auth';
 import { EditorialService } from '../src/services/editorial-service';
 
 const NOW = '2026-09-14T14:00:00.000Z';
@@ -111,6 +117,103 @@ function attachCandidateProvenance(database: DatabaseSync, candidateId: string, 
 }
 
 describe('editorial queue soft archive', () => {
+	it('routes the history page bulk form payload through CSRF, Access identity, service, and success messages', async () => {
+		const database = freshDatabase();
+		try {
+			insertIntake(database, 'u1', 'UNSUITABLE');
+			insertIntake(database, 'u2', 'UNSUITABLE');
+			insertIntake(database, 's1', 'SUITABLE');
+			insertCandidate(database, 'r1', 's1', 'REJECTED');
+			insertCandidate(database, 'r2', 's1', 'REJECTED');
+			insertCandidate(database, 'd1', 's1', 'DRAFT');
+			database.prepare(`INSERT INTO stories (
+				id, slug, headline, deck, body_markdown, edition_date, published_at, category_id,
+				status, social_excerpt, tags_json, created_at, updated_at
+			) VALUES ('story-1', 'story-one', 'Story one', 'Deck', 'Body', '2026-09-14', ?,
+				'cat-community', 'PUBLISHED', 'Excerpt', '[]', ?, ?)`)
+				.run(NOW, NOW, NOW);
+
+			const repository = new D1EditorialRepository(d1Database(database));
+			const service = new EditorialService(repository, {
+				now: () => NOW,
+				createId: (() => { let id = 0; return () => `form-${++id}`; })(),
+			});
+			const token = createCsrfToken();
+			const environment = {
+				CF_ACCESS_TEAM_DOMAIN: 'https://tomorrow-ish.cloudflareaccess.com',
+				CF_ACCESS_AUD: 'access-audience',
+				EDITORIAL_ALLOWED_EMAIL: EDITOR.email.toLowerCase(),
+			};
+
+			async function submit(action: string, expectedCount: string): Promise<Response> {
+				const form = new FormData();
+				form.set('csrf_token', token);
+				form.set('action', action);
+				form.set('expectedCount', expectedCount);
+				form.set('returnPath', '/editorial/history');
+				form.set('archiveReason', '');
+				expect(form.has('actorEmail')).toBe(false);
+				const request = new Request('https://tomorrow-ish.news/editorial/actions/archive', {
+					method: 'POST',
+					headers: {
+						Origin: 'https://tomorrow-ish.news',
+						'Cf-Access-Jwt-Assertion': 'signed-token',
+					},
+					body: form,
+				});
+				await expect(verifySameOriginMutation(request, token, 'https://tomorrow-ish.news')).resolves.toBeUndefined();
+				const identity = await authenticateEditorialRequest(request, environment, {
+					verifyToken: async () => ({ email: EDITOR.email }),
+				});
+				return handleEditorialArchiveAction(await request.formData(), identity, service);
+			}
+
+			const intakeResponse = await submit('archive-all-unsuitable-intakes', '2');
+			expect(intakeResponse.status).toBe(303);
+			expect(intakeResponse.headers.get('Location')).toBe('/editorial/history?message=intakes-bulk-archived&count=2');
+			const candidateResponse = await submit('archive-all-rejected-candidates', '2');
+			expect(candidateResponse.status).toBe(303);
+			expect(candidateResponse.headers.get('Location')).toBe('/editorial/history?message=candidates-bulk-archived&count=2');
+			expect(database.prepare('SELECT COUNT(*) AS count FROM source_intakes WHERE archived_at IS NOT NULL').get()).toMatchObject({ count: 2 });
+			expect(database.prepare('SELECT COUNT(*) AS count FROM satire_candidates WHERE archived_at IS NOT NULL').get()).toMatchObject({ count: 2 });
+			expect(database.prepare("SELECT COUNT(*) AS count FROM editorial_audit_log WHERE action='ARCHIVED'").get()).toMatchObject({ count: 4 });
+			expect(database.prepare("SELECT COUNT(*) AS count FROM editorial_audit_log WHERE action='ARCHIVED' AND actor_email=?").get(EDITOR.email.toLowerCase())).toMatchObject({ count: 4 });
+			expect(database.prepare("SELECT COUNT(*) AS count FROM stories WHERE id='story-1' AND status='PUBLISHED'").get()).toMatchObject({ count: 1 });
+		} finally {
+			database.close();
+		}
+	});
+
+	it('fails malformed and stale history bulk counts closed with explicit bounded errors', async () => {
+		const database = freshDatabase();
+		try {
+			insertIntake(database, 'u1', 'UNSUITABLE');
+			const repository = new D1EditorialRepository(d1Database(database));
+			const service = new EditorialService(repository, { now: () => NOW, createId: () => 'never-used' });
+			for (const expectedCount of [undefined, '', '2']) {
+				const form = new FormData();
+				form.set('action', 'archive-all-unsuitable-intakes');
+				if (expectedCount !== undefined) form.set('expectedCount', expectedCount);
+				form.set('returnPath', '/editorial/history');
+				const response = await handleEditorialArchiveAction(form, EDITOR, service);
+				expect(response.status).toBe(303);
+				expect(response.headers.get('Location')).toBe(expectedCount !== '2'
+					? '/editorial/history?error=invalid-request'
+					: '/editorial/history?error=archive-preview-stale');
+			}
+			await expect(service.archiveAllUnsuitableIntakes(EDITOR, { expectedCount: 1 })).rejects.toThrow(/Expected archive count/);
+			expect(database.prepare('SELECT COUNT(*) AS count FROM source_intakes WHERE archived_at IS NOT NULL').get()).toMatchObject({ count: 0 });
+			expect(database.prepare("SELECT COUNT(*) AS count FROM editorial_audit_log WHERE action='ARCHIVED'").get()).toMatchObject({ count: 0 });
+
+			const securityResponse = archiveMutationSecurityFailureResponse('/editorial/actions/archive', 'POST');
+			expect(securityResponse?.status).toBe(303);
+			expect(securityResponse?.headers.get('Location')).toBe('/editorial/history?error=archive-request-verification-failed');
+			expect(archiveMutationSecurityFailureResponse('/editorial/actions/intakes', 'POST')).toBeNull();
+		} finally {
+			database.close();
+		}
+	});
+
 	it('enforces terminal eligibility, required actors, immutable status, and clean restore in the schema', () => {
 		const database = freshDatabase();
 		try {
@@ -245,6 +348,8 @@ describe('editorial queue soft archive', () => {
 	it('keeps archive scope out of stories, publication, scheduling, ranking, providers, and known-source lookups', () => {
 		const migration = readFileSync(join(process.cwd(), 'migrations/0013_editorial_queue_archiving.sql'), 'utf8');
 		const archiveRoute = readFileSync(join(process.cwd(), 'src/pages/editorial/actions/archive.ts'), 'utf8');
+		const historyPage = readFileSync(join(process.cwd(), 'src/pages/editorial/history.astro'), 'utf8');
+		const messageComponent = readFileSync(join(process.cwd(), 'src/components/EditorialMessage.astro'), 'utf8');
 		const intakeDetail = readFileSync(join(process.cwd(), 'src/pages/editorial/intakes/[id].astro'), 'utf8');
 		const candidateDetail = readFileSync(join(process.cwd(), 'src/pages/editorial/candidates/[id].astro'), 'utf8');
 		const automation = readFileSync(join(process.cwd(), 'src/data/d1-automation-repository.ts'), 'utf8');
@@ -252,6 +357,14 @@ describe('editorial queue soft archive', () => {
 		expect(migration).not.toMatch(/ALTER TABLE stories|UPDATE stories|INSERT INTO stories/);
 		expect(migration).not.toMatch(/DELETE FROM/);
 		expect(archiveRoute).not.toMatch(/publish|schedule|provider|ranking/i);
+		expect(historyPage.match(/method="post" action="\/editorial\/actions\/archive"/g)).toHaveLength(2);
+		expect(historyPage.match(/name="csrf_token" value=\{csrfToken\}/g)).toHaveLength(2);
+		expect(historyPage.match(/name="expectedCount"/g)).toHaveLength(2);
+		expect(historyPage).toContain('value="archive-all-unsuitable-intakes"');
+		expect(historyPage).toContain('value="archive-all-rejected-candidates"');
+		expect(messageComponent).toContain("'archive-request-verification-failed'");
+		expect(messageComponent).toContain("'archive-preview-stale'");
+		expect(messageComponent).toContain("'archive-operation-failed'");
 		expect(intakeDetail).toContain('{!intake.archivedAt && (');
 		expect(intakeDetail).toContain('value="restore-intake"');
 		expect(candidateDetail).toContain('candidate.archivedAt ? (');
