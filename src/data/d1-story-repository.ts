@@ -1,5 +1,6 @@
 import type { PublicationStatus } from '../domain/publication-status';
 import type { Story, StorySource } from '../domain/story';
+import { editorialDateFromTimestamp } from '../lib/dates';
 import type { StoryRepository, PublishedStoryQuery } from './story-repository';
 
 interface StoryRow {
@@ -63,7 +64,7 @@ function mapStory(row: StoryRow, sources: StorySource[] = []): Story {
 		headline: row.headline,
 		deck: row.deck,
 		bodyMarkdown: row.body_markdown,
-		editionDate: row.edition_date,
+		editionDate: editorialDateFromTimestamp(row.published_at),
 		publishedAt: row.published_at,
 		category: {
 			id: row.category_id,
@@ -115,7 +116,7 @@ export class D1StoryRepository implements StoryRepository {
 		const row = await this.db
 			.prepare(`${STORY_SELECT}
 				WHERE s.status = 'PUBLISHED'
-				ORDER BY s.edition_date DESC, s.published_at DESC
+				ORDER BY s.published_at DESC, s.id DESC
 				LIMIT 1`)
 			.first<StoryRow>();
 
@@ -151,7 +152,7 @@ export class D1StoryRepository implements StoryRepository {
 		bindings.push(limit);
 		const result = await this.db.prepare(`${STORY_SELECT}
 			WHERE ${conditions.join(' AND ')}
-			ORDER BY s.edition_date DESC, s.published_at DESC
+			ORDER BY s.published_at DESC, s.id DESC
 			LIMIT ?`)
 			.bind(...bindings)
 			.all<StoryRow>();

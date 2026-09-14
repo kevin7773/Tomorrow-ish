@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Story } from '../src/domain/story';
 import { groupStoriesByEdition, storyParagraphs, storySourceLabel } from '../src/domain/story';
 
-function story(id: string, editionDate: string): Story {
+function story(id: string, editionDate: string, publishedAt = `${editionDate}T12:00:00Z`): Story {
 	return {
 		id,
 		slug: id,
@@ -10,7 +10,7 @@ function story(id: string, editionDate: string): Story {
 		deck: 'A fictional deck.',
 		bodyMarkdown: 'One paragraph.',
 		editionDate,
-		publishedAt: `${editionDate}T12:00:00Z`,
+		publishedAt,
 		category: { id: 'category', slug: 'category', name: 'Category' },
 		status: 'PUBLISHED',
 		socialExcerpt: 'Fictional sample.',
@@ -31,6 +31,20 @@ describe('story presentation helpers', () => {
 
 		expect(editions.map((edition) => edition.editionDate)).toEqual(['2026-09-11', '2026-09-10']);
 		expect(editions[1]?.stories.map(({ id }) => id)).toEqual(['b', 'c']);
+	});
+
+	it('groups the archive by the Eastern publication date instead of the stored edition date', () => {
+		const editions = groupStoriesByEdition([
+			story('after-utc-midnight', '2026-09-15', '2026-09-15T01:30:00Z'),
+			story('same-eastern-day', '2026-09-14', '2026-09-14T16:00:00Z'),
+		]);
+
+		expect(editions).toHaveLength(1);
+		expect(editions[0]?.editionDate).toBe('2026-09-14');
+		expect(editions[0]?.stories.map(({ editionDate }) => editionDate)).toEqual([
+			'2026-09-14',
+			'2026-09-14',
+		]);
 	});
 
 	it('turns plain editorial paragraphs into safe text blocks', () => {

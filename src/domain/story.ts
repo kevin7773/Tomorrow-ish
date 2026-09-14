@@ -1,4 +1,5 @@
 import type { PublicationStatus } from './publication-status';
+import { editorialDateFromTimestamp } from '../lib/dates';
 
 export interface StoryCategory {
 	id: string;
@@ -47,9 +48,10 @@ export function groupStoriesByEdition(stories: Story[]): ArchiveEdition[] {
 	const editions = new Map<string, Story[]>();
 
 	for (const story of stories) {
-		const group = editions.get(story.editionDate) ?? [];
-		group.push(story);
-		editions.set(story.editionDate, group);
+		const editionDate = editorialDateFromTimestamp(story.publishedAt);
+		const group = editions.get(editionDate) ?? [];
+		group.push(story.editionDate === editionDate ? story : { ...story, editionDate });
+		editions.set(editionDate, group);
 	}
 
 	return Array.from(editions, ([editionDate, editionStories]) => ({
