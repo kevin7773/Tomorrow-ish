@@ -14,6 +14,7 @@ const intake: SourceIntake = {
 	significanceScore: 1, satirePotentialScore: 1, satireSuitability: 'UNREVIEWED', editorialNotes: '',
 	suitabilityReason: '', guardrailFlags: [], assessmentReviewedByEmail: null, assessmentReviewedAt: null,
 	acceptedModelRunId: null, createdByEmail: identity.email, updatedByEmail: identity.email,
+	archivedAt: null, archivedByEmail: null, archiveReason: null,
 	createdAt: '2026-09-10T00:00:00Z', updatedAt: '2026-09-10T00:00:00Z',
 	references: [{ id: 'source-1', sourceIntakeId: 'intake-1', sourceTitle: 'Public record', sourceUrl: 'https://example.com/', publisherName: 'Example', sourceTier: 'TIER_1', sourceType: 'PRIMARY', publishedAt: null, createdAt: '2026-09-10T00:00:00Z', updatedAt: '2026-09-10T00:00:00Z' }],
 };

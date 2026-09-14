@@ -2,9 +2,10 @@
 interface Props {
 	message?: string | null;
 	error?: string | null;
+	count?: string | null;
 }
 
-const { message, error } = Astro.props;
+const { message, error, count } = Astro.props;
 const messages: Record<string, string> = {
 	'intake-created': 'Source intake created.',
 	'intake-updated': 'Source intake updated.',
@@ -31,6 +32,10 @@ const messages: Record<string, string> = {
 	'image-approved': 'The image was approved and attached to the story.',
 	'image-rejected': 'The image was rejected. Its provenance remains in history.',
 	'image-regeneration-requested': 'Another image version was requested. Generate when ready; no paid request was made yet.',
+	'intake-archived': 'The unsuitable intake was archived without changing its suitability or provenance.',
+	'intake-restored': 'The intake was restored to the active queue.',
+	'candidate-archived': 'The rejected candidate was archived without changing its status or provenance.',
+	'candidate-restored': 'The candidate was restored to the active queue.',
 };
 const errors: Record<string, string> = {
 	'invalid-request': 'The request was not valid. Review the fields and try again.',
@@ -47,7 +52,15 @@ const errors: Record<string, string> = {
 	'image-provider-unavailable': 'The image provider did not complete the request. The story was not changed; retry manually when ready.',
 	'operation-failed': 'The editorial operation could not be completed.',
 };
+const safeCount = typeof count === 'string' && /^\d+$/.test(count) ? count : null;
+const messageText = message && messages[message]
+	? messages[message]
+	: message === 'intakes-bulk-archived' && safeCount !== null
+		? `${safeCount} unsuitable intake${safeCount === '1' ? '' : 's'} archived.`
+		: message === 'candidates-bulk-archived' && safeCount !== null
+			? `${safeCount} rejected candidate${safeCount === '1' ? '' : 's'} archived.`
+			: null;
 ---
 
-{message && messages[message] && <p class="editorial-alert editorial-alert--success" role="status">{messages[message]}</p>}
+{messageText && <p class="editorial-alert editorial-alert--success" role="status">{messageText}</p>}
 {error && errors[error] && <p class="editorial-alert editorial-alert--error" role="alert">{errors[error]}</p>}

@@ -1,0 +1,90 @@
+---
+import EditorialMessage from '../../components/EditorialMessage.astro';
+import { getEditorialRepository } from '../../data/runtime-editorial-repository';
+import EditorialLayout from '../../layouts/EditorialLayout.astro';
+
+const repository = getEditorialRepository();
+const [counts, intakes, candidates] = await Promise.all([
+	repository.getArchiveCounts(),
+	repository.listArchivedIntakes(100),
+	repository.listArchivedCandidates(100),
+]);
+const csrfToken = Astro.locals.csrfToken;
+const returnPath = '/editorial/history';
+---
+
+<EditorialLayout title="Editorial history">
+	<div class="editorial-page-header">
+		<div>
+			<h1>Editorial history</h1>
+			<p>Terminal queue records remain available with their source, model, generation, and audit provenance.</p>
+		</div>
+	</div>
+	<EditorialMessage
+		message={Astro.url.searchParams.get('message')}
+		error={Astro.url.searchParams.get('error')}
+		count={Astro.url.searchParams.get('count')}
+	/>
+
+	<section class="editorial-panel" aria-labelledby="bulk-intakes-heading">
+		<h2 id="bulk-intakes-heading">Archive unsuitable intakes</h2>
+		<p><strong>{counts.unsuitableIntakes}</strong> active UNSUITABLE intake{counts.unsuitableIntakes === 1 ? '' : 's'} currently eligible. The server will reject this action if that preview count changes.</p>
+		<form class="editorial-form" method="post" action="/editorial/actions/archive">
+			<input type="hidden" name="csrf_token" value={csrfToken} />
+			<input type="hidden" name="action" value="archive-all-unsuitable-intakes" />
+			<input type="hidden" name="expectedCount" value={counts.unsuitableIntakes} />
+			<input type="hidden" name="returnPath" value={returnPath} />
+			<label><span>Archive reason (optional)</span><textarea name="archiveReason" maxlength="2000"></textarea></label>
+			<button class="editorial-button editorial-button--danger" type="submit" disabled={counts.unsuitableIntakes === 0}>Archive all {counts.unsuitableIntakes} eligible intake{counts.unsuitableIntakes === 1 ? '' : 's'}</button>
+		</form>
+	</section>
+
+	<section class="editorial-panel" aria-labelledby="bulk-candidates-heading">
+		<h2 id="bulk-candidates-heading">Archive rejected candidates</h2>
+		<p><strong>{counts.rejectedCandidates}</strong> active REJECTED candidate{counts.rejectedCandidates === 1 ? '' : 's'} currently eligible. The server will reject this action if that preview count changes.</p>
+		<form class="editorial-form" method="post" action="/editorial/actions/archive">
+			<input type="hidden" name="csrf_token" value={csrfToken} />
+			<input type="hidden" name="action" value="archive-all-rejected-candidates" />
+			<input type="hidden" name="expectedCount" value={counts.rejectedCandidates} />
+			<input type="hidden" name="returnPath" value={returnPath} />
+			<label><span>Archive reason (optional)</span><textarea name="archiveReason" maxlength="2000"></textarea></label>
+			<button class="editorial-button editorial-button--danger" type="submit" disabled={counts.rejectedCandidates === 0}>Archive all {counts.rejectedCandidates} eligible candidate{counts.rejectedCandidates === 1 ? '' : 's'}</button>
+		</form>
+	</section>
+
+	<section class="editorial-panel" aria-labelledby="archived-intakes-heading">
+		<h2 id="archived-intakes-heading">Archived unsuitable intakes</h2>
+		{intakes.length ? (
+			<ul class="editorial-list">
+				{intakes.map((intake) => (
+					<li class="editorial-list-item">
+						<div>
+							<h3><a href={`/editorial/intakes/${intake.id}`}>{intake.title}</a></h3>
+							<p>UNSUITABLE · Archived {new Date(intake.archivedAt!).toLocaleString('en-US')} by {intake.archivedByEmail}</p>
+							<p>Created {new Date(intake.createdAt).toLocaleString('en-US')} by {intake.createdByEmail} · {intake.archiveReason ?? 'No archive reason supplied.'}</p>
+						</div>
+						<span class="editorial-badge">ARCHIVED</span>
+					</li>
+				))}
+			</ul>
+		) : <p class="editorial-empty">No unsuitable intakes are archived.</p>}
+	</section>
+
+	<section class="editorial-panel" aria-labelledby="archived-candidates-heading">
+		<h2 id="archived-candidates-heading">Archived rejected candidates</h2>
+		{candidates.length ? (
+			<ul class="editorial-list">
+				{candidates.map((candidate) => (
+					<li class="editorial-list-item">
+						<div>
+							<h3><a href={`/editorial/candidates/${candidate.id}`}>{candidate.proposedHeadline}</a></h3>
+							<p>REJECTED · {candidate.originKind === 'MODEL' ? 'Model-generated' : 'Editor-authored'} · Archived {new Date(candidate.archivedAt!).toLocaleString('en-US')} by {candidate.archivedByEmail}</p>
+							<p>From {candidate.sourceIntakeTitle} · {candidate.archiveReason ?? 'No archive reason supplied.'}</p>
+						</div>
+						<span class="editorial-badge">ARCHIVED</span>
+					</li>
+				))}
+			</ul>
+		) : <p class="editorial-empty">No rejected candidates are archived.</p>}
+	</section>
+</EditorialLayout>

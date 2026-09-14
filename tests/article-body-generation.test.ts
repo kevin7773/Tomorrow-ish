@@ -30,6 +30,9 @@ const intake: SourceIntake = {
 	updatedByEmail: identity.email,
 	createdAt: '2026-09-12T02:25:28.908Z',
 	updatedAt: '2026-09-12T02:26:26.812Z',
+	archivedAt: null,
+	archivedByEmail: null,
+	archiveReason: null,
 	references: [{
 		id: 'source-target', sourceIntakeId: 'intake-target', sourceTitle: 'Sheriff arrest report coverage',
 		sourceUrl: 'https://news.example.test/target-report', publisherName: 'Regional Newsroom',

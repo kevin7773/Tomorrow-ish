@@ -18,7 +18,9 @@ const bodyGenerationContext = await getGenerationRepository().findCandidateForBo
 const auditEntries = await repository.listAuditEntries('SATIRE_CANDIDATE', candidate.id);
 const csrfToken = Astro.locals.csrfToken;
 const returnPath = `/editorial/candidates/${candidate.id}`;
-const nextStatuses = CANDIDATE_STATUSES.filter((status) => canTransitionCandidate(candidate.status, status));
+const nextStatuses = candidate.archivedAt
+	? []
+	: CANDIDATE_STATUSES.filter((status) => canTransitionCandidate(candidate.status, status));
 const suggestedSlug = candidate.proposedHeadline
 	.toLowerCase()
 	.replace(/[^a-z0-9]+/g, '-')
@@ -50,7 +52,10 @@ const bodyGenerationSourceEligible = Boolean(
 			<h1>{candidate.proposedHeadline}</h1>
 			<p>Derived from <a href={`/editorial/intakes/${candidate.sourceIntakeId}`}>{candidate.sourceIntakeTitle}</a>.</p>
 		</div>
-		<span class:list={['editorial-badge', { 'editorial-badge--approved': candidate.status === 'APPROVED' }]}>{candidate.status}</span>
+		<div class="editorial-form__actions">
+			<span class:list={['editorial-badge', { 'editorial-badge--approved': candidate.status === 'APPROVED' }]}>{candidate.status}</span>
+			{candidate.archivedAt && <span class="editorial-badge">ARCHIVED</span>}
+		</div>
 	</div>
 	<EditorialMessage message={Astro.url.searchParams.get('message')} error={Astro.url.searchParams.get('error')} />
 	<section class="editorial-provenance" aria-label="Candidate provenance">
@@ -62,7 +67,21 @@ const bodyGenerationSourceEligible = Boolean(
 		{candidate.bodyGenerationRunId && candidate.bodyGenerationState !== 'PENDING' && <p><a href={`/editorial/model-runs/${candidate.bodyGenerationRunId}`}>Open article-body generation provenance</a></p>}
 	</section>
 
-	{candidate.convertedStoryId ? (
+	{candidate.archivedAt ? (
+		<section class="editorial-panel" aria-labelledby="archived-heading">
+			<h2 id="archived-heading">Archived candidate</h2>
+			<p class="editorial-alert">Archived {new Date(candidate.archivedAt).toLocaleString('en-US')} by {candidate.archivedByEmail}. Its editorial status remains {candidate.status}.</p>
+			<p>{candidate.archiveReason ?? 'No archive reason was supplied.'}</p>
+			<form class="editorial-form" method="post" action="/editorial/actions/archive">
+				<input type="hidden" name="csrf_token" value={csrfToken} />
+				<input type="hidden" name="action" value="restore-candidate" />
+				<input type="hidden" name="id" value={candidate.id} />
+				<input type="hidden" name="returnPath" value={returnPath} />
+				<label><span>Restore reason (optional)</span><textarea name="archiveReason" maxlength="2000"></textarea></label>
+				<button class="editorial-button" type="submit">Restore candidate</button>
+			</form>
+		</section>
+	) : candidate.convertedStoryId ? (
 		<div class="editorial-alert editorial-alert--success">
 			This approved candidate is immutable. <a href={`/editorial/stories/${candidate.convertedStoryId}`}>Open its draft story</a>.
 		</div>
@@ -142,6 +161,21 @@ const bodyGenerationSourceEligible = Boolean(
 						<label><span>Edition date</span><input type="date" name="editionDate" value={tomorrow.toISOString().slice(0, 10)} required /></label>
 						<label><span>Social excerpt</span><textarea name="socialExcerpt" maxlength="500" required>{candidate.proposedDeck}</textarea></label>
 						<button class="editorial-button" type="submit">Convert to DRAFT story</button>
+					</form>
+				</section>
+			)}
+
+			{candidate.status === 'REJECTED' && (
+				<section class="editorial-panel" aria-labelledby="archive-candidate-heading">
+					<h2 id="archive-candidate-heading">Archive rejected candidate</h2>
+					<p>Archiving removes this candidate from the active queue without changing its status, model provenance, or generation history.</p>
+					<form class="editorial-form" method="post" action="/editorial/actions/archive">
+						<input type="hidden" name="csrf_token" value={csrfToken} />
+						<input type="hidden" name="action" value="archive-rejected-candidate" />
+						<input type="hidden" name="id" value={candidate.id} />
+						<input type="hidden" name="returnPath" value={returnPath} />
+						<label><span>Archive reason (optional)</span><textarea name="archiveReason" maxlength="2000"></textarea></label>
+						<button class="editorial-button editorial-button--danger" type="submit">Archive candidate</button>
 					</form>
 				</section>
 			)}

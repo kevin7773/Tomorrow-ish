@@ -14,11 +14,14 @@ import type { PublicationStatus } from '../domain/publication-status';
 import type { StoryCategory } from '../domain/story';
 import type {
 	AddSourceReferenceRecord,
+	ArchiveRecord,
+	BulkArchiveRecord,
 	ConvertCandidateRecord,
 	CreateCandidateRecord,
 	CreateIntakeRecord,
 	EditorialRepository,
 	PublishApprovedStoryRecord,
+	RestoreRecord,
 	TransitionCandidateRecord,
 	TransitionStoryRecord,
 	UpdateCandidateRecord,
@@ -44,6 +47,9 @@ interface IntakeRow {
 	updated_by_email: string;
 	created_at: string;
 	updated_at: string;
+	archived_at: string | null;
+	archived_by_email: string | null;
+	archive_reason: string | null;
 }
 
 interface ReferenceRow {
@@ -84,6 +90,9 @@ interface CandidateRow {
 	origin_kind: 'MANUAL' | 'MODEL';
 	body_generation_state: 'NOT_REQUESTED' | 'PENDING' | 'SUCCEEDED' | 'FAILED';
 	body_generation_run_id: string | null;
+	archived_at: string | null;
+	archived_by_email: string | null;
+	archive_reason: string | null;
 }
 
 interface EditorialStoryRow {
@@ -142,7 +151,10 @@ const CANDIDATE_SELECT = `
 		candidate.satirical_mechanism,
 		candidate.origin_kind,
 		candidate.body_generation_state,
-		candidate.body_generation_run_id
+		candidate.body_generation_run_id,
+		candidate.archived_at,
+		candidate.archived_by_email,
+		candidate.archive_reason
 	FROM satire_candidates AS candidate
 	JOIN source_intakes AS intake ON intake.id = candidate.source_intake_id
 	JOIN categories AS category ON category.id = candidate.category_id
@@ -215,6 +227,9 @@ function mapIntake(row: IntakeRow, references: SourceReference[] = []): SourceIn
 		updatedByEmail: row.updated_by_email,
 		createdAt: row.created_at,
 		updatedAt: row.updated_at,
+		archivedAt: row.archived_at,
+		archivedByEmail: row.archived_by_email,
+		archiveReason: row.archive_reason,
 		references,
 	};
 }
@@ -247,6 +262,9 @@ function mapCandidate(row: CandidateRow): SatireCandidate {
 		originKind: row.origin_kind,
 		bodyGenerationState: row.body_generation_state,
 		bodyGenerationRunId: row.body_generation_run_id,
+		archivedAt: row.archived_at,
+		archivedByEmail: row.archived_by_email,
+		archiveReason: row.archive_reason,
 	};
 }
 
@@ -302,10 +320,12 @@ export class D1EditorialRepository implements EditorialRepository {
 		const row = await this.db
 			.prepare(`
 				SELECT
-					(SELECT COUNT(*) FROM source_intakes) AS intakes,
-					(SELECT COUNT(*) FROM satire_candidates WHERE status = 'REVIEW') AS candidates_in_review,
+					(SELECT COUNT(*) FROM source_intakes WHERE archived_at IS NULL) AS intakes,
+					(SELECT COUNT(*) FROM satire_candidates
+						WHERE status = 'REVIEW' AND archived_at IS NULL) AS candidates_in_review,
 					(SELECT COUNT(*) FROM satire_candidates AS candidate
 						WHERE candidate.status = 'APPROVED'
+						AND candidate.archived_at IS NULL
 						AND NOT EXISTS (
 							SELECT 1 FROM stories WHERE origin_candidate_id = candidate.id
 						)) AS approved_candidates,
@@ -326,6 +346,20 @@ export class D1EditorialRepository implements EditorialRepository {
 		};
 	}
 
+	async getArchiveCounts() {
+		const row = await this.db.prepare(`
+			SELECT
+				(SELECT COUNT(*) FROM source_intakes
+					WHERE satire_suitability = 'UNSUITABLE' AND archived_at IS NULL) AS unsuitable_intakes,
+				(SELECT COUNT(*) FROM satire_candidates
+					WHERE status = 'REJECTED' AND archived_at IS NULL) AS rejected_candidates
+		`).first<{ unsuitable_intakes: number; rejected_candidates: number }>();
+		return {
+			unsuitableIntakes: row?.unsuitable_intakes ?? 0,
+			rejectedCandidates: row?.rejected_candidates ?? 0,
+		};
+	}
+
 	async listCategories(): Promise<StoryCategory[]> {
 		const result = await this.db
 			.prepare('SELECT id, slug, name FROM categories ORDER BY name ASC')
@@ -341,7 +375,15 @@ export class D1EditorialRepository implements EditorialRepository {
 
 	async listIntakes(limit = 50): Promise<SourceIntake[]> {
 		const result = await this.db
-			.prepare('SELECT * FROM source_intakes ORDER BY updated_at DESC LIMIT ?')
+			.prepare('SELECT * FROM source_intakes WHERE archived_at IS NULL ORDER BY updated_at DESC LIMIT ?')
+			.bind(clampLimit(limit))
+			.all<IntakeRow>();
+		return result.results.map((row) => mapIntake(row));
+	}
+
+	async listArchivedIntakes(limit = 50): Promise<SourceIntake[]> {
+		const result = await this.db
+			.prepare('SELECT * FROM source_intakes WHERE archived_at IS NOT NULL ORDER BY archived_at DESC LIMIT ?')
 			.bind(clampLimit(limit))
 			.all<IntakeRow>();
 		return result.results.map((row) => mapIntake(row));
@@ -428,7 +470,7 @@ export class D1EditorialRepository implements EditorialRepository {
 						title = ?, neutral_brief = ?, significance_score = ?,
 						satire_potential_score = ?, satire_suitability = ?, editorial_notes = ?,
 						updated_by_email = ?, updated_at = ?
-					WHERE id = ?
+					WHERE id = ? AND archived_at IS NULL
 				`)
 				.bind(
 					record.title,
@@ -446,7 +488,8 @@ export class D1EditorialRepository implements EditorialRepository {
 					INSERT INTO editorial_audit_log
 						(id, actor_email, entity_type, entity_id, action, created_at)
 					SELECT ?, ?, 'SOURCE_INTAKE', ?, 'UPDATED', ?
-					WHERE EXISTS (SELECT 1 FROM source_intakes WHERE id = ? AND updated_at = ?)
+					WHERE EXISTS (SELECT 1 FROM source_intakes
+						WHERE id = ? AND updated_at = ? AND archived_at IS NULL)
 				`)
 				.bind(
 					record.auditId,
@@ -460,6 +503,57 @@ export class D1EditorialRepository implements EditorialRepository {
 		return results[0].meta.changes === 1;
 	}
 
+	async archiveUnsuitableIntake(record: ArchiveRecord): Promise<boolean> {
+		const results = await this.db.batch([
+			this.db.prepare(`INSERT INTO editorial_audit_log
+				(id, actor_email, entity_type, entity_id, action, reason, created_at)
+				SELECT ?, ?, 'SOURCE_INTAKE', ?, 'ARCHIVED', ?, ?
+				WHERE EXISTS (SELECT 1 FROM source_intakes
+					WHERE id = ? AND satire_suitability = 'UNSUITABLE' AND archived_at IS NULL)`)
+				.bind(record.auditId, record.actorEmail, record.id, record.reason, record.archivedAt, record.id),
+			this.db.prepare(`UPDATE source_intakes
+				SET archived_at = ?, archived_by_email = ?, archive_reason = ?
+				WHERE id = ? AND satire_suitability = 'UNSUITABLE' AND archived_at IS NULL`)
+				.bind(record.archivedAt, record.actorEmail, record.reason, record.id),
+		]);
+		return results[1].meta.changes === 1;
+	}
+
+	async restoreIntake(record: RestoreRecord): Promise<boolean> {
+		const results = await this.db.batch([
+			this.db.prepare(`INSERT INTO editorial_audit_log
+				(id, actor_email, entity_type, entity_id, action, reason, created_at)
+				SELECT ?, ?, 'SOURCE_INTAKE', ?, 'RESTORED', ?, ?
+				WHERE EXISTS (SELECT 1 FROM source_intakes WHERE id = ? AND archived_at IS NOT NULL)`)
+				.bind(record.auditId, record.actorEmail, record.id, record.reason, record.restoredAt, record.id),
+			this.db.prepare(`UPDATE source_intakes
+				SET archived_at = NULL, archived_by_email = NULL, archive_reason = NULL
+				WHERE id = ? AND archived_at IS NOT NULL`)
+				.bind(record.id),
+		]);
+		return results[1].meta.changes === 1;
+	}
+
+	async archiveAllUnsuitableIntakes(record: BulkArchiveRecord): Promise<number> {
+		const results = await this.db.batch([
+			this.db.prepare(`INSERT INTO editorial_audit_log
+				(id, actor_email, entity_type, entity_id, action, reason, created_at)
+				SELECT ? || ':' || id, ?, 'SOURCE_INTAKE', id, 'ARCHIVED', ?, ?
+				FROM source_intakes
+				WHERE satire_suitability = 'UNSUITABLE' AND archived_at IS NULL
+				AND (SELECT COUNT(*) FROM source_intakes
+					WHERE satire_suitability = 'UNSUITABLE' AND archived_at IS NULL) = ?`)
+				.bind(record.auditIdPrefix, record.actorEmail, record.reason, record.archivedAt, record.expectedCount),
+			this.db.prepare(`UPDATE source_intakes
+				SET archived_at = ?, archived_by_email = ?, archive_reason = ?
+				WHERE satire_suitability = 'UNSUITABLE' AND archived_at IS NULL
+				AND (SELECT COUNT(*) FROM source_intakes
+					WHERE satire_suitability = 'UNSUITABLE' AND archived_at IS NULL) = ?`)
+				.bind(record.archivedAt, record.actorEmail, record.reason, record.expectedCount),
+		]);
+		return results[1].meta.changes;
+	}
+
 	async addSourceReference(record: AddSourceReferenceRecord): Promise<boolean> {
 		const results = await this.db.batch([
 			this.db
@@ -469,7 +563,7 @@ export class D1EditorialRepository implements EditorialRepository {
 						source_tier, source_type, published_at, created_at, updated_at
 					)
 					SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-					WHERE EXISTS (SELECT 1 FROM source_intakes WHERE id = ?)
+					WHERE EXISTS (SELECT 1 FROM source_intakes WHERE id = ? AND archived_at IS NULL)
 				`)
 				.bind(
 					record.id,
@@ -504,6 +598,8 @@ export class D1EditorialRepository implements EditorialRepository {
 						source_title = ?, source_url = ?, publisher_name = ?, source_tier = ?,
 						source_type = ?, published_at = ?, updated_at = ?
 					WHERE id = ?
+					AND EXISTS (SELECT 1 FROM source_intakes
+						WHERE id = source_references.source_intake_id AND archived_at IS NULL)
 				`)
 				.bind(
 					record.sourceTitle,
@@ -520,7 +616,9 @@ export class D1EditorialRepository implements EditorialRepository {
 					INSERT INTO editorial_audit_log
 						(id, actor_email, entity_type, entity_id, action, created_at)
 					SELECT ?, ?, 'SOURCE_REFERENCE', ?, 'UPDATED', ?
-					WHERE EXISTS (SELECT 1 FROM source_references WHERE id = ? AND updated_at = ?)
+					WHERE EXISTS (SELECT 1 FROM source_references AS reference
+						JOIN source_intakes AS intake ON intake.id = reference.source_intake_id
+						WHERE reference.id = ? AND reference.updated_at = ? AND intake.archived_at IS NULL)
 				`)
 				.bind(
 					record.auditId,
@@ -536,7 +634,15 @@ export class D1EditorialRepository implements EditorialRepository {
 
 	async listCandidates(limit = 50): Promise<SatireCandidate[]> {
 		const result = await this.db
-			.prepare(`${CANDIDATE_SELECT} ORDER BY candidate.updated_at DESC LIMIT ?`)
+			.prepare(`${CANDIDATE_SELECT} WHERE candidate.archived_at IS NULL ORDER BY candidate.updated_at DESC LIMIT ?`)
+			.bind(clampLimit(limit))
+			.all<CandidateRow>();
+		return result.results.map(mapCandidate);
+	}
+
+	async listArchivedCandidates(limit = 50): Promise<SatireCandidate[]> {
+		const result = await this.db
+			.prepare(`${CANDIDATE_SELECT} WHERE candidate.archived_at IS NOT NULL ORDER BY candidate.archived_at DESC LIMIT ?`)
 			.bind(clampLimit(limit))
 			.all<CandidateRow>();
 		return result.results.map(mapCandidate);
@@ -558,7 +664,8 @@ export class D1EditorialRepository implements EditorialRepository {
 						id, source_intake_id, proposed_headline, proposed_deck, draft_body_markdown,
 						category_id, editorial_notes, status, created_by_email, updated_by_email,
 						created_at, updated_at
-					) VALUES (?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?)
+					) SELECT ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?
+					WHERE EXISTS (SELECT 1 FROM source_intakes WHERE id = ? AND archived_at IS NULL)
 				`)
 				.bind(
 					record.id,
@@ -572,14 +679,16 @@ export class D1EditorialRepository implements EditorialRepository {
 					record.actorEmail,
 					record.createdAt,
 					record.createdAt,
+					record.sourceIntakeId,
 				),
 			this.db
 				.prepare(`
 					INSERT INTO editorial_audit_log
 						(id, actor_email, entity_type, entity_id, action, to_status, created_at)
-					VALUES (?, ?, 'SATIRE_CANDIDATE', ?, 'CREATED', 'DRAFT', ?)
+					SELECT ?, ?, 'SATIRE_CANDIDATE', ?, 'CREATED', 'DRAFT', ?
+					WHERE EXISTS (SELECT 1 FROM satire_candidates WHERE id = ?)
 				`)
-				.bind(record.auditId, record.actorEmail, record.id, record.createdAt),
+				.bind(record.auditId, record.actorEmail, record.id, record.createdAt, record.id),
 		]);
 		return results[0].meta.changes === 1;
 	}
@@ -591,7 +700,7 @@ export class D1EditorialRepository implements EditorialRepository {
 					UPDATE satire_candidates SET
 						proposed_headline = ?, proposed_deck = ?, draft_body_markdown = ?,
 						category_id = ?, editorial_notes = ?, updated_by_email = ?, updated_at = ?
-					WHERE id = ?
+					WHERE id = ? AND archived_at IS NULL
 					AND NOT EXISTS (SELECT 1 FROM stories WHERE origin_candidate_id = ?)
 				`)
 				.bind(
@@ -610,7 +719,8 @@ export class D1EditorialRepository implements EditorialRepository {
 					INSERT INTO editorial_audit_log
 						(id, actor_email, entity_type, entity_id, action, created_at)
 					SELECT ?, ?, 'SATIRE_CANDIDATE', ?, 'UPDATED', ?
-					WHERE EXISTS (SELECT 1 FROM satire_candidates WHERE id = ? AND updated_at = ?)
+					WHERE EXISTS (SELECT 1 FROM satire_candidates
+						WHERE id = ? AND updated_at = ? AND archived_at IS NULL)
 				`)
 				.bind(
 					record.auditId,
@@ -630,7 +740,7 @@ export class D1EditorialRepository implements EditorialRepository {
 				.prepare(`
 					UPDATE satire_candidates
 					SET status = ?, updated_by_email = ?, updated_at = ?
-					WHERE id = ? AND status = ?
+					WHERE id = ? AND status = ? AND archived_at IS NULL
 					AND NOT EXISTS (SELECT 1 FROM stories WHERE origin_candidate_id = ?)
 				`)
 				.bind(
@@ -649,7 +759,8 @@ export class D1EditorialRepository implements EditorialRepository {
 					)
 					SELECT ?, ?, 'SATIRE_CANDIDATE', ?, 'STATUS_CHANGED', ?, ?, ?
 					WHERE EXISTS (
-						SELECT 1 FROM satire_candidates WHERE id = ? AND status = ? AND updated_at = ?
+						SELECT 1 FROM satire_candidates
+						WHERE id = ? AND status = ? AND updated_at = ? AND archived_at IS NULL
 					)
 				`)
 				.bind(
@@ -667,6 +778,57 @@ export class D1EditorialRepository implements EditorialRepository {
 		return results[0].meta.changes === 1;
 	}
 
+	async archiveRejectedCandidate(record: ArchiveRecord): Promise<boolean> {
+		const results = await this.db.batch([
+			this.db.prepare(`INSERT INTO editorial_audit_log
+				(id, actor_email, entity_type, entity_id, action, reason, created_at)
+				SELECT ?, ?, 'SATIRE_CANDIDATE', ?, 'ARCHIVED', ?, ?
+				WHERE EXISTS (SELECT 1 FROM satire_candidates
+					WHERE id = ? AND status = 'REJECTED' AND archived_at IS NULL)`)
+				.bind(record.auditId, record.actorEmail, record.id, record.reason, record.archivedAt, record.id),
+			this.db.prepare(`UPDATE satire_candidates
+				SET archived_at = ?, archived_by_email = ?, archive_reason = ?
+				WHERE id = ? AND status = 'REJECTED' AND archived_at IS NULL`)
+				.bind(record.archivedAt, record.actorEmail, record.reason, record.id),
+		]);
+		return results[1].meta.changes === 1;
+	}
+
+	async restoreCandidate(record: RestoreRecord): Promise<boolean> {
+		const results = await this.db.batch([
+			this.db.prepare(`INSERT INTO editorial_audit_log
+				(id, actor_email, entity_type, entity_id, action, reason, created_at)
+				SELECT ?, ?, 'SATIRE_CANDIDATE', ?, 'RESTORED', ?, ?
+				WHERE EXISTS (SELECT 1 FROM satire_candidates WHERE id = ? AND archived_at IS NOT NULL)`)
+				.bind(record.auditId, record.actorEmail, record.id, record.reason, record.restoredAt, record.id),
+			this.db.prepare(`UPDATE satire_candidates
+				SET archived_at = NULL, archived_by_email = NULL, archive_reason = NULL
+				WHERE id = ? AND archived_at IS NOT NULL`)
+				.bind(record.id),
+		]);
+		return results[1].meta.changes === 1;
+	}
+
+	async archiveAllRejectedCandidates(record: BulkArchiveRecord): Promise<number> {
+		const results = await this.db.batch([
+			this.db.prepare(`INSERT INTO editorial_audit_log
+				(id, actor_email, entity_type, entity_id, action, reason, created_at)
+				SELECT ? || ':' || id, ?, 'SATIRE_CANDIDATE', id, 'ARCHIVED', ?, ?
+				FROM satire_candidates
+				WHERE status = 'REJECTED' AND archived_at IS NULL
+				AND (SELECT COUNT(*) FROM satire_candidates
+					WHERE status = 'REJECTED' AND archived_at IS NULL) = ?`)
+				.bind(record.auditIdPrefix, record.actorEmail, record.reason, record.archivedAt, record.expectedCount),
+			this.db.prepare(`UPDATE satire_candidates
+				SET archived_at = ?, archived_by_email = ?, archive_reason = ?
+				WHERE status = 'REJECTED' AND archived_at IS NULL
+				AND (SELECT COUNT(*) FROM satire_candidates
+					WHERE status = 'REJECTED' AND archived_at IS NULL) = ?`)
+				.bind(record.archivedAt, record.actorEmail, record.reason, record.expectedCount),
+		]);
+		return results[1].meta.changes;
+	}
+
 	async convertApprovedCandidateToDraft(record: ConvertCandidateRecord): Promise<boolean> {
 		const results = await this.db.batch([
 			this.db
@@ -682,6 +844,7 @@ export class D1EditorialRepository implements EditorialRepository {
 						'DRAFT', ?, NULL, '[]', ?, ?, candidate.id
 					FROM satire_candidates AS candidate
 					WHERE candidate.id = ? AND candidate.status = 'APPROVED'
+					AND candidate.archived_at IS NULL
 					AND NOT EXISTS (SELECT 1 FROM stories WHERE origin_candidate_id = candidate.id)
 				`)
 				.bind(

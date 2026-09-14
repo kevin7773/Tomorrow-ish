@@ -1,6 +1,7 @@
 import type {
 	AuditEntry,
 	CandidateStatus,
+	EditorialArchiveCounts,
 	EditorialDashboardCounts,
 	EditorialStory,
 	SatireCandidate,
@@ -106,6 +107,30 @@ export interface TransitionCandidateRecord {
 	auditId: string;
 }
 
+export interface ArchiveRecord {
+	id: string;
+	actorEmail: string;
+	archivedAt: string;
+	reason: string | null;
+	auditId: string;
+}
+
+export interface RestoreRecord {
+	id: string;
+	actorEmail: string;
+	restoredAt: string;
+	reason: string | null;
+	auditId: string;
+}
+
+export interface BulkArchiveRecord {
+	actorEmail: string;
+	archivedAt: string;
+	reason: string | null;
+	auditIdPrefix: string;
+	expectedCount: number;
+}
+
 export interface ConvertCandidateRecord {
 	candidateId: string;
 	storyId: string;
@@ -150,19 +175,28 @@ export interface PublishApprovedStoryRecord {
 
 export interface EditorialRepository {
 	getDashboardCounts(): Promise<EditorialDashboardCounts>;
+	getArchiveCounts(): Promise<EditorialArchiveCounts>;
 	listCategories(): Promise<StoryCategory[]>;
 	categoryExists(id: string): Promise<boolean>;
 	listIntakes(limit?: number): Promise<SourceIntake[]>;
+	listArchivedIntakes(limit?: number): Promise<SourceIntake[]>;
 	findIntakeById(id: string): Promise<SourceIntake | null>;
 	createIntake(record: CreateIntakeRecord): Promise<void>;
 	updateIntake(record: UpdateIntakeRecord): Promise<boolean>;
+	archiveUnsuitableIntake(record: ArchiveRecord): Promise<boolean>;
+	restoreIntake(record: RestoreRecord): Promise<boolean>;
+	archiveAllUnsuitableIntakes(record: BulkArchiveRecord): Promise<number>;
 	addSourceReference(record: AddSourceReferenceRecord): Promise<boolean>;
 	updateSourceReference(record: UpdateSourceReferenceRecord): Promise<boolean>;
 	listCandidates(limit?: number): Promise<SatireCandidate[]>;
+	listArchivedCandidates(limit?: number): Promise<SatireCandidate[]>;
 	findCandidateById(id: string): Promise<SatireCandidate | null>;
 	createCandidate(record: CreateCandidateRecord): Promise<boolean>;
 	updateCandidate(record: UpdateCandidateRecord): Promise<boolean>;
 	transitionCandidate(record: TransitionCandidateRecord): Promise<boolean>;
+	archiveRejectedCandidate(record: ArchiveRecord): Promise<boolean>;
+	restoreCandidate(record: RestoreRecord): Promise<boolean>;
+	archiveAllRejectedCandidates(record: BulkArchiveRecord): Promise<number>;
 	convertApprovedCandidateToDraft(record: ConvertCandidateRecord): Promise<boolean>;
 	listEditorialStories(limit?: number): Promise<EditorialStory[]>;
 	findEditorialStoryById(id: string): Promise<EditorialStory | null>;

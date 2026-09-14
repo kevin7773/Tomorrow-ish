@@ -10,7 +10,10 @@ const id = Astro.params.id ?? '';
 const repository = getEditorialRepository();
 const intake = await repository.findIntakeById(id);
 if (!intake) return Astro.redirect('/editorial/intakes?error=not-found');
-const normalizedVersions = await getGenerationRepository().listNormalizedVersions(intake.id);
+const [normalizedVersions, auditEntries] = await Promise.all([
+	getGenerationRepository().listNormalizedVersions(intake.id),
+	repository.listAuditEntries('SOURCE_INTAKE', intake.id),
+]);
 const csrfToken = Astro.locals.csrfToken;
 const returnPath = `/editorial/intakes/${intake.id}`;
 ---
@@ -22,15 +25,36 @@ const returnPath = `/editorial/intakes/${intake.id}`;
 			<h1>{intake.title}</h1>
 			<p>Updated by {intake.updatedByEmail} on {new Date(intake.updatedAt).toLocaleString('en-US')}.</p>
 		</div>
-		<div class="editorial-form__actions"><a class="editorial-button" href={`/editorial/intakes/${intake.id}/normalize`}>Normalize event</a><a class="editorial-button editorial-button--quiet" href={`/editorial/intakes/${intake.id}/candidates/new`}>Draft manually</a></div>
+		{intake.archivedAt ? (
+			<a class="editorial-button editorial-button--quiet" href="/editorial/history">Back to history</a>
+		) : (
+			<div class="editorial-form__actions"><a class="editorial-button" href={`/editorial/intakes/${intake.id}/normalize`}>Normalize event</a><a class="editorial-button editorial-button--quiet" href={`/editorial/intakes/${intake.id}/candidates/new`}>Draft manually</a></div>
+		)}
 	</div>
 	<EditorialMessage message={Astro.url.searchParams.get('message')} error={Astro.url.searchParams.get('error')} />
+	{intake.archivedAt && (
+		<section class="editorial-panel" aria-labelledby="archived-heading">
+			<h2 id="archived-heading">Archived intake</h2>
+			<p class="editorial-alert">Archived {new Date(intake.archivedAt).toLocaleString('en-US')} by {intake.archivedByEmail}. Its suitability remains {intake.satireSuitability}.</p>
+			<p>{intake.archiveReason ?? 'No archive reason was supplied.'}</p>
+			<form class="editorial-form" method="post" action="/editorial/actions/archive">
+				<input type="hidden" name="csrf_token" value={csrfToken} />
+				<input type="hidden" name="action" value="restore-intake" />
+				<input type="hidden" name="id" value={intake.id} />
+				<input type="hidden" name="returnPath" value={returnPath} />
+				<label><span>Restore reason (optional)</span><textarea name="archiveReason" maxlength="2000"></textarea></label>
+				<button class="editorial-button" type="submit">Restore intake</button>
+			</form>
+		</section>
+	)}
 
 	<section class="editorial-panel" aria-labelledby="normalization-heading">
 		<h2 id="normalization-heading">Normalized-event history</h2>
-		{normalizedVersions.length === 0 ? <p class="editorial-empty">No normalization proposal exists yet.</p> : <ul class="editorial-list">{normalizedVersions.map((version) => <li class="editorial-list-item"><div><h3><a href={`/editorial/intakes/${intake.id}/normalize?version=${version.id}`}>Version {version.versionNumber}: {version.eventStatement}</a></h3><p>{version.origin} · {displaySuitability(version.proposedSuitability)} · {version.createdByEmail}</p></div><span class:list={['editorial-badge', { 'editorial-badge--approved': version.reviewState === 'ACCEPTED' }]}>{version.reviewState}</span></li>)}</ul>}
+		{normalizedVersions.length === 0 ? <p class="editorial-empty">No normalization proposal exists yet.</p> : <ul class="editorial-list">{normalizedVersions.map((version) => <li class="editorial-list-item"><div><h3>{intake.archivedAt ? `Version ${version.versionNumber}: ${version.eventStatement}` : <a href={`/editorial/intakes/${intake.id}/normalize?version=${version.id}`}>Version {version.versionNumber}: {version.eventStatement}</a>}</h3><p>{version.origin} · {displaySuitability(version.proposedSuitability)} · {version.createdByEmail}</p></div><span class:list={['editorial-badge', { 'editorial-badge--approved': version.reviewState === 'ACCEPTED' }]}>{version.reviewState}</span></li>)}</ul>}
 	</section>
 
+	{!intake.archivedAt && (
+	<>
 	<form class="editorial-form editorial-panel" method="post" action="/editorial/actions/intakes">
 		<input type="hidden" name="csrf_token" value={csrfToken} />
 		<input type="hidden" name="action" value="update" />
@@ -89,5 +113,27 @@ const returnPath = `/editorial/intakes/${intake.id}`;
 			<label><span>Source publication time (optional)</span><input type="datetime-local" name="publishedAt" /></label>
 			<button class="editorial-button" type="submit">Add source</button>
 		</form>
+	</section>
+
+	{intake.satireSuitability === 'UNSUITABLE' && (
+		<section class="editorial-panel" aria-labelledby="archive-intake-heading">
+			<h2 id="archive-intake-heading">Archive unsuitable intake</h2>
+			<p>Archiving removes this intake from the active queue without changing its suitability, provenance, or audit history.</p>
+			<form class="editorial-form" method="post" action="/editorial/actions/archive">
+				<input type="hidden" name="csrf_token" value={csrfToken} />
+				<input type="hidden" name="action" value="archive-unsuitable-intake" />
+				<input type="hidden" name="id" value={intake.id} />
+				<input type="hidden" name="returnPath" value={returnPath} />
+				<label><span>Archive reason (optional)</span><textarea name="archiveReason" maxlength="2000"></textarea></label>
+				<button class="editorial-button editorial-button--danger" type="submit">Archive intake</button>
+			</form>
+		</section>
+	)}
+	</>
+	)}
+
+	<section class="editorial-panel" aria-labelledby="audit-heading">
+		<h2 id="audit-heading">Audit history</h2>
+		<table class="editorial-audit"><thead><tr><th>Time</th><th>Action</th><th>Actor</th><th>State</th><th>Reason</th></tr></thead><tbody>{auditEntries.map((entry) => <tr><td>{new Date(entry.createdAt).toLocaleString('en-US')}</td><td>{entry.action}</td><td>{entry.actorEmail}</td><td>{entry.fromStatus && entry.toStatus ? `${entry.fromStatus} → ${entry.toStatus}` : entry.toStatus ?? '—'}</td><td>{entry.reason ?? '—'}</td></tr>)}</tbody></table>
 	</section>
 </EditorialLayout>

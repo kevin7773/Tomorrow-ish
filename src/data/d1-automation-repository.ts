@@ -248,6 +248,8 @@ export class D1AutomationRepository implements AutomationRepository {
 
 	async listGenerationReadySources(limit: number): Promise<AutomationSource[]> {
 		const rows = await this.db.prepare(`SELECT source.* FROM automation_sources AS source
+			JOIN source_intakes AS intake
+				ON intake.id = source.source_intake_id AND intake.archived_at IS NULL
 			JOIN normalized_event_versions AS version
 				ON version.source_intake_id = source.source_intake_id
 				AND version.review_state = 'ACCEPTED'

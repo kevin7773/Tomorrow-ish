@@ -63,6 +63,9 @@ export interface SourceIntake {
 	updatedByEmail: string;
 	createdAt: string;
 	updatedAt: string;
+	archivedAt: string | null;
+	archivedByEmail: string | null;
+	archiveReason: string | null;
 	references: SourceReference[];
 }
 
@@ -89,6 +92,9 @@ export interface SatireCandidate {
 	originKind: 'MANUAL' | 'MODEL';
 	bodyGenerationState: 'NOT_REQUESTED' | 'PENDING' | 'SUCCEEDED' | 'FAILED';
 	bodyGenerationRunId: string | null;
+	archivedAt: string | null;
+	archivedByEmail: string | null;
+	archiveReason: string | null;
 }
 
 export interface EditorialStory {
@@ -113,6 +119,11 @@ export interface EditorialDashboardCounts {
 	candidatesInReview: number;
 	approvedCandidates: number;
 	storiesAwaitingPublication: number;
+}
+
+export interface EditorialArchiveCounts {
+	unsuitableIntakes: number;
+	rejectedCandidates: number;
 }
 
 export interface AuditEntry {

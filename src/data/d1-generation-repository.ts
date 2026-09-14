@@ -28,6 +28,7 @@ interface IntakeRow {
 	suitability_reason: string; guardrail_flags_json: string; assessment_reviewed_by_email: string | null;
 	assessment_reviewed_at: string | null; accepted_model_run_id: string | null;
 	created_by_email: string; updated_by_email: string; created_at: string; updated_at: string;
+	archived_at: string | null; archived_by_email: string | null; archive_reason: string | null;
 }
 interface ReferenceRow {
 	id: string; source_intake_id: string; source_title: string; source_url: string;
@@ -96,7 +97,9 @@ function mapIntake(row: IntakeRow, references: SourceReference[]): SourceIntake 
 		assessmentReviewedByEmail: row.assessment_reviewed_by_email,
 		assessmentReviewedAt: row.assessment_reviewed_at, acceptedModelRunId: row.accepted_model_run_id,
 		createdByEmail: row.created_by_email, updatedByEmail: row.updated_by_email,
-		createdAt: row.created_at, updatedAt: row.updated_at, references };
+		createdAt: row.created_at, updatedAt: row.updated_at,
+		archivedAt: row.archived_at, archivedByEmail: row.archived_by_email,
+		archiveReason: row.archive_reason, references };
 }
 
 function mapRun(row: ModelRunRow): ModelRun {
@@ -154,7 +157,7 @@ export class D1GenerationRepository implements GenerationRepository {
 	constructor(private readonly db: D1Database) {}
 
 	async findIntakeForGeneration(id: string): Promise<SourceIntake | null> {
-		const row = await this.db.prepare('SELECT * FROM source_intakes WHERE id = ? LIMIT 1').bind(id).first<IntakeRow>();
+		const row = await this.db.prepare('SELECT * FROM source_intakes WHERE id = ? AND archived_at IS NULL LIMIT 1').bind(id).first<IntakeRow>();
 		if (!row) return null;
 		const references = await this.db.prepare('SELECT * FROM source_references WHERE source_intake_id = ? ORDER BY created_at').bind(id).all<ReferenceRow>();
 		return mapIntake(row, references.results.map(mapReference));

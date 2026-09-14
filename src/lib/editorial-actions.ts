@@ -25,9 +25,15 @@ export function safeReturnPath(value: FormDataEntryValue | null, fallback: strin
 	return value;
 }
 
-export function redirectWithResult(path: string, key: 'message' | 'error', value: string): Response {
+export function redirectWithResult(
+	path: string,
+	key: 'message' | 'error',
+	value: string,
+	extra: Record<string, string> = {},
+): Response {
 	const url = new URL(path, 'https://tomorrow-ish.news');
 	url.searchParams.set(key, value);
+	for (const [name, item] of Object.entries(extra)) url.searchParams.set(name, item);
 	return new Response(null, {
 		status: 303,
 		headers: { Location: `${url.pathname}${url.search}` },

@@ -36,6 +36,21 @@ function identityEmail(identity: EditorialIdentity | null | undefined): string {
 	return identity.email.toLowerCase();
 }
 
+function archiveReason(value: unknown): string | null {
+	return optionalText(value, 'Archive reason', 2_000) || null;
+}
+
+function expectedArchiveCount(value: unknown): number {
+	if (typeof value !== 'string' || !/^\d+$/.test(value)) {
+		throw new EditorialValidationError('Expected archive count is invalid.');
+	}
+	const count = Number(value);
+	if (!Number.isSafeInteger(count)) {
+		throw new EditorialValidationError('Expected archive count is invalid.');
+	}
+	return count;
+}
+
 export class EditorialService {
 	private readonly now: () => string;
 	private readonly createId: () => string;
@@ -108,6 +123,57 @@ export class EditorialService {
 			auditId: this.createId(),
 		});
 		if (!updated) throw new EditorialValidationError('The intake was not found.', 'not-found');
+	}
+
+	async archiveUnsuitableIntake(identity: EditorialIdentity, input: Record<string, unknown>): Promise<void> {
+		const id = requiredText(input.id, 'Intake ID', 100);
+		const intake = await this.repository.findIntakeById(id);
+		if (!intake) throw new EditorialValidationError('The intake was not found.', 'not-found');
+		if (intake.archivedAt) throw new EditorialValidationError('The intake is already archived.', 'conflict');
+		if (intake.satireSuitability !== 'UNSUITABLE') {
+			throw new EditorialValidationError('Only an unsuitable intake can be archived.');
+		}
+		const changed = await this.repository.archiveUnsuitableIntake({
+			id,
+			actorEmail: identityEmail(identity),
+			archivedAt: this.now(),
+			reason: archiveReason(input.archiveReason),
+			auditId: this.createId(),
+		});
+		if (!changed) throw new EditorialValidationError('The intake changed; reload and retry.', 'conflict');
+	}
+
+	async restoreIntake(identity: EditorialIdentity, input: Record<string, unknown>): Promise<void> {
+		const id = requiredText(input.id, 'Intake ID', 100);
+		const intake = await this.repository.findIntakeById(id);
+		if (!intake) throw new EditorialValidationError('The intake was not found.', 'not-found');
+		if (!intake.archivedAt) throw new EditorialValidationError('The intake is not archived.', 'conflict');
+		const changed = await this.repository.restoreIntake({
+			id,
+			actorEmail: identityEmail(identity),
+			restoredAt: this.now(),
+			reason: archiveReason(input.archiveReason),
+			auditId: this.createId(),
+		});
+		if (!changed) throw new EditorialValidationError('The intake changed; reload and retry.', 'conflict');
+	}
+
+	async archiveAllUnsuitableIntakes(identity: EditorialIdentity, input: Record<string, unknown>): Promise<number> {
+		const actorEmail = identityEmail(identity);
+		const expectedCount = expectedArchiveCount(input.expectedCount);
+		const counts = await this.repository.getArchiveCounts();
+		if (counts.unsuitableIntakes !== expectedCount) {
+			throw new EditorialValidationError('The archive preview is stale.', 'conflict');
+		}
+		const affected = await this.repository.archiveAllUnsuitableIntakes({
+			actorEmail,
+			archivedAt: this.now(),
+			reason: archiveReason(input.archiveReason),
+			auditIdPrefix: this.createId(),
+			expectedCount,
+		});
+		if (affected !== expectedCount) throw new EditorialValidationError('The archive preview is stale.', 'conflict');
+		return affected;
 	}
 
 	async addSourceReference(
@@ -225,6 +291,7 @@ export class EditorialService {
 		if (!isCandidateStatus(to)) throw new EditorialValidationError('Candidate status is invalid.');
 		const candidate = await this.repository.findCandidateById(id);
 		if (!candidate) throw new EditorialValidationError('The candidate was not found.', 'not-found');
+		if (candidate.archivedAt) throw new EditorialValidationError('Restore the candidate before changing status.', 'conflict');
 		if (candidate.convertedStoryId) {
 			throw new EditorialValidationError('A converted candidate is immutable.');
 		}
@@ -245,6 +312,57 @@ export class EditorialService {
 			auditId: this.createId(),
 		});
 		if (!changed) throw new EditorialValidationError('The candidate changed; reload and retry.');
+	}
+
+	async archiveRejectedCandidate(identity: EditorialIdentity, input: Record<string, unknown>): Promise<void> {
+		const id = requiredText(input.id, 'Candidate ID', 100);
+		const candidate = await this.repository.findCandidateById(id);
+		if (!candidate) throw new EditorialValidationError('The candidate was not found.', 'not-found');
+		if (candidate.archivedAt) throw new EditorialValidationError('The candidate is already archived.', 'conflict');
+		if (candidate.status !== 'REJECTED') {
+			throw new EditorialValidationError('Only a rejected candidate can be archived.');
+		}
+		const changed = await this.repository.archiveRejectedCandidate({
+			id,
+			actorEmail: identityEmail(identity),
+			archivedAt: this.now(),
+			reason: archiveReason(input.archiveReason),
+			auditId: this.createId(),
+		});
+		if (!changed) throw new EditorialValidationError('The candidate changed; reload and retry.', 'conflict');
+	}
+
+	async restoreCandidate(identity: EditorialIdentity, input: Record<string, unknown>): Promise<void> {
+		const id = requiredText(input.id, 'Candidate ID', 100);
+		const candidate = await this.repository.findCandidateById(id);
+		if (!candidate) throw new EditorialValidationError('The candidate was not found.', 'not-found');
+		if (!candidate.archivedAt) throw new EditorialValidationError('The candidate is not archived.', 'conflict');
+		const changed = await this.repository.restoreCandidate({
+			id,
+			actorEmail: identityEmail(identity),
+			restoredAt: this.now(),
+			reason: archiveReason(input.archiveReason),
+			auditId: this.createId(),
+		});
+		if (!changed) throw new EditorialValidationError('The candidate changed; reload and retry.', 'conflict');
+	}
+
+	async archiveAllRejectedCandidates(identity: EditorialIdentity, input: Record<string, unknown>): Promise<number> {
+		const actorEmail = identityEmail(identity);
+		const expectedCount = expectedArchiveCount(input.expectedCount);
+		const counts = await this.repository.getArchiveCounts();
+		if (counts.rejectedCandidates !== expectedCount) {
+			throw new EditorialValidationError('The archive preview is stale.', 'conflict');
+		}
+		const affected = await this.repository.archiveAllRejectedCandidates({
+			actorEmail,
+			archivedAt: this.now(),
+			reason: archiveReason(input.archiveReason),
+			auditIdPrefix: this.createId(),
+			expectedCount,
+		});
+		if (affected !== expectedCount) throw new EditorialValidationError('The archive preview is stale.', 'conflict');
+		return affected;
 	}
 
 	async convertApprovedCandidateToDraft(

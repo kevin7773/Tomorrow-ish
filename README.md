@@ -137,6 +137,8 @@ Migration `0006_add_editorial_categories.sql` adds Sports (`sports`), Weather (`
 
 Migration `0012_governed_intake_automation.sql` adds the automation source registry plus run/item observability. It does not enable automation or a schedule and must be applied through the same separately reviewed production migration process before either is activated.
 
+Migration `0013_editorial_queue_archiving.sql` adds orthogonal soft-archive metadata for terminal editorial intakes and candidates. It does not alter story publication states, delete provenance, or change automation dedupe. Review the [editorial queue archiving contract](./docs/editorial-queue-archiving.md) and apply the migration separately before deploying code that reads the new columns.
+
 When configured, connect the existing GitHub repository to **Cloudflare Workers Builds**:
 
 - Use `main` as the production branch.
