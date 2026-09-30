@@ -7,8 +7,9 @@ import { D1EditorialReviewReminderRepository } from '../src/data/d1-editorial-re
 import { D1EditorialWorkflowRepository } from '../src/data/d1-editorial-workflow-repository';
 import type { ReviewReminderRepository } from '../src/data/editorial-review-reminder-repository';
 import type { ClaimedReviewReminder, EditorialReminderStage, ReviewReminderBatch } from '../src/domain/editorial-review-reminder';
-import { ReviewNotificationError, type ReviewNotification, type ReviewNotifier } from '../src/notifications/review-notifier';
+import { InternalReviewNotifier, ReviewNotificationError, type ReviewNotification, type ReviewNotifier } from '../src/notifications/review-notifier';
 import { EditorialReviewReminderService } from '../src/services/editorial-review-reminder-service';
+import type { ReviewNotificationReceiverService } from '../src/services/review-notification-receiver-service';
 
 const START = new Date('2026-09-27T12:00:00.000Z');
 const execute = Symbol('execute');
@@ -156,11 +157,10 @@ describe('two-phase editorial reminders', () => {
 			complete: vi.fn(async (claim) => { completed.push(claim.batchId); return true; }),
 			releaseFailed: vi.fn(async (claim) => { released.push(claim.batchId); }),
 		};
-		const notifier: ReviewNotifier = {
-			send: vi.fn(async (notification) => {
-				if (notification.batchId === 'batch-fails') throw new ReviewNotificationError('NETWORK');
-			}),
+		const receiver: Pick<ReviewNotificationReceiverService, 'receive'> = {
+			receive: vi.fn(async (notification) => notification.batchId === 'batch-fails' ? 'delivery-failed' : 'accepted'),
 		};
+		const notifier = new InternalReviewNotifier(receiver, 'https://example.test');
 		const service = new EditorialReviewReminderService(repository, notifier, null, {
 			now: () => START,
 			createId: (() => { let id = 0; return () => `id-${++id}`; })(),
@@ -169,7 +169,7 @@ describe('two-phase editorial reminders', () => {
 		expect(await service.process()).toEqual({ resolved: 0, sent: 1, failed: 1 });
 		expect(released).toEqual(['batch-fails']);
 		expect(completed).toEqual(['batch-succeeds']);
-		expect(notifier.send).toHaveBeenCalledTimes(2);
+		expect(receiver.receive).toHaveBeenCalledTimes(2);
 	});
 
 	it('persists claims and sent state in D1 across service restarts', async () => {
@@ -202,5 +202,8 @@ describe('two-phase editorial reminders', () => {
 			expect(source).not.toContain('approveLatestGenerated');
 			expect(source).not.toContain('rejectFinal');
 		}
+		expect(runtime).toContain('InternalReviewNotifier');
+		expect(runtime).not.toContain('WebhookReviewNotifier');
+		expect(runtime).not.toContain('fetch(');
 	});
 });

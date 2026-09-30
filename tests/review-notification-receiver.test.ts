@@ -8,6 +8,7 @@ import {
 } from '../src/data/d1-review-notification-repository';
 import type { EditorialNotificationDeliveryPort } from '../src/data/review-notification-repository';
 import { handleReviewNotificationRequest } from '../src/notifications/review-notification-endpoint';
+import { InternalReviewNotifier, ReviewNotificationError } from '../src/notifications/review-notifier';
 import { ReviewNotificationReceiverService } from '../src/services/review-notification-receiver-service';
 
 const NOW = '2026-09-30T12:00:00.000Z';
@@ -92,6 +93,43 @@ describe('internal review notification receiver', () => {
 		expect(await duplicate.json()).toEqual({ state: 'duplicate' });
 		expect(sqlite.prepare('SELECT COUNT(*) AS count FROM editorial_notifications').get()).toEqual({ count: 1 });
 		expect(sqlite.prepare('SELECT attempt_count FROM review_notification_receipts').get()).toEqual({ attempt_count: 1 });
+		sqlite.close();
+	});
+
+	it('uses the same validated delivery service in-process without a network fetch', async () => {
+		const sqlite = database(); const before = sqlite.prepare('SELECT status, headline, updated_at FROM stories WHERE id = ?').get('story-1');
+		const db = d1Database(sqlite); const test = receiver(db);
+		const notifier = new InternalReviewNotifier(test.service, 'https://example.test');
+		const notification = {
+			batchId: 'batch-1', stage: 'TRIAGE' as const, kind: 'INITIAL' as const,
+			message: 'Tomorrow-ish has 1 new intake ready for editorial triage.',
+			reviewUrl: 'https://example.test/editorial/batches/batch-1/triage',
+			idempotencyKey: 'editorial-review:batch-1:TRIAGE:INITIAL',
+		};
+
+		await notifier.send(notification);
+		await notifier.send(notification);
+
+		expect(sqlite.prepare('SELECT COUNT(*) AS count FROM review_notification_receipts').get()).toEqual({ count: 1 });
+		expect(sqlite.prepare('SELECT COUNT(*) AS count FROM editorial_notifications').get()).toEqual({ count: 1 });
+		expect(sqlite.prepare('SELECT attempt_count FROM review_notification_receipts').get()).toEqual({ attempt_count: 1 });
+		expect(sqlite.prepare('SELECT status, headline, updated_at FROM stories WHERE id = ?').get('story-1')).toEqual(before);
+		sqlite.close();
+	});
+
+	it('shares exact URL and payload validation between HTTP and internal dispatch', async () => {
+		const sqlite = database(); const db = d1Database(sqlite); const test = receiver(db);
+		const notifier = new InternalReviewNotifier(test.service, 'https://example.test');
+		await expect(notifier.send({
+			batchId: 'batch-1', stage: 'TRIAGE', kind: 'INITIAL',
+			message: 'Tomorrow-ish has 1 new intake ready for editorial triage.',
+			reviewUrl: 'https://attacker.example/editorial/batches/batch-1/triage',
+			idempotencyKey: 'editorial-review:batch-1:TRIAGE:INITIAL',
+		})).rejects.toMatchObject({ classification: 'REJECTED' } satisfies Partial<ReviewNotificationError>);
+		expect((await handleReviewNotificationRequest(request({
+			reviewUrl: 'https://attacker.example/editorial/batches/batch-1/triage',
+		}), test.service)).status).toBe(400);
+		expect(sqlite.prepare('SELECT COUNT(*) AS count FROM review_notification_receipts').get()).toEqual({ count: 0 });
 		sqlite.close();
 	});
 
