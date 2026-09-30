@@ -1,20 +1,21 @@
 ---
 import EditorialLayout from '../../../layouts/EditorialLayout.astro';
 import { getEditorialWorkflowRepository } from '../../../data/runtime-editorial-workflow-repository';
+import { summarizeEditorialBatch } from '../../../domain/editorial-batch-queue';
 
-const batches = await getEditorialWorkflowRepository().listBatches(30);
+const batches = (await getEditorialWorkflowRepository().listBatches(30))
+	.map(summarizeEditorialBatch)
+	.filter((entry) => entry.active);
 ---
 
 <EditorialLayout title="Editorial batches">
-	<div class="editorial-page-header"><div><p class="section-kicker">Two-gate workflow</p><h1>Editorial batches</h1><p>Review source intakes once, then return when complete article packages are ready.</p></div></div>
+	<div class="editorial-page-header"><div><p class="section-kicker">Two-gate workflow</p><h1>Editorial batches</h1><p>Active batches move from intake triage through automatic generation to final editorial review.</p></div></div>
 	<section class="editorial-panel">
-		{batches.length === 0 ? <p>No workflow batches yet.</p> : <div class="editorial-list">
-			{batches.map((batch) => {
-				const triage = batch.items.filter((item) => item.state === 'INGESTED').length;
-				const final = batch.items.filter((item) => item.state === 'READY_FOR_REVIEW').length;
-				const generating = batch.items.filter((item) => ['SELECTED', 'GENERATING'].includes(item.state)).length;
-				return <article class="editorial-list__item"><div><strong>Batch {batch.id}</strong><p>{batch.itemCount} intake{batch.itemCount === 1 ? '' : 's'} · {triage} awaiting triage · {generating} generating · {final} ready for final review</p></div><div class="editorial-form__actions">{triage > 0 && <a class="editorial-button" href={`/editorial/batches/${batch.id}/triage`}>Triage</a>}<a class="editorial-button editorial-button--quiet" href={`/editorial/batches/${batch.id}/review`}>Final review</a></div></article>;
-			})}
+		{batches.length === 0 ? <p>No active workflow batches.</p> : <div class="editorial-list">
+			{batches.map((entry) => <article class="editorial-list__item"><div><strong>Batch {entry.batch.id}</strong><p>{entry.batch.itemCount} intake{entry.batch.itemCount === 1 ? '' : 's'} · {entry.awaitingTriage} awaiting triage · {entry.generating} generating · {entry.readyForFinalReview} ready for final review{entry.failed > 0 && <> · {entry.failed} failed</>}</p></div><div class="editorial-form__actions">
+				{entry.action?.kind === 'link' && <a class:list={['editorial-button', { 'editorial-button--quiet': entry.action.quiet }]} href={entry.action.href}>{entry.action.label}</a>}
+				{entry.action?.kind === 'status' && <span class="editorial-badge">{entry.action.label}</span>}
+			</div></article>)}
 		</div>}
 	</section>
 </EditorialLayout>

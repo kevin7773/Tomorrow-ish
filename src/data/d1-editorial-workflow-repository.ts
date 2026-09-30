@@ -23,9 +23,13 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 	constructor(private readonly db: D1Database) {}
 
 	async listBatches(limit = 20): Promise<EditorialBatch[]> {
-		const rows = await this.db.prepare(`SELECT id, item_count, created_at,
-			triage_completed_at, final_review_completed_at FROM editorial_batches
-			ORDER BY created_at DESC LIMIT ?`).bind(limit).all<{
+		const rows = await this.db.prepare(`SELECT batch.id, batch.item_count, batch.created_at,
+			batch.triage_completed_at, batch.final_review_completed_at FROM editorial_batches AS batch
+			WHERE EXISTS (SELECT 1 FROM editorial_batch_items AS item
+				WHERE item.batch_id = batch.id AND item.workflow_state IN (
+					'INGESTED', 'SELECTED', 'GENERATING', 'READY_FOR_REVIEW', 'FAILED'
+				))
+			ORDER BY batch.created_at DESC LIMIT ?`).bind(limit).all<{
 			id: string; item_count: number; created_at: string;
 			triage_completed_at: string | null; final_review_completed_at: string | null;
 		}>();
