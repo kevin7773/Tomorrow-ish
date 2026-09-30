@@ -1,0 +1,50 @@
+---
+import EditorialMessage from '../../../../components/EditorialMessage.astro';
+import { getArticleImageRepository } from '../../../../data/runtime-article-image-repository';
+import { getEditorialRepository } from '../../../../data/runtime-editorial-repository';
+import { getEditorialWorkflowRepository } from '../../../../data/runtime-editorial-workflow-repository';
+import EditorialLayout from '../../../../layouts/EditorialLayout.astro';
+
+const batchId = Astro.params.id ?? '';
+const workflow = getEditorialWorkflowRepository();
+const batch = await workflow.findBatch(batchId);
+if (!batch) return Astro.redirect('/editorial/batches?error=not-found');
+const unresolved = batch.items.filter((item) => item.state === 'READY_FOR_REVIEW');
+const remainingWork = batch.items.filter((item) => !['PUBLISHED', 'REJECTED'].includes(item.state));
+const packages = await Promise.all(unresolved.map(async (item) => ({ item,
+	intake: await getEditorialRepository().findIntakeById(item.intakeId),
+	story: item.storyId ? await getEditorialRepository().findEditorialStoryById(item.storyId) : null,
+	images: item.storyId ? await getArticleImageRepository().listByStory(item.storyId) : [],
+})));
+const csrfToken = Astro.locals.csrfToken;
+const returnPath = `/editorial/batches/${batch.id}/review`;
+---
+
+<EditorialLayout title="Final editorial review">
+	<div class="editorial-page-header"><div><p class="section-kicker">Gate 2 · Batch {batch.id}</p><h1>Final editorial review</h1><p>{unresolved.length} article{unresolved.length === 1 ? '' : 's'} require an explicit Publish or Reject decision.</p></div><a class="editorial-button editorial-button--quiet" href="/editorial/batches">All batches</a></div>
+	<EditorialMessage message={Astro.url.searchParams.get('message')} error={Astro.url.searchParams.get('error')} />
+	{packages.length === 0 ? <section class="editorial-panel"><h2>{remainingWork.length === 0 ? 'Batch complete' : 'Generation in progress'}</h2><p>{remainingWork.length === 0 ? 'No editorial work remains for this batch.' : 'Selected stories will appear here after body and image generation finish. No intermediate approval is required.'}</p>{batch.items.filter((item) => item.state === 'FAILED').map((item) => <form method="post" action="/editorial/actions/workflow"><input type="hidden" name="csrf_token" value={csrfToken} /><input type="hidden" name="action" value="retry" /><input type="hidden" name="batchId" value={batch.id} /><input type="hidden" name="intakeId" value={item.intakeId} /><input type="hidden" name="returnPath" value={returnPath} /><p>Generation failed at {item.failureStage}: {item.failureClassification}</p><button class="editorial-button" type="submit">Retry failed stage</button></form>)}</section> :
+	packages.map(({ item, intake, story, images }, index) => story && intake && <article class="editorial-panel" id={`article-${item.intakeId}`} data-review-card>
+		<header><p class="section-kicker">Article {index + 1} of {packages.length} · {packages.length - index - 1} remaining after this</p><h2>{story.headline}</h2></header>
+		<div class="editorial-provenance"><strong>Source context</strong><p>{intake.title}</p><p>{intake.neutralBrief}</p>{intake.references.map((reference) => <p>{reference.publisherName} · <a href={reference.sourceUrl} target="_blank" rel="noopener noreferrer">Original source ↗</a></p>)}</div>
+		{images.find((image) => image.status === 'GENERATED' || image.status === 'APPROVED')?.assetKey && <img src={`/editorial/media/${images.find((image) => image.status === 'GENERATED' || image.status === 'APPROVED')!.assetKey}`} alt={images.find((image) => image.status === 'GENERATED' || image.status === 'APPROVED')!.altText ?? ''} loading="lazy" />}
+		<p><strong>Category:</strong> {story.category.name} · <strong>Image:</strong> {images[0]?.status ?? 'Unavailable'} · <strong>Governance:</strong> source provenance retained</p>
+		<form class="editorial-form" method="post" action="/editorial/actions/workflow">
+			<input type="hidden" name="csrf_token" value={csrfToken} /><input type="hidden" name="action" value="edit" /><input type="hidden" name="batchId" value={batch.id} /><input type="hidden" name="intakeId" value={item.intakeId} /><input type="hidden" name="id" value={story.id} /><input type="hidden" name="returnPath" value={returnPath} />
+			<label><span>Slug</span><input name="slug" value={story.slug} required /></label><label><span>Headline</span><input name="headline" value={story.headline} required /></label><label><span>Deck</span><textarea name="deck" required>{story.deck}</textarea></label><label><span>Article body</span><textarea class="editorial-form__body" name="bodyMarkdown" required>{story.bodyMarkdown}</textarea></label><input type="hidden" name="editionDate" value={story.editionDate} /><input type="hidden" name="categoryId" value={story.category.id} /><label><span>Social excerpt</span><textarea name="socialExcerpt" required>{story.socialExcerpt}</textarea></label><input type="hidden" name="tags" value={story.tags.join(', ')} /><button class="editorial-button editorial-button--quiet" type="submit" data-shortcut="e">Save edit <kbd>E</kbd></button>
+		</form>
+		<div class="editorial-form__actions">
+			<form method="post" action="/editorial/actions/workflow"><input type="hidden" name="csrf_token" value={csrfToken} /><input type="hidden" name="action" value="regenerate-image" /><input type="hidden" name="batchId" value={batch.id} /><input type="hidden" name="intakeId" value={item.intakeId} /><input type="hidden" name="returnPath" value={returnPath} /><button class="editorial-button editorial-button--quiet" type="submit" data-shortcut="i">Regenerate image <kbd>I</kbd></button></form>
+			<form method="post" action="/editorial/actions/workflow"><input type="hidden" name="csrf_token" value={csrfToken} /><input type="hidden" name="action" value="publish" /><input type="hidden" name="batchId" value={batch.id} /><input type="hidden" name="intakeId" value={item.intakeId} /><input type="hidden" name="confirmation" value="PUBLISH" /><input type="hidden" name="returnPath" value={returnPath} /><button class="editorial-button" type="submit" data-shortcut="p">Publish <kbd>P</kbd></button></form>
+			<form method="post" action="/editorial/actions/workflow" data-reject-form><input type="hidden" name="csrf_token" value={csrfToken} /><input type="hidden" name="action" value="reject" /><input type="hidden" name="batchId" value={batch.id} /><input type="hidden" name="intakeId" value={item.intakeId} /><input type="hidden" name="confirmation" value="REJECT" /><input type="hidden" name="returnPath" value={returnPath} /><button class="editorial-button editorial-button--danger" type="submit" data-shortcut="r">Reject <kbd>R</kbd></button></form>
+		</div>
+	</article>)}
+	<section class="editorial-panel"><h2>Keyboard shortcuts</h2><p><kbd>P</kbd> Publish · <kbd>R</kbd> Reject · <kbd>E</kbd> Edit · <kbd>I</kbd> Regenerate image · <kbd>←</kbd>/<kbd>→</kbd> Previous/next. Shortcuts are disabled while typing.</p></section>
+	<script>
+		const cards = [...document.querySelectorAll<HTMLElement>('[data-review-card]')]; let current = 0;
+		const editable = (target: EventTarget | null) => target instanceof HTMLElement && (target.matches('input, textarea, select') || target.isContentEditable);
+		const show = (index: number) => { if (!cards.length) return; current = Math.max(0, Math.min(cards.length - 1, index)); cards[current].scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+		document.addEventListener('keydown', (event) => { if (editable(event.target) || event.altKey || event.ctrlKey || event.metaKey) return; const key = event.key.toLowerCase(); if (key === 'arrowleft') return show(current - 1); if (key === 'arrowright') return show(current + 1); const button = cards[current]?.querySelector<HTMLButtonElement>(`[data-shortcut="${key}"]`); if (button) button.click(); });
+		document.querySelectorAll<HTMLFormElement>('[data-reject-form]').forEach((form) => form.addEventListener('submit', (event) => { if (!window.confirm('Reject this completed article?')) event.preventDefault(); }));
+	</script>
+</EditorialLayout>

@@ -1,0 +1,20 @@
+---
+import { getReviewNotificationRepository } from '../../data/runtime-review-notification-repository';
+import EditorialLayout from '../../layouts/EditorialLayout.astro';
+
+const notifications = await getReviewNotificationRepository().listDelivered(100);
+---
+
+<EditorialLayout title="Editorial notifications">
+	<div class="editorial-page-header">
+		<div><p class="section-kicker">Internal delivery inbox</p><h1>Editorial notifications</h1><p>Durable review notices delivered by the Tomorrow-ish Worker.</p></div>
+	</div>
+	<section class="editorial-panel">
+		{notifications.length === 0 ? <p>No notifications have been delivered.</p> : <div class="editorial-list">
+			{notifications.map((notification) => <article class="editorial-list__item">
+				<div><strong>{notification.message}</strong><p>{new Date(notification.createdAt).toLocaleString('en-US')} · {notification.stage} · {notification.kind}</p></div>
+				{notification.reviewUrl && <a class="editorial-button" href={notification.reviewUrl}>Open review</a>}
+			</article>)}
+		</div>}
+	</section>
+</EditorialLayout>

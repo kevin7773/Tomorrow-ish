@@ -144,6 +144,19 @@ describe('OpenAI Responses provider', () => {
 		expect(result.output).toEqual(candidates);
 	});
 
+	it('supports the one-candidate contract used by automatic selected-intake generation', async () => {
+		const oneCandidate = candidates.slice(0, 1);
+		const transport = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => response({ candidates: oneCandidate }));
+		const provider = new OpenAIModelProvider('test-key', OPENAI_MODEL, transport);
+		const result = await provider.generateCandidates({
+			eventStatement: 'Agency opened a drawer.', facts: ['A drawer opened.'], uncertainties: [], context: [],
+			suitabilityReason: 'Selected at intake triage.', guardrailFlags: [], count: 1,
+		}, signal);
+		const request = JSON.parse(String(transport.mock.calls[0][1]?.body));
+		expect(request.text.format.schema.properties.candidates).toMatchObject({ minItems: 1, maxItems: 1 });
+		expect(result.output).toEqual(oneCandidate);
+	});
+
 	it('uses a separate governed contract for a complete article body', async () => {
 		const output = {
 			body_markdown: [

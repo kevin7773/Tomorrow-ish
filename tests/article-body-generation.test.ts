@@ -429,7 +429,7 @@ describe('governed article body generation', () => {
 		expect(migration).not.toContain('article-body-v2');
 	});
 
-	it('shows an accurate governed control without changing the existing five-alternative action', () => {
+	it('shows an accurate governed control without changing the existing candidate-generation action', () => {
 		const page = readFileSync(join(process.cwd(), 'src/pages/editorial/candidates/[id].astro'), 'utf8');
 		const action = readFileSync(join(process.cwd(), 'src/pages/editorial/actions/generation.ts'), 'utf8');
 		const provider = readFileSync(join(process.cwd(), 'src/ai/openai-model-provider.ts'), 'utf8');

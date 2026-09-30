@@ -57,8 +57,6 @@ export interface AutomationRepository {
 	findKnownSources(items: readonly Pick<DiscoveryItem, 'itemIdentity' | 'sourceUrl'>[]): Promise<KnownAutomationDiscovery[]>;
 	registerExistingSource(source: DiscoveredSource, intakeId: string, seenAt: string): Promise<boolean>;
 	createAutomatedIntake(record: CreateAutomatedIntakeRecord): Promise<boolean>;
-	listGenerationReadySources(limit: number): Promise<AutomationSource[]>;
-	getReadiness(source: AutomationSource): Promise<AutomationReadiness>;
 	getLastRun(): Promise<AutomationRun | null>;
 	listRunItems(runId: string): Promise<AutomationItemResult[]>;
 }

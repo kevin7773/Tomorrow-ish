@@ -102,10 +102,16 @@ describe('governed article image service', () => {
 		expect(editorialRepository.findIntakeById).toHaveBeenCalledWith('intake-sensitive');
 	});
 
-	it.each(['DRAFT', 'REVIEW', 'PUBLISHED', 'REJECTED', 'ARCHIVED'] as const)('blocks paid generation for a %s story', async (status) => {
+	it.each(['DRAFT', 'PUBLISHED', 'REJECTED', 'ARCHIVED'] as const)('blocks paid generation for a %s story', async (status) => {
 		const { service, provider } = setup({ status });
-		await expect(service.generate(identity, { storyId: 'story-1' })).rejects.toThrow('Only an approved story');
+		await expect(service.generate(identity, { storyId: 'story-1' })).rejects.toThrow('Only a story in final review');
 		expect(provider.generate).not.toHaveBeenCalled();
+	});
+
+	it('allows image generation while a story is in final REVIEW', async () => {
+		const { service, provider } = setup({ status: 'REVIEW' });
+		await expect(service.generate(identity, { storyId: 'story-1' })).resolves.toMatchObject({ status: 'GENERATED' });
+		expect(provider.generate).toHaveBeenCalledTimes(1);
 	});
 
 	it('generates through the provider abstraction, stores the asset, and persists exact provenance unapproved', async () => {

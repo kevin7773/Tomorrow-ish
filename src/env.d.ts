@@ -18,5 +18,7 @@ declare namespace Cloudflare {
 		CLOUDFLARE_AI_API_TOKEN: string;
 		IMAGE_WEBHOOK_SECRET: string;
 		IMAGE_WEBHOOK_ORIGIN: string;
+		REVIEW_NOTIFICATION_WEBHOOK_URL?: string;
+		REVIEW_NOTIFICATION_REVIEW_URL?: string;
 	}
 }

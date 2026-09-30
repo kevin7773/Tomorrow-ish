@@ -18,16 +18,6 @@ interface PlannedWork {
 	result: AutomationItemResult | null;
 }
 
-export interface CandidateGenerationPort {
-	generate(input: {
-		intakeId: string;
-		normalizedEventVersionId: string;
-		categoryId: string;
-		idempotencyKey: string;
-		actorEmail: string;
-	}): Promise<{ runId: string; status: 'SUCCEEDED' | 'FAILED' }>;
-}
-
 export interface AutomationServiceOptions {
 	enabled: boolean;
 	maxItemsPerRun: number;
@@ -77,7 +67,6 @@ export class AutomationService {
 	constructor(
 		private readonly repository: AutomationRepository,
 		private readonly sourceProvider: AutomationSourceProvider,
-		private readonly candidateGenerator: CandidateGenerationPort,
 		private readonly options: AutomationServiceOptions,
 	) {
 		if (!Number.isSafeInteger(options.maxItemsPerRun) || options.maxItemsPerRun < 1 || options.maxItemsPerRun > 20) {
@@ -152,21 +141,12 @@ export class AutomationService {
 
 	private async buildWork(discovered: DiscoveryItem[], cap: number): Promise<PlannedWork[]> {
 		const work: PlannedWork[] = [];
-		const readyIdentities = new Set<string>();
-		for (const source of await this.repository.listGenerationReadySources(cap)) {
-			work.push({
-				item: { itemIdentity: source.itemIdentity, sourceUrl: source.sourceUrl, source: null, errorReason: null },
-				result: null,
-			});
-			readyIdentities.add(source.itemIdentity);
-		}
-		let usefulWorkCount = work.length;
+		let usefulWorkCount = 0;
 		const knownByDiscovery = new Map((await this.repository.findKnownSources(discovered)).map((known) => [
 			this.discoveryKey(known.itemIdentity, known.sourceUrl), known,
 		]));
 		const seenDiscoveryIdentities = new Set<string>();
 		for (const item of discovered) {
-			if (readyIdentities.has(item.itemIdentity)) continue;
 			if (seenDiscoveryIdentities.has(item.itemIdentity)) {
 				work.push({ item, result: itemResult(item, 'DUPLICATE', 'DUPLICATE_ITEM_IN_RUN') });
 				continue;
@@ -206,19 +186,7 @@ export class AutomationService {
 			sourceIntakeId: known.source.sourceIntakeId,
 			normalizedEventVersionId: known.normalizedEventVersionId,
 		};
-		if (known.successfulGenerationRuns > 0) {
-			return itemResult(item, 'ALREADY_GENERATED', 'SUCCESSFUL_GENERATION_EXISTS', context);
-		}
-		if (!known.normalizedEventVersionId) {
-			return itemResult(item, 'DUPLICATE', 'SOURCE_ALREADY_REGISTERED', context);
-		}
-		if (known.suitability === 'SENSITIVE') {
-			return itemResult(item, 'INELIGIBLE', 'HUMAN_CAUTION_REQUIRED', context);
-		}
-		if (known.suitability !== 'SUITABLE') {
-			return itemResult(item, 'INELIGIBLE', `SUITABILITY_${known.suitability ?? 'UNKNOWN'}`, context);
-		}
-		return null;
+		return itemResult(item, 'DUPLICATE', 'SOURCE_ALREADY_REGISTERED', context);
 	}
 
 	private async processItem(item: DiscoveryItem, dryRun: boolean, seenAt: string): Promise<AutomationItemResult> {
@@ -246,7 +214,7 @@ export class AutomationService {
 				source = registered.source;
 				if (!source) throw new Error('SOURCE_REGISTRATION_FAILED');
 				if (registered.createdIntake) {
-					return itemResult(item, 'INTAKE_CREATED', 'AWAITING_EDITORIAL_NORMALIZATION', {
+					return itemResult(item, 'INTAKE_CREATED', 'AWAITING_EDITORIAL_TRIAGE', {
 						sourceIntakeId: source.sourceIntakeId,
 					});
 				}
@@ -254,29 +222,8 @@ export class AutomationService {
 		}
 		if (!source) throw new Error('SOURCE_NOT_REGISTERED');
 
-		const readiness = await this.repository.getReadiness(source);
-		const context = {
+		return itemResult(item, 'DUPLICATE', 'SOURCE_ALREADY_REGISTERED', {
 			sourceIntakeId: source.sourceIntakeId,
-			normalizedEventVersionId: readiness.normalizedEventVersionId,
-		};
-		if (!readiness.normalizedEventVersionId) return itemResult(item, 'INELIGIBLE', 'AWAITING_EDITORIAL_NORMALIZATION', context);
-		if (readiness.suitability === 'SENSITIVE') return itemResult(item, 'INELIGIBLE', 'HUMAN_CAUTION_REQUIRED', context);
-		if (readiness.suitability !== 'SUITABLE') return itemResult(item, 'INELIGIBLE', `SUITABILITY_${readiness.suitability ?? 'UNKNOWN'}`, context);
-		if (readiness.successfulGenerationRuns > 0) return itemResult(item, 'ALREADY_GENERATED', 'SUCCESSFUL_GENERATION_EXISTS', context);
-		if (dryRun) return itemResult(item, 'GENERATED', 'DRY_RUN_WOULD_GENERATE', context);
-
-		const generated = await this.candidateGenerator.generate({
-			intakeId: source.sourceIntakeId,
-			normalizedEventVersionId: readiness.normalizedEventVersionId,
-			categoryId: source.categoryId,
-			idempotencyKey: `automation:candidates:v1:${readiness.normalizedEventVersionId}`,
-			actorEmail: this.options.actorEmail,
-		});
-		if (generated.status !== 'SUCCEEDED') return itemResult(item, 'FAILED', 'GENERATION_RUN_FAILED', {
-			...context, modelRunId: generated.runId,
-		});
-		return itemResult(item, 'GENERATED', 'FIVE_DRAFT_CANDIDATES_CREATED', {
-			...context, modelRunId: generated.runId,
 		});
 	}
 

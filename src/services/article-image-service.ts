@@ -58,8 +58,8 @@ export class ArticleImageService {
 		const storyId = requiredText(input.storyId, 'Story ID', 100);
 		const story = await this.editorialRepository.findEditorialStoryById(storyId);
 		if (!story) throw new EditorialValidationError('The story was not found.', 'not-found');
-		if (story.status !== 'APPROVED') {
-			throw new EditorialValidationError('Only an approved story can request paid image generation.');
+		if (story.status !== 'REVIEW' && story.status !== 'APPROVED') {
+			throw new EditorialValidationError('Only a story in final review can request paid image generation.');
 		}
 		if (await this.imageRepository.hasPendingForStory(storyId)) {
 			throw new EditorialValidationError('An image generation is already pending for this story.', 'conflict');
@@ -325,8 +325,8 @@ export class ArticleImageService {
 		const imageId = requiredText(input.imageId, 'Image ID', 100);
 		const altText = requiredText(input.altText, 'Alt text', 500);
 		const story = await this.editorialRepository.findEditorialStoryById(storyId);
-		if (!story || story.status !== 'APPROVED') {
-			throw new EditorialValidationError('Only an approved story can attach an image.');
+		if (!story || (story.status !== 'REVIEW' && story.status !== 'APPROVED')) {
+			throw new EditorialValidationError('Only a story in final review can attach an image.');
 		}
 		const image = await this.imageRepository.findById(imageId);
 		if (!image || image.storyId !== storyId || image.status !== 'GENERATED' || !image.assetKey) {
@@ -360,8 +360,8 @@ export class ArticleImageService {
 		const storyId = requiredText(input.storyId, 'Story ID', 100);
 		const imageId = requiredText(input.imageId, 'Image ID', 100);
 		const story = await this.editorialRepository.findEditorialStoryById(storyId);
-		if (!story || story.status !== 'APPROVED') {
-			throw new EditorialValidationError('Image review actions require an approved story.');
+		if (!story || (story.status !== 'REVIEW' && story.status !== 'APPROVED')) {
+			throw new EditorialValidationError('Image review actions require a story in final review.');
 		}
 		const image = await this.imageRepository.findById(imageId);
 		if (!image || image.storyId !== storyId || image.status !== from) {

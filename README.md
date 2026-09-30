@@ -48,7 +48,19 @@ The private editorial workspace is available at `http://localhost:4321/editorial
 
 Approved stories also expose a governed article-image review stage. The active OpenAI adapter, retained Replicate adapter, durable R2 copy, append-only D1 history, and explicit approval controls are documented in the [article-image generation runbook](./docs/article-image-generation.md). Image generation is disabled by default and tests use injected mocks; local development makes no paid image requests.
 
-M3 adds a governed, manual normalization and candidate-generation path. In local development, the normalization and generation screens use a deterministic fake provider that requires no network access, API key, or new Cloudflare binding:
+The normal automated newsroom path now uses two human gates and one durable three-intake batch:
+
+```text
+intake batch
+  -> editor selects Generate or Reject for each intake
+  -> selected items automatically normalize and generate headline, body, and image
+  -> completed story packages wait in READY_FOR_REVIEW
+  -> editor explicitly publishes, edits, regenerates an image, or rejects
+```
+
+No automatic stage can publish. Triage and final-review reminders have separate durable schedules. See the [two-gate workflow ADR](./docs/adr-two-gate-editorial-workflow.md) and [reminder runbook](./docs/editorial-review-reminders.md).
+
+The governed M3 manual path remains available for legacy and exceptional work. In local development, its normalization and generation screens use a deterministic fake provider that requires no network access, API key, or new Cloudflare binding:
 
 ```text
 source intake
@@ -90,9 +102,9 @@ The project is pinned to Astro 7.3.2 and the matching official Cloudflare adapte
 - `src/data/` owns the repository interface and D1 implementation.
 - Routes and components depend on the repository boundary rather than issuing D1 queries directly.
 
-M2 adds protected source intake, normalized source references, human-reviewed satire candidates, immutable candidate-to-story provenance, and an append-only audit log. M3 adds immutable normalized-event versions, assertion-level source provenance, model-run cost/usage records, and idempotent DRAFT-candidate generation behind a narrow repository boundary. The article-image subsystem adds immutable prompt/provider/asset provenance and explicit image review without gaining publication authority. Candidate conversion creates only a `DRAFT` story. `publishStory()` is the sole operation that can assign `PUBLISHED`, and it atomically records the authenticated editor and publication time.
+M2 adds protected source intake, normalized source references, human-reviewed satire candidates, immutable candidate-to-story provenance, and an append-only audit log. M3 adds immutable normalized-event versions, assertion-level source provenance, model-run cost/usage records, and idempotent DRAFT-candidate generation behind a narrow repository boundary. The article-image subsystem adds immutable prompt/provider/asset provenance and cannot publish. Legacy candidate conversion still creates only a `DRAFT` story. The two-gate batch path creates a compatible `REVIEW` story and its dedicated, explicitly confirmed final-review operation is the only new path that can assign `PUBLISHED`; it records the authenticated editor and publication time in the same D1 transaction.
 
-Governed intake automation is prepared behind disabled runtime and schedule controls; it creates `UNREVIEWED` intakes and may generate only `DRAFT` candidates after the existing human normalization gate. It cannot approve or publish. See the [intake automation runbook](./docs/intake-automation.md). Scraping, queues, workflows, social automation, analytics vendors, public accounts, comments, and submissions remain intentionally out of scope. Article-body generation is an explicit, single-candidate newsroom action that cannot overwrite existing copy or advance status; see the [article-body generation runbook](./docs/article-body-generation.md). Governed AdSense verification and article-placement hooks exist behind `ADS_ENABLED=false`; no ad loader or slot renders until the flag and an issued numeric slot ID are both configured. R2 is used only for reviewed article-image assets.
+Governed intake automation creates `UNREVIEWED` intakes and groups newly created records by `automation_runs.id` for Gate 1. It cannot select, reject, approve, or publish. Selected batch items use the existing governed generation services automatically; the legacy manual generation pages remain available. See the [intake automation runbook](./docs/intake-automation.md). Scraping, social automation, analytics vendors, public accounts, comments, and submissions remain intentionally out of scope. Governed AdSense verification and article-placement hooks exist behind `ADS_ENABLED=false`; no ad loader or slot renders until the flag and an issued numeric slot ID are both configured. R2 is used only for governed article-image assets.
 
 ## Production D1 migrations
 
@@ -139,6 +151,8 @@ Migration `0012_governed_intake_automation.sql` adds the automation source regis
 
 Migration `0013_editorial_queue_archiving.sql` adds orthogonal soft-archive metadata for terminal editorial intakes and candidates. It does not alter story publication states, delete provenance, or change automation dedupe. Review the [editorial queue archiving contract](./docs/editorial-queue-archiving.md) and apply the migration separately before deploying code that reads the new columns.
 
+Migration `0014_editorial_review_reminders.sql` adds durable editorial batches keyed by the existing automation run, batch-item workflow projections, independent triage/final-review reminder phases, append-only workflow events, and the idempotent internal notification inbox. It does not add editorial authority or apply itself during deployment. Review the [two-gate workflow ADR](./docs/adr-two-gate-editorial-workflow.md) and [reminder runbook](./docs/editorial-review-reminders.md), apply the migration separately, verify the checked-in same-worker receiver URL, and only then deploy the code and five-minute workflow/reminder trigger.
+
 When configured, connect the existing GitHub repository to **Cloudflare Workers Builds**:
 
 - Use `main` as the production branch.
@@ -150,7 +164,7 @@ When configured, connect the existing GitHub repository to **Cloudflare Workers 
 
 ## Publication boundary
 
-The domain model recognizes these states:
+The legacy story domain recognizes these states:
 
 ```text
 DRAFT → REVIEW → APPROVED → PUBLISHED → ARCHIVED
@@ -158,4 +172,4 @@ DRAFT → REVIEW → APPROVED → PUBLISHED → ARCHIVED
 
 Rejection and revision paths are explicit. Generated or draft content has no route that can publish directly.
 
-M2 preserves the same transition validity but narrows authority: generic story updates and transitions reject `PUBLISHED`; candidate state has no `PUBLISHED` value; conversion inserts a literal `DRAFT`; only the explicit, confirmed publication service can perform `APPROVED → PUBLISHED` with its audit entry in the same D1 transaction.
+M2 preserves that transition validity for legacy/manual records: generic story updates and transitions reject `PUBLISHED`; candidate state has no `PUBLISHED` value; conversion inserts a literal `DRAFT`; only the explicit, confirmed legacy publication service can perform `APPROVED → PUBLISHED`. For newly batched content, `editorial_batch_items` provides the simplified orchestration state. Its explicit Gate 2 action validates the complete `REVIEW` story package and atomically performs the compatible `REVIEW → PUBLISHED` transition with audit history; no automatic pipeline or reminder code has that authority.

@@ -97,13 +97,35 @@ export class D1AutomationRepository implements AutomationRepository {
 	}
 
 	async recordItem(runId: string, itemNumber: number, result: AutomationItemResult, createdAt: string): Promise<void> {
-		await this.db.prepare(`INSERT INTO automation_run_items (
-			run_id, item_number, item_identity, source_url, outcome, reason, source_intake_id,
-			normalized_event_version_id, model_run_id, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			.bind(runId, itemNumber, result.itemIdentity, result.sourceUrl, result.outcome, result.reason,
-				result.sourceIntakeId, result.normalizedEventVersionId, result.modelRunId, createdAt)
-			.run();
+		await this.db.batch([
+			this.db.prepare(`INSERT INTO automation_run_items (
+				run_id, item_number, item_identity, source_url, outcome, reason, source_intake_id,
+				normalized_event_version_id, model_run_id, created_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+				.bind(runId, itemNumber, result.itemIdentity, result.sourceUrl, result.outcome, result.reason,
+					result.sourceIntakeId, result.normalizedEventVersionId, result.modelRunId, createdAt),
+			this.db.prepare(`INSERT OR IGNORE INTO editorial_batches (id, created_at)
+				SELECT ?, ? WHERE ? = 'INTAKE_CREATED' AND ? IS NOT NULL`)
+				.bind(runId, createdAt, result.outcome, result.sourceIntakeId),
+			this.db.prepare(`INSERT OR IGNORE INTO editorial_batch_items (
+				batch_id, source_intake_id, ordinal, category_id, workflow_state, created_at, updated_at
+			) SELECT ?, ?, ?, source.category_id, 'INGESTED', ?, ?
+				FROM automation_sources AS source WHERE source.source_intake_id = ?
+				AND ? = 'INTAKE_CREATED'`)
+				.bind(runId, result.sourceIntakeId, itemNumber, createdAt, createdAt,
+					result.sourceIntakeId, result.outcome),
+			this.db.prepare(`UPDATE editorial_batches SET item_count = (
+				SELECT COUNT(*) FROM editorial_batch_items WHERE batch_id = ?)
+				WHERE id = ?`).bind(runId, runId),
+			this.db.prepare(`INSERT OR IGNORE INTO editorial_stage_reminders
+				(batch_id, stage, created_at) SELECT ?, 'TRIAGE', ?
+				WHERE EXISTS (SELECT 1 FROM editorial_batch_items WHERE batch_id = ?)`)
+				.bind(runId, createdAt, runId),
+			this.db.prepare(`INSERT OR IGNORE INTO editorial_workflow_events
+				(id, batch_id, event_kind, created_at) SELECT ?, ?, 'BATCH_CREATED', ?
+				WHERE EXISTS (SELECT 1 FROM editorial_batch_items WHERE batch_id = ?)`)
+				.bind(`${runId}:batch-created`, runId, createdAt, runId),
+		]);
 	}
 
 	async categoryExists(categoryId: string): Promise<boolean> {
@@ -244,45 +266,6 @@ export class D1AutomationRepository implements AutomationRepository {
 					record.createdAt, record.createdAt, record.referenceId),
 		]);
 		return results[0].meta.changes === 1 && results[4].meta.changes === 1;
-	}
-
-	async listGenerationReadySources(limit: number): Promise<AutomationSource[]> {
-		const rows = await this.db.prepare(`SELECT source.* FROM automation_sources AS source
-			JOIN source_intakes AS intake
-				ON intake.id = source.source_intake_id AND intake.archived_at IS NULL
-			JOIN normalized_event_versions AS version
-				ON version.source_intake_id = source.source_intake_id
-				AND version.review_state = 'ACCEPTED'
-				AND version.proposed_suitability = 'SUITABLE'
-			WHERE NOT EXISTS (
-				SELECT 1 FROM model_runs AS run
-				WHERE run.normalized_event_version_id = version.id
-				AND run.operation = 'GENERATE_CANDIDATES'
-				AND run.status = 'SUCCEEDED'
-			)
-			ORDER BY source.first_seen_at ASC LIMIT ?`)
-			.bind(limit).all<SourceRow>();
-		return rows.results.map(mapSource);
-	}
-
-	async getReadiness(source: AutomationSource): Promise<AutomationReadiness> {
-		const row = await this.db.prepare(`SELECT
-			version.id AS version_id, version.proposed_suitability AS suitability,
-			(SELECT COUNT(*) FROM model_runs AS run
-			 WHERE run.normalized_event_version_id = version.id
-			 AND run.operation = 'GENERATE_CANDIDATES' AND run.status = 'SUCCEEDED') AS successful_runs
-			FROM source_intakes AS intake
-			LEFT JOIN normalized_event_versions AS version
-				ON version.source_intake_id = intake.id AND version.review_state = 'ACCEPTED'
-			WHERE intake.id = ? LIMIT 1`)
-			.bind(source.sourceIntakeId)
-			.first<{ version_id: string | null; suitability: AutomationReadiness['suitability']; successful_runs: number }>();
-		return {
-			source,
-			normalizedEventVersionId: row?.version_id ?? null,
-			suitability: row?.suitability ?? null,
-			successfulGenerationRuns: row?.successful_runs ?? 0,
-		};
 	}
 
 	async getLastRun(): Promise<AutomationRun | null> {

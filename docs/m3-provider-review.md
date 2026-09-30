@@ -31,7 +31,7 @@ At five intakes per editorial day, the working estimate is approximately $0.114 
 - The configured model is exactly `gpt-5.6-terra`; the returned model/revision is recorded with every successful run.
 - Set `store: false`; do not use conversations, background mode, web search, file search, or any other tool.
 - Send only the editor-written intake brief and source-reference metadata already allowed by M3. Never fetch source URLs.
-- Reject refusals, incomplete responses, missing usage, schema drift, non-five candidate batches, or unknown provenance IDs.
+- Reject refusals, incomplete responses, missing usage, schema drift, unexpected candidate counts, or unknown provenance IDs. Legacy/manual requests require five candidates; the selected-intake batch pipeline requires one.
 - Token usage is converted to integer micro-USD at the reviewed $2/million input and $12/million output rates. Before each request, a deliberately conservative character-as-token upper bound reserves enough budget for the bounded response.
 - Keep the existing timeout, bounded retry, idempotency, suitability, guardrail, audit, and publication-authority boundaries.
 
@@ -48,7 +48,7 @@ MODEL_GENERATION_ENABLED=false
 MODEL_DAILY_BUDGET_MICRO_USD=1000000
 ```
 
-The daily hard budget is $1.00 in integer micro-USD. The request is rejected before transport if its conservative maximum, combined with recorded model-run cost since 00:00 UTC, would exceed that budget. Each run is also bounded to $0.10, 24,000 input characters, 24,000 output characters, two total attempts, and an eight-second timeout. Normalization has a 3,000-token response cap; five-candidate generation has a 2,500-token cap.
+The daily hard budget is $1.00 in integer micro-USD. The request is rejected before transport if its conservative maximum, combined with recorded model-run cost since 00:00 UTC, would exceed that budget. Each run is also bounded to $0.10, 24,000 input characters, 24,000 output characters, two total attempts, and an eight-second timeout. Normalization has a 3,000-token response cap; candidate generation has a 2,500-token cap and validates the requested one- or five-candidate shape.
 
 ## Separate production enablement procedure
 

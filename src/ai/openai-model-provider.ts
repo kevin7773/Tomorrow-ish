@@ -59,10 +59,10 @@ export const NORMALIZATION_SCHEMA = {
 	required: ['eventStatement', 'assertions', 'proposedSignificanceScore', 'proposedSatirePotentialScore', 'proposedSuitability', 'suitabilityReason', 'guardrailFlags'],
 } as const;
 
-export const CANDIDATE_SCHEMA = {
+function candidateSchema(count: number) { return {
 	type: 'object', additionalProperties: false,
 	properties: {
-		candidates: { type: 'array', minItems: 5, maxItems: 5, items: {
+		candidates: { type: 'array', minItems: count, maxItems: count, items: {
 			type: 'object', additionalProperties: false,
 			properties: {
 				headline: { type: 'string' },
@@ -72,9 +72,10 @@ export const CANDIDATE_SCHEMA = {
 			},
 			required: ['headline', 'deck', 'rationale', 'satiricalMechanism'],
 		} },
-	},
-	required: ['candidates'],
-} as const;
+	}, required: ['candidates'],
+} as const; }
+
+export const CANDIDATE_SCHEMA = candidateSchema(5);
 
 export const ARTICLE_BODY_SCHEMA = {
 	type: 'object', additionalProperties: false,
@@ -222,11 +223,11 @@ export class OpenAIModelProvider implements ModelProvider {
 	}
 
 	async generateCandidates(input: GenerateCandidatesInput, signal: AbortSignal): Promise<ModelResult<CandidateProposal[]>> {
-		if (input.count !== 5) throw new ModelOutputError('OpenAI candidate generation requires exactly five candidates.');
+		if (input.count !== 1 && input.count !== 5) throw new ModelOutputError('OpenAI candidate generation requires one or five candidates.');
 		const instructions = `${HOUSE_VOICE_CONTRACT} The approved voice references are Committee Forms Smaller Committee to Find Out Who Is Chairing Committee; Moon Requests Meeting About Boundaries; Coffee Chain Announces Subscription Tier for Waiting in Line; and Cloud Apologizes for Looking Like Something. Treat them only as tonal references and do not imitate their sentence structures. Produce alternatives, not an article body.`;
-		return this.request('GENERATE_CANDIDATES', instructions, input, 'satire_candidates', CANDIDATE_SCHEMA, (value) => {
+		return this.request('GENERATE_CANDIDATES', instructions, input, 'satire_candidates', candidateSchema(input.count), (value) => {
 			if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ModelOutputError();
-			return parseCandidateBatch((value as { candidates?: unknown }).candidates, 5);
+			return parseCandidateBatch((value as { candidates?: unknown }).candidates, input.count);
 		}, signal);
 	}
 

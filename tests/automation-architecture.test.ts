@@ -16,12 +16,15 @@ describe('automation architecture boundaries', () => {
 		}
 	});
 
-	it('keeps exactly the approved production cron schedule', () => {
+	it('keeps the approved intake schedule and adds only the reminder polling schedule', () => {
 		const config = JSON.parse(read('wrangler.jsonc')) as { triggers?: { crons?: unknown } };
 		expect(config.triggers?.crons).toEqual([
 			'0 13 * * *',
 			'0 21 * * *',
+			'*/5 * * * *',
 		]);
+		const worker = read('src/worker.ts');
+		expect(worker.indexOf("controller.cron === REVIEW_REMINDER_CRON")).toBeLessThan(worker.indexOf('const report = await runRuntimeAutomation'));
 	});
 
 	it('presents mutually exclusive automation readiness states', () => {
@@ -31,10 +34,12 @@ describe('automation architecture boundaries', () => {
 		expect(page).toContain("'Enabled — source not configured'");
 	});
 
-	it('uses the existing DRAFT-only candidate generation service', () => {
-		const runtime = read('src/automation/runtime-automation.ts');
-		expect(runtime).toContain('new GenerationService');
-		expect(runtime).toContain('service.generateCandidates');
+	it('keeps acquisition at Gate 1 and reuses generation only in the selected-item workflow', () => {
+		const acquisition = read('src/automation/runtime-automation.ts');
+		const workflow = read('src/services/runtime-editorial-workflow.ts');
+		expect(acquisition).not.toContain('GenerationService');
+		expect(workflow).toContain('new GenerationService');
+		expect(workflow).toContain('generation.generateCandidates');
 	});
 
 	it('defines additive run and item observability without story status changes', () => {

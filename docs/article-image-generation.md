@@ -1,6 +1,6 @@
 # Governed article-image generation
 
-Article images are an ancillary editorial subsystem. They cannot publish a story, change story copy, or bypass the existing `DRAFT → REVIEW → APPROVED → PUBLISHED` lifecycle. Publication without an image remains valid.
+Article images are an ancillary editorial subsystem. They cannot publish a story or change story copy. The legacy/manual path uses `DRAFT → REVIEW → APPROVED → PUBLISHED` and permits image-free publication; the new two-gate batch path generates an image while its compatible story row is `REVIEW` and requires a governed image before the explicit Gate 2 Publish action.
 
 ## Architecture and authority
 
@@ -11,7 +11,7 @@ The subsystem has four replaceable boundaries:
 - `ImageAssetStore` durably copies bytes into the `IMAGE_ASSETS` R2 bucket before D1 records a successful generation.
 - `ArticleImageRepository` records append-only generation history and performs explicit review transitions.
 
-Only an authenticated editor viewing a story whose authoritative status is `APPROVED` can initiate a paid request. The button creates exactly one request; there is no automatic retry, polling loop, scheduled generation, or generation-on-draft behavior. A partial unique D1 index permits at most one `PENDING` row per story. A provider failure records a `GENERATION_FAILED` history row and leaves the story unchanged.
+Legacy/manual image requests require an authenticated editor viewing an `APPROVED` story. For a newly selected batch item, the workflow processor may initiate the same governed request for its `REVIEW` story; this is the automatic generation explicitly authorized at Gate 1. There is no provider retry loop, and a partial unique D1 index permits at most one `PENDING` row per story. A provider failure records a `GENERATION_FAILED` history row and leaves the story unchanged.
 
 ## Prompt production
 
@@ -101,7 +101,7 @@ Do not enable or deploy this subsystem until the following separately reviewed o
 4. Create a narrowly scoped Cloudflare API token with Account > Workers AI > Read permission and enter it interactively with `npx wrangler secret put CLOUDFLARE_AI_API_TOKEN`. Never place it in command history or source.
 5. Generate a strong independent signing secret of at least 32 bytes and enter it interactively with `npx wrangler secret put IMAGE_WEBHOOK_SECRET`. Do not reuse the Cloudflare or OpenAI credential.
 6. Deploy once with `IMAGE_GENERATION_ENABLED=false`, verify the webhook route rejects missing/invalid signatures, and smoke-test editorial/public image boundaries. No model request is required for this check.
-7. For a later controlled paid smoke test, select one `APPROVED` story, inspect its final prompt/alt text, set only `IMAGE_GENERATION_ENABLED=true`, deploy, submit exactly once, and stop. Verify `PENDING` first, then one authenticated callback, one `GENERATED` row, one R2 object, unchanged story status/`og_image_key`, protected preview access, and public denial. Return the flag to `false` afterward. Never approve or retry automatically.
+7. For a later controlled paid smoke test, use either one legacy `APPROVED` story or one explicitly selected batch item, inspect its final prompt/alt text, set only `IMAGE_GENERATION_ENABLED=true`, deploy, submit exactly once, and stop. Verify `PENDING` first, then one authenticated callback, one `GENERATED` row, one R2 object, unchanged story publication status/`og_image_key`, protected preview access, and public denial. Return the flag to `false` afterward. Never publish automatically.
 
 The webhook path must remain internet-reachable over HTTPS so Cloudflare can deliver it. If a broader Cloudflare Access application covers the whole hostname, configure a narrowly scoped bypass for `/api/image-generation/webhook/*`; the HMAC capability is the route's authentication control. Keep the editorial Access policy unchanged.
 

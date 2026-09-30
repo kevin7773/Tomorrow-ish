@@ -370,6 +370,6 @@ describe('editorial queue soft archive', () => {
 		expect(candidateDetail).toContain('candidate.archivedAt ? (');
 		expect(candidateDetail).toContain('value="restore-candidate"');
 		expect(knownSources).not.toContain('archived_at');
-		expect(automation).toMatch(/listGenerationReadySources[\s\S]*intake\.archived_at IS NULL/);
+		expect(automation).not.toContain('listGenerationReadySources');
 	});
 });

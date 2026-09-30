@@ -158,7 +158,7 @@ export class D1ArticleImageRepository implements ArticleImageRepository {
 					status, alt_text, metadata_json, requested_by_email, requested_at
 				)
 				SELECT ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, '{}', ?, ?
-				WHERE EXISTS (SELECT 1 FROM stories WHERE id = ? AND status = 'APPROVED')
+				WHERE EXISTS (SELECT 1 FROM stories WHERE id = ? AND status IN ('REVIEW', 'APPROVED'))
 				  AND NOT EXISTS (
 					SELECT 1 FROM article_images WHERE story_id = ? AND status = 'PENDING'
 				  )
@@ -307,13 +307,13 @@ export class D1ArticleImageRepository implements ArticleImageRepository {
 				UPDATE article_images SET status = 'APPROVED', alt_text = ?, reviewed_by_email = ?, reviewed_at = ?
 				WHERE id = ? AND story_id = ? AND status = 'GENERATED'
 				AND asset_key IS NOT NULL
-				AND EXISTS (SELECT 1 FROM stories WHERE id = ? AND status = 'APPROVED')
+				AND EXISTS (SELECT 1 FROM stories WHERE id = ? AND status IN ('REVIEW', 'APPROVED'))
 			`).bind(record.altText, record.actorEmail, record.reviewedAt, record.imageId, record.storyId, record.storyId),
 			this.db.prepare(`
 				UPDATE stories SET og_image_key = (
 					SELECT asset_key FROM article_images WHERE id = ? AND story_id = ? AND status = 'APPROVED'
 				), updated_at = ?
-				WHERE id = ? AND status = 'APPROVED'
+				WHERE id = ? AND status IN ('REVIEW', 'APPROVED')
 				AND EXISTS (SELECT 1 FROM article_images WHERE id = ? AND story_id = ? AND status = 'APPROVED')
 			`).bind(record.imageId, record.storyId, record.reviewedAt, record.storyId, record.imageId, record.storyId),
 			this.db.prepare(`

@@ -1,6 +1,6 @@
 # Governed article-body generation
 
-Tomorrow-ish keeps alternative selection and article writing as separate governed operations:
+The legacy/manual newsroom path keeps alternative selection and article writing as separate governed operations:
 
 ```text
 Source
@@ -15,6 +15,8 @@ Source
 ```
 
 Alternative generation continues to produce only headline, deck, rationale, and satirical mechanism fields. An authenticated editor may explicitly request a body for one selected candidate only when it remains `DRAFT`, has no existing body, has a reviewed source assessment, and points to an accepted normalized-event version with authoritative factual support. `MODEL_GENERATION_ENABLED` controls both newsroom model operations; article-body generation is independent from `IMAGE_GENERATION_ENABLED`.
+
+For newly selected batch intakes, Gate 1 supplies the human authorization to continue. The workflow processor reuses this same `GenerationService` with a stable batch/intake idempotency key and does not stop at the legacy candidate/body approval screens. It still persists the DRAFT candidate and body-run history, validates the same source/governance inputs, and cannot publish. The completed story and image are reviewed together at Gate 2.
 
 The body provider receives persisted source and governance data rather than browser-submitted copies: source metadata and references, the neutral brief, reviewed scores and suitability, guardrail flags, the accepted normalized assertions and their source links, the selected candidate framing, category, and persisted editorial caution reason. A sensitive source requires a non-empty persisted caution reason. Unresolved allegations remain marked as such, and the prompt requires attribution, no assertion of guilt, no fabricated quotations or motives, and no intensification beyond the factual substrate.
 
@@ -36,4 +38,4 @@ If a Worker interruption leaves a run `PENDING`, an authenticated editor may use
 4. Open an eligible empty-body DRAFT candidate and confirm the **Generate article body** control accurately reflects model availability.
 5. For a first paid test, submit once, confirm the run moves from `PENDING` to `SUCCEEDED` or `FAILED`, and verify the candidate remains DRAFT.
 
-No production migration, deployment, provider request, review transition, image action, approval, or publication is automatic.
+No production migration, deployment, or publication is automatic. After an editor selects a new batch intake, its governed provider and image requests are automatic and resumable; the final Publish/Reject decision remains human-only.

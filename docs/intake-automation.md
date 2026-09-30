@@ -1,17 +1,17 @@
 # Governed intake automation
 
-The automation subsystem discovers bounded source metadata, creates ordinary source intakes, and generates candidate batches only after the existing normalization review gate has been satisfied. It has no candidate approval, story conversion, or publication capability.
+The automation subsystem discovers bounded source metadata, creates ordinary source intakes, and groups the newly created records into a durable Gate 1 batch. It has no triage, rejection, final-review, or publication authority.
 
 ## Authority and execution flow
 
 1. The Tomorrow-ish-owned source URL uses `GovernedAutomationSourceProvider` to call the shared governed feed aggregator in-process. Other configured URLs continue to use `HttpAutomationSourceProvider` and fetch one bounded JSON document from `AUTOMATION_SOURCE_URL`.
 2. Each valid source URL receives a deterministic SHA-256 item identity. Existing automation registrations and existing source-reference URLs are checked before intake creation.
-3. A new source is persisted as an ordinary `source_intakes` row with its ordinary `source_references` lineage and append-only audit entries. Its suitability is `UNREVIEWED`, scores begin at `1`, and it waits for editorial assessment and normalization acceptance.
-4. A later run may process a registered source only when it has an editor-accepted normalized-event version whose suitability is `SUITABLE` and no successful candidate-generation run exists.
-5. Candidate generation calls the existing `GenerationService` with the deterministic key `automation:candidates:v1:<normalized-version-id>`. The existing provider limits, daily cost budget, validation, and atomic five-candidate persistence remain authoritative. Every generated candidate is `MODEL`/`DRAFT`.
-6. `SENSITIVE` events require the existing manual caution acknowledgement and are not automated. `UNSUITABLE`, `UNREVIEWED`, unnormalized, malformed, duplicate, and already-generated items are explicit no-ops.
+3. A new source is persisted as an ordinary `source_intakes` row with its `source_references` lineage and append-only audit entries. Its suitability is `UNREVIEWED`, scores begin at `1`, and the same transaction that records the run item links it to `editorial_batches` through `editorial_batch_items`.
+4. All new intakes from the same run use `automation_runs.id` as one editorial batch. One `TRIAGE` reminder phase is created for that batch, regardless of whether one or three items were created.
+5. Automation stops at `INGESTED`. An authenticated editor selects Generate or Reject on the batch triage screen. Rejected intakes never enter generation.
+6. The separate five-minute workflow processor advances selected items through the existing normalization, candidate/headline, body, provenance, validation, and image services with stable idempotency keys. It never publishes and never waits for an intermediate human approval.
 
-The scheduled handler calls `ScheduledController.noRetry()`. The generation service retains its existing bounded provider-attempt behavior, but neither the scheduler nor automation service submits an additional candidate batch after a persisted success or failure. A stale `RUNNING` automation record is closed after 30 minutes; deterministic source and model-run identities make subsequent operator reruns safe.
+The scheduled handler calls `ScheduledController.noRetry()`. A stale `RUNNING` automation record is closed after 30 minutes, and deterministic source identities keep reruns safe. Automatic generation is resumed from durable batch, model-run, body-run, story, and image records; it does not discard completed stages or turn a failed item into published content.
 
 ## Source document contract
 
@@ -65,9 +65,9 @@ Checked-in production-safe defaults:
 - `AUTOMATION_SOURCE_URL=https://tomorrow-ish.news/api/automation/source-feed`
 - `AUTOMATION_MAX_ITEMS_PER_RUN=3` (valid range 1–20)
 - `AUTOMATION_ACTOR_EMAIL=automation@tomorrow-ish.news`
-- `triggers.crons=["0 13 * * *", "0 21 * * *"]`
+- `triggers.crons=["0 13 * * *", "0 21 * * *", "*/5 * * * *"]`
 
-Production automation is configured to run twice daily at `0 13 * * *` and `0 21 * * *`, or 13:00 UTC and 21:00 UTC. Cloudflare Cron Triggers are UTC-only and do not automatically adjust for daylight-saving time. These runs occur at 9:00 AM and 5:00 PM Eastern during EDT (UTC-4), and at 8:00 AM and 4:00 PM Eastern during EST (UTC-5). This seasonal one-hour drift is intentional.
+Production intake acquisition is configured to run twice daily at `0 13 * * *` and `0 21 * * *`, or 13:00 UTC and 21:00 UTC. Cloudflare Cron Triggers are UTC-only and do not automatically adjust for daylight-saving time. These runs occur at 9:00 AM and 5:00 PM Eastern during EDT (UTC-4), and at 8:00 AM and 4:00 PM Eastern during EST (UTC-5). This seasonal one-hour drift is intentional. The separate `*/5 * * * *` trigger resumes selected workflow items and processes both reminder phases; it does not acquire new source items.
 
 ## Manual and dry-run operation
 
@@ -89,7 +89,7 @@ With the checked-in settings this returns a disabled no-op and makes no automati
 
 `automation_runs` records bounded counts and terminal status for live runs. `discoveredCount` is the broader bounded discovery set, up to 30. `AUTOMATION_MAX_ITEMS_PER_RUN` limits useful work: creating a new intake, registering a legacy source reference for automation, or attempting governed generation for a generation-ready source. A registered source still awaiting normalization is logged as `DUPLICATE / SOURCE_ALREADY_REGISTERED` without consuming useful-work capacity. Because `processedCount` includes these known-item observations, immutable logged-item count may exceed the useful-work cap.
 
-`automation_run_items` records immutable per-item outcomes and references to any intake, accepted normalized version, and model run. The editorial automation page shows the most recent persisted live run. Dry-runs intentionally do not become persisted “last runs” because their contract is zero writes.
+`automation_run_items` records immutable acquisition outcomes and references. `editorial_batch_items` then records the new orchestration projection and durable links to candidate/story records, while `editorial_workflow_events` records meaningful transitions without full copy. The editorial automation page shows the most recent persisted live run. Dry-runs intentionally do not become persisted “last runs” because their contract is zero writes.
 
 One malformed or failed item does not abort later items. Provider-level discovery failure ends the run as `FAILED`; mixed item results end it as `PARTIAL`. Provider/model diagnostics remain in the existing model-run records, while automation records store bounded classifications rather than raw response bodies or exception text.
 

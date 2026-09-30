@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "tomorrow-ish",
+  "account_id": "13fbf38daabf893cddf8e7214957bfce",
   "main": "./src/worker.ts",
   "compatibility_date": "2026-09-10",
   "compatibility_flags": ["nodejs_compat"],
@@ -24,6 +25,7 @@
     "CLOUDFLARE_ACCOUNT_ID": "13fbf38daabf893cddf8e7214957bfce",
     "CLOUDFLARE_AI_GATEWAY_ID": "tomorrow-ish",
     "IMAGE_WEBHOOK_ORIGIN": "https://tomorrow-ish.news",
+    "REVIEW_NOTIFICATION_WEBHOOK_URL": "https://tomorrow-ish.news/api/internal/review-notifications",
     "ADS_ENABLED": "false",
     "ADSENSE_ARTICLE_INLINE_1_SLOT": "",
     "ADSENSE_ARTICLE_INLINE_2_SLOT": "",
@@ -38,7 +40,8 @@
   "triggers": {
     "crons": [
       "0 13 * * *",
-      "0 21 * * *"
+      "0 21 * * *",
+      "*/5 * * * *"
     ]
   },
   "assets": {
