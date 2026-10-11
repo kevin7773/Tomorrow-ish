@@ -16,6 +16,11 @@ export interface EditorialBatchItem {
 	storyId: string | null;
 	failureStage: string | null;
 	failureClassification: string | null;
+	leaseOwner: string | null;
+	leaseAcquiredAt: string | null;
+	leaseExpiresAt: string | null;
+	attemptCount: number;
+	retryAttempt: number;
 	createdAt: string;
 	updatedAt: string;
 }

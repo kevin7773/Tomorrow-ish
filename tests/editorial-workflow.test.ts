@@ -14,6 +14,7 @@ function workflowItem(state: EditorialBatchItem['state'] = 'INGESTED'): Editoria
 		candidateId: state === 'GENERATING' ? 'candidate-1' : null,
 		storyId: state === 'READY_FOR_REVIEW' ? 'story-1' : null,
 		failureStage: state === 'FAILED' ? 'IMAGE' : null, failureClassification: state === 'FAILED' ? 'PROVIDER' : null,
+		leaseOwner: null, leaseAcquiredAt: null, leaseExpiresAt: null, attemptCount: 0, retryAttempt: 0,
 		createdAt: now, updatedAt: now };
 }
 
@@ -22,13 +23,18 @@ function setup(initial = workflowItem()) {
 	const events: string[] = [];
 	const repository: EditorialWorkflowRepository = {
 		listBatches: vi.fn(), findBatch: vi.fn(), findItem: vi.fn(async () => ({ ...item })),
-		listProcessable: vi.fn(async () => ['SELECTED', 'GENERATING'].includes(item.state) ? [{ ...item }] : []),
+		claimProcessable: vi.fn(async ({ owner, at, leaseExpiresAt }) => {
+			if (!['SELECTED', 'GENERATING'].includes(item.state)) return [];
+			item = { ...item, state: 'GENERATING', leaseOwner: owner, leaseAcquiredAt: at, leaseExpiresAt, attemptCount: item.attemptCount + 1 };
+			events.push('GENERATION_STARTED'); return [{ ...item }];
+		}),
+		reconcilePublished: vi.fn(async () => 0),
 		select: vi.fn(async () => { if (item.state !== 'INGESTED') return false; item = { ...item, state: 'SELECTED', selectedByEmail: identity.email.toLowerCase(), selectedAt: now }; events.push('INTAKE_SELECTED'); return true; }),
 		rejectIntake: vi.fn(async () => { if (item.state !== 'INGESTED') return false; item = { ...item, state: 'REJECTED' }; events.push('INTAKE_REJECTED'); return true; }),
-		markGenerating: vi.fn(async () => { if (item.state !== 'SELECTED') return false; item = { ...item, state: 'GENERATING' }; events.push('GENERATION_STARTED'); return true; }),
-		attachCandidate: vi.fn(), findGeneratedCandidateId: vi.fn(), createReviewStory: vi.fn(),
+		attachCandidate: vi.fn(), findGeneratedCandidateId: vi.fn(), findStoryIdByCandidate: vi.fn(), attachExistingStory: vi.fn(), ensureReviewStory: vi.fn(),
 		markReady: vi.fn(async (_batch, _intake, storyId) => { item = { ...item, state: 'READY_FOR_REVIEW', storyId }; events.push('ARTICLE_READY_FOR_REVIEW'); return true; }),
 		markFailed: vi.fn(async () => { item = { ...item, state: 'FAILED', failureStage: 'AUTOMATIC_GENERATION', failureClassification: 'PIPELINE_FAILURE' }; events.push('GENERATION_FAILED'); }),
+		releaseLease: vi.fn(async () => true),
 		retryFailed: vi.fn(async () => { if (item.state !== 'FAILED') return false; item = { ...item, state: 'SELECTED', failureStage: null, failureClassification: null }; return true; }),
 		ensureFinalReminder: vi.fn(async () => item.state === 'READY_FOR_REVIEW'),
 		publishFinal: vi.fn(async () => { if (item.state !== 'READY_FOR_REVIEW') return false; item = { ...item, state: 'PUBLISHED' }; events.push('ARTICLE_PUBLISHED'); return true; }),
@@ -38,7 +44,7 @@ function setup(initial = workflowItem()) {
 	const pipeline: WorkflowPipelinePort = { advance: vi.fn(async () => ({ storyId: 'story-1', ready: true })) };
 	const images: FinalReviewImagePort = { approveLatestGenerated: vi.fn(async () => undefined), regenerate: vi.fn(async () => undefined) };
 	let id = 0;
-	const service = new EditorialWorkflowService(repository, pipeline, images, { now: () => now, createId: () => `id-${++id}` });
+	const service = new EditorialWorkflowService(repository, pipeline, images, { now: () => now, createId: () => `id-${++id}`, generationEnabled: true });
 	return { service, repository, pipeline, images, events, getItem: () => item };
 }
 
@@ -51,13 +57,18 @@ describe('two-gate editorial workflow', () => {
 		const repository: EditorialWorkflowRepository = {
 			listBatches: vi.fn(), findBatch: vi.fn(),
 			findItem: vi.fn(async (_batchId, intakeId) => ({ ...items.get(intakeId)! })),
-			listProcessable: vi.fn(async () => [...items.values()].filter((item) => ['SELECTED', 'GENERATING'].includes(item.state)).map((item) => ({ ...item }))),
+			claimProcessable: vi.fn(async ({ owner, at, leaseExpiresAt }) => [...items.values()]
+				.filter((item) => ['SELECTED', 'GENERATING'].includes(item.state)).map((item) => {
+					const claimed = { ...item, state: 'GENERATING' as const, leaseOwner: owner, leaseAcquiredAt: at,
+						leaseExpiresAt, attemptCount: item.attemptCount + 1 }; items.set(item.intakeId, claimed);
+					events.push('GENERATION_STARTED'); return { ...claimed };
+				})),
+			reconcilePublished: vi.fn(async () => 0),
 			select: vi.fn(async (_batchId, intakeId) => { const item = items.get(intakeId)!; if (item.state !== 'INGESTED') return false; items.set(intakeId, { ...item, state: 'SELECTED', selectedByEmail: identity.email.toLowerCase(), selectedAt: now }); events.push('INTAKE_SELECTED'); return true; }),
 			rejectIntake: vi.fn(async (_batchId, intakeId) => { const item = items.get(intakeId)!; if (item.state !== 'INGESTED') return false; items.set(intakeId, { ...item, state: 'REJECTED' }); events.push('INTAKE_REJECTED'); return true; }),
-			markGenerating: vi.fn(async (_batchId, intakeId) => { const item = items.get(intakeId)!; if (item.state !== 'SELECTED') return false; items.set(intakeId, { ...item, state: 'GENERATING' }); events.push('GENERATION_STARTED'); return true; }),
-			attachCandidate: vi.fn(), findGeneratedCandidateId: vi.fn(), createReviewStory: vi.fn(),
+			attachCandidate: vi.fn(), findGeneratedCandidateId: vi.fn(), findStoryIdByCandidate: vi.fn(), attachExistingStory: vi.fn(), ensureReviewStory: vi.fn(),
 			markReady: vi.fn(async (_batchId, intakeId, storyId) => { const item = items.get(intakeId)!; items.set(intakeId, { ...item, state: 'READY_FOR_REVIEW', storyId }); events.push('ARTICLE_READY_FOR_REVIEW'); return true; }),
-			markFailed: vi.fn(), retryFailed: vi.fn(), ensureFinalReminder: vi.fn(async () => true),
+			markFailed: vi.fn(), releaseLease: vi.fn(async () => true), retryFailed: vi.fn(), ensureFinalReminder: vi.fn(async () => true),
 			publishFinal: vi.fn(async ({ intakeId }) => { const item = items.get(intakeId)!; items.set(intakeId, { ...item, state: 'PUBLISHED' }); events.push('ARTICLE_PUBLISHED'); return true; }),
 			rejectFinal: vi.fn(async ({ intakeId }) => { const item = items.get(intakeId)!; items.set(intakeId, { ...item, state: 'REJECTED' }); events.push('ARTICLE_REJECTED'); return true; }),
 			recordEvent: vi.fn(async ({ kind }) => { events.push(kind); }),
@@ -65,11 +76,11 @@ describe('two-gate editorial workflow', () => {
 		const pipeline: WorkflowPipelinePort = { advance: vi.fn(async (item) => ({ storyId: `story-${item.intakeId.at(-1)}`, ready: true })) };
 		const images: FinalReviewImagePort = { approveLatestGenerated: vi.fn(async () => undefined), regenerate: vi.fn(async () => undefined) };
 		let id = 0;
-		const service = new EditorialWorkflowService(repository, pipeline, images, { now: () => now, createId: () => `demo-${++id}` });
+		const service = new EditorialWorkflowService(repository, pipeline, images, { now: () => now, createId: () => `demo-${++id}`, generationEnabled: true });
 
 		await service.triage(identity, 'batch-1', ['intake-1', 'intake-2'], 'SELECT');
 		await service.triage(identity, 'batch-1', ['intake-3'], 'REJECT');
-		expect(await service.process()).toEqual({ ready: 2, pending: 0, failed: 0 });
+		expect(await service.process()).toEqual({ reconciled: 0, ready: 2, pending: 0, failed: 0 });
 		expect(pipeline.advance).toHaveBeenCalledTimes(2);
 		expect([...items.values()].map((item) => item.state)).toEqual(['READY_FOR_REVIEW', 'READY_FOR_REVIEW', 'REJECTED']);
 
@@ -86,6 +97,17 @@ describe('two-gate editorial workflow', () => {
 	it('rejecting at Gate 1 prevents generation', async () => {
 		const test = setup(); await test.service.triage(identity, 'batch-1', ['intake-1'], 'REJECT'); await test.service.process();
 		expect(test.getItem().state).toBe('REJECTED'); expect(test.pipeline.advance).not.toHaveBeenCalled();
+	});
+
+	it('keeps provider work disabled while still allowing state-only reconciliation', async () => {
+		const test = setup(workflowItem('GENERATING'));
+		vi.mocked(test.repository.reconcilePublished).mockResolvedValueOnce(1);
+		const gated = new EditorialWorkflowService(test.repository, test.pipeline, test.images, {
+			now: () => now, createId: () => 'reconcile-id', generationEnabled: false,
+		});
+		expect(await gated.process()).toEqual({ reconciled: 1, ready: 0, pending: 0, failed: 0 });
+		expect(test.repository.claimProcessable).not.toHaveBeenCalled();
+		expect(test.pipeline.advance).not.toHaveBeenCalled();
 	});
 
 	it('selection automatically progresses through generation to final review without another human gate', async () => {
@@ -139,5 +161,13 @@ describe('two-gate editorial workflow', () => {
 	it('keeps legacy candidate and story routes available', () => {
 		expect(readFileSync(join(process.cwd(), 'src/pages/editorial/candidates/[id].astro'), 'utf8')).toContain('Candidate provenance');
 		expect(readFileSync(join(process.cwd(), 'src/pages/editorial/stories/[id].astro'), 'utf8')).toContain('Audit history');
+	});
+
+	it('uses the audited retry attempt in every automatic model idempotency key and disables model-level retries', () => {
+		const runtime = readFileSync(join(process.cwd(), 'src/services/runtime-editorial-workflow.ts'), 'utf8');
+		expect(runtime).toContain('workflow:normalize:v2:${item.batchId}:${item.intakeId}:attempt:${item.retryAttempt}');
+		expect(runtime).toContain('workflow:candidate:v2:${item.batchId}:${item.intakeId}:attempt:${item.retryAttempt}');
+		expect(runtime).toContain('workflow:body:v2:${item.batchId}:${item.intakeId}:attempt:${item.retryAttempt}');
+		expect(runtime).toContain('maxAttempts: 1');
 	});
 });

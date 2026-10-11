@@ -31,17 +31,33 @@ function imageService(): ArticleImageService {
 class RuntimePipeline implements WorkflowPipelinePort {
 	async advance(item: EditorialBatchItem): Promise<{ storyId: string; ready: boolean }> {
 		const workflow = getEditorialWorkflowRepository();
+		if (item.candidateId && !item.storyId) {
+			const existingStoryId = await workflow.findStoryIdByCandidate(item.candidateId);
+			if (existingStoryId) {
+				if (!item.leaseOwner || !(await workflow.attachExistingStory({ batchId: item.batchId, intakeId: item.intakeId,
+					candidateId: item.candidateId, storyId: existingStoryId, owner: item.leaseOwner,
+					at: new Date().toISOString(), eventId: crypto.randomUUID() }))) throw new Error('WORKFLOW_LEASE_LOST');
+				const existingImages = await getArticleImageRepository().listByStory(existingStoryId);
+				if (existingImages.some((image) => image.status === 'GENERATED' || image.status === 'APPROVED')) {
+					return { storyId: existingStoryId, ready: true };
+				}
+				if (existingImages.some((image) => image.status === 'PENDING')) return { storyId: existingStoryId, ready: false };
+				const generated = await imageService().generate({ email: item.selectedByEmail ?? 'automation@tomorrow-ish.news' }, { storyId: existingStoryId });
+				return { storyId: existingStoryId, ready: generated.status === 'GENERATED' };
+			}
+		}
 		const generationRepository = new D1GenerationRepository(env.DB);
 		const model = getRuntimeModelConfiguration();
 		const generation = new GenerationService(generationRepository, model.provider, {
 			dailyBudgetMicrousd: model.dailyBudgetMicrousd,
 			generationEnabled: model.generationEnabled,
-			limits: { ...DEFAULT_MODEL_LIMITS, defaultCandidateCount: 1 },
+			limits: { ...DEFAULT_MODEL_LIMITS, defaultCandidateCount: 1, maxAttempts: 1 },
 		});
 		const identity = { email: item.selectedByEmail ?? 'automation@tomorrow-ish.news' };
 		let version = await generationRepository.findAcceptedNormalizedVersion(item.intakeId);
 		if (!version) {
-			const versionId = await generation.proposeNormalization(identity, item.intakeId, `workflow:normalize:v1:${item.batchId}:${item.intakeId}`);
+			const versionId = await generation.proposeNormalization(identity, item.intakeId,
+				`workflow:normalize:v2:${item.batchId}:${item.intakeId}:attempt:${item.retryAttempt}`);
 			const proposed = await generationRepository.findNormalizedVersion(versionId);
 			if (!proposed) throw new Error('NORMALIZATION_MISSING');
 			await generation.reviewNormalization(identity, versionId, 'ACCEPTED', 'Intake selection authorized automatic pipeline continuation.');
@@ -53,36 +69,38 @@ class RuntimePipeline implements WorkflowPipelinePort {
 		if (!candidateId) {
 			const runId = await generation.generateCandidates(identity, {
 				intakeId: item.intakeId, normalizedEventVersionId: version.id, categoryId: item.categoryId,
-				idempotencyKey: `workflow:candidate:v1:${item.batchId}:${item.intakeId}`,
+				idempotencyKey: `workflow:candidate:v2:${item.batchId}:${item.intakeId}:attempt:${item.retryAttempt}`,
 				cautionAcknowledgement: version.proposedSuitability === 'SENSITIVE' ? 'ACKNOWLEDGE CAUTION' : undefined,
 				editorialReason: version.proposedSuitability === 'SENSITIVE' ? 'Explicitly selected during intake triage.' : undefined,
 			});
 			candidateId = await workflow.findGeneratedCandidateId(item.intakeId, runId);
 			if (!candidateId) throw new Error('CANDIDATE_MISSING');
-			await workflow.attachCandidate(item.batchId, item.intakeId, candidateId, new Date().toISOString());
+			if (!item.leaseOwner || !(await workflow.attachCandidate(item.batchId, item.intakeId, candidateId, item.leaseOwner, new Date().toISOString()))) {
+				throw new Error('WORKFLOW_LEASE_LOST');
+			}
 		}
 
 		let storyId = item.storyId;
 		if (!storyId) {
-			await generation.generateArticleBody(identity, {
-				candidateId, idempotencyKey: `workflow:body:v1:${item.batchId}:${item.intakeId}`,
-				cautionReason: version.proposedSuitability === 'SENSITIVE' ? 'Explicitly selected during intake triage.' : undefined,
-			});
+			storyId = await workflow.findStoryIdByCandidate(candidateId);
+			if (!storyId) {
+				await generation.generateArticleBody(identity, {
+					candidateId, idempotencyKey: `workflow:body:v2:${item.batchId}:${item.intakeId}:attempt:${item.retryAttempt}`,
+					cautionReason: version.proposedSuitability === 'SENSITIVE' ? 'Explicitly selected during intake triage.' : undefined,
+				});
+			}
 			const context = await generationRepository.findCandidateForBodyGeneration(candidateId);
-			if (!context || context.candidate.bodyGenerationState !== 'SUCCEEDED') throw new Error('BODY_MISSING');
-			storyId = crypto.randomUUID();
+			if (!context || (!storyId && context.candidate.bodyGenerationState !== 'SUCCEEDED')) throw new Error('BODY_MISSING');
+			const proposedStoryId = storyId ?? crypto.randomUUID();
 			const now = new Date().toISOString();
-			const created = await workflow.createReviewStory({
-				batchId: item.batchId, intakeId: item.intakeId, candidateId, storyId,
+			const attached = await workflow.ensureReviewStory({
+				batchId: item.batchId, intakeId: item.intakeId, candidateId, storyId: proposedStoryId,
 				slug: slug(context.candidate.proposedHeadline, item.intakeId), editionDate: now.slice(0, 10),
 				socialExcerpt: context.candidate.proposedDeck.slice(0, 500), actorEmail: identity.email,
-				at: now, eventId: crypto.randomUUID(),
+				owner: item.leaseOwner ?? '', at: now, eventId: crypto.randomUUID(),
 			});
-			if (!created) {
-				const refreshed = await workflow.findItem(item.batchId, item.intakeId);
-				if (!refreshed?.storyId) throw new Error('STORY_CREATION_FAILED');
-				storyId = refreshed.storyId;
-			}
+			if (!attached) throw new Error('STORY_CREATION_FAILED');
+			storyId = attached;
 		}
 
 		const images = await getArticleImageRepository().listByStory(storyId);
@@ -116,8 +134,14 @@ class RuntimeFinalImages implements FinalReviewImagePort {
 	}
 }
 
+function enabled(value: string | undefined): boolean {
+	return value?.trim().toLowerCase() === 'true';
+}
+
 export function getEditorialWorkflowService(): EditorialWorkflowService {
-	return new EditorialWorkflowService(getEditorialWorkflowRepository(), new RuntimePipeline(), new RuntimeFinalImages());
+	return new EditorialWorkflowService(getEditorialWorkflowRepository(), new RuntimePipeline(), new RuntimeFinalImages(), {
+		generationEnabled: enabled(env.EDITORIAL_WORKFLOW_GENERATION_ENABLED),
+	});
 }
 
 export function runEditorialWorkflow(limit = 3) {

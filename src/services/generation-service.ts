@@ -279,6 +279,9 @@ export class GenerationService {
 			if (existing.operation !== 'GENERATE_CANDIDATES' || existing.normalizedEventVersionId !== versionId) {
 				throw new EditorialValidationError('The idempotency key belongs to another operation.');
 			}
+			if (existing.status !== 'SUCCEEDED') {
+				throw new EditorialValidationError('The prior attempt failed; an explicit retry with a new attempt key is required.', 'conflict');
+			}
 			return existing.id;
 		}
 		const version = await this.repository.findAcceptedNormalizedVersion(intakeId);
@@ -328,7 +331,7 @@ export class GenerationService {
 		} catch (error) {
 			if (error instanceof EditorialValidationError) throw error;
 			const raced = await this.repository.findModelRunByIdempotencyKey(key);
-			if (raced?.operation === 'GENERATE_CANDIDATES' && raced.normalizedEventVersionId === versionId) return raced.id;
+			if (raced?.operation === 'GENERATE_CANDIDATES' && raced.normalizedEventVersionId === versionId && raced.status === 'SUCCEEDED') return raced.id;
 			const completedAt = this.now();
 			await this.repository.createModelRun({ id: runId, operation: 'GENERATE_CANDIDATES', status: 'FAILED',
 				sourceIntakeId: intakeId, normalizedEventVersionId: versionId, provider: this.provider.providerId,

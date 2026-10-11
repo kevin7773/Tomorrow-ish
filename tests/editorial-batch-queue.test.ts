@@ -12,7 +12,9 @@ function batch(id: string, states: EditorialWorkflowState[]): EditorialBatch {
 		categoryId: 'cat-civic-life', state, selectedByEmail: state === 'INGESTED' ? null : 'editor@example.test',
 		selectedAt: state === 'INGESTED' ? null : NOW, candidateId: null, storyId: null,
 		failureStage: state === 'FAILED' ? 'AUTOMATIC_GENERATION' : null,
-		failureClassification: state === 'FAILED' ? 'PROVIDER' : null, createdAt: NOW, updatedAt: NOW,
+		failureClassification: state === 'FAILED' ? 'PROVIDER' : null,
+		leaseOwner: null, leaseAcquiredAt: null, leaseExpiresAt: null, attemptCount: 0, retryAttempt: 0,
+		createdAt: NOW, updatedAt: NOW,
 	}));
 	return { id, itemCount: items.length, createdAt: NOW, triageCompletedAt: null, finalReviewCompletedAt: null, items };
 }

@@ -5,7 +5,9 @@ interface ItemRow {
 	batch_id: string; source_intake_id: string; ordinal: number; category_id: string;
 	workflow_state: EditorialWorkflowState; selected_by_email: string | null; selected_at: string | null;
 	candidate_id: string | null; story_id: string | null; failure_stage: string | null;
-	failure_classification: string | null; created_at: string; updated_at: string;
+	failure_classification: string | null; lease_owner: string | null; lease_acquired_at: string | null;
+	lease_expires_at: string | null; attempt_count: number; retry_attempt: number;
+	created_at: string; updated_at: string;
 }
 
 function item(row: ItemRow): EditorialBatchItem {
@@ -15,6 +17,8 @@ function item(row: ItemRow): EditorialBatchItem {
 		selectedByEmail: row.selected_by_email, selectedAt: row.selected_at,
 		candidateId: row.candidate_id, storyId: row.story_id,
 		failureStage: row.failure_stage, failureClassification: row.failure_classification,
+		leaseOwner: row.lease_owner, leaseAcquiredAt: row.lease_acquired_at,
+		leaseExpiresAt: row.lease_expires_at, attemptCount: row.attempt_count, retryAttempt: row.retry_attempt,
 		createdAt: row.created_at, updatedAt: row.updated_at,
 	};
 }
@@ -59,11 +63,66 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 		return row ? item(row) : null;
 	}
 
-	async listProcessable(limit: number): Promise<EditorialBatchItem[]> {
-		const rows = await this.db.prepare(`SELECT * FROM editorial_batch_items
-			WHERE workflow_state IN ('SELECTED', 'GENERATING') ORDER BY selected_at, ordinal LIMIT ?`)
-			.bind(limit).all<ItemRow>();
-		return rows.results.map(item);
+	async claimProcessable(record: { limit: number; owner: string; at: string; leaseExpiresAt: string; createEventId: () => string }): Promise<EditorialBatchItem[]> {
+		const candidates = await this.db.prepare(`SELECT * FROM editorial_batch_items
+			WHERE workflow_state IN ('SELECTED', 'GENERATING')
+			AND (lease_owner IS NULL OR lease_expires_at <= ?)
+			ORDER BY CASE workflow_state WHEN 'SELECTED' THEN 0 ELSE 1 END,
+				COALESCE(lease_expires_at, selected_at), ordinal LIMIT ?`)
+			.bind(record.at, Math.max(record.limit * 8, record.limit)).all<ItemRow>();
+		const claimed: EditorialBatchItem[] = [];
+		for (const candidate of candidates.results) {
+			if (claimed.length >= record.limit) break;
+			const recovered = candidate.workflow_state === 'GENERATING';
+			const results = await this.db.batch([
+				this.db.prepare(`UPDATE editorial_batch_items SET workflow_state = 'GENERATING', lease_owner = ?,
+					lease_acquired_at = ?, lease_expires_at = ?, attempt_count = attempt_count + 1, updated_at = ?
+					WHERE batch_id = ? AND source_intake_id = ? AND workflow_state IN ('SELECTED', 'GENERATING')
+					AND (lease_owner IS NULL OR lease_expires_at <= ?)`)
+					.bind(record.owner, record.at, record.leaseExpiresAt, record.at,
+						candidate.batch_id, candidate.source_intake_id, record.at),
+				this.event(record.createEventId(), candidate.batch_id, candidate.source_intake_id, candidate.story_id,
+					recovered ? 'GENERATION_LEASE_RECOVERED' : 'GENERATION_STARTED', record.owner, record.at),
+			]);
+			if (results[0].meta.changes === 1) {
+				const found = await this.findItem(candidate.batch_id, candidate.source_intake_id);
+				if (found) claimed.push(found);
+			}
+		}
+		return claimed;
+	}
+
+	async reconcilePublished(record: { limit: number; actorEmail: string; at: string; createEventId: () => string; createAuditId: () => string }): Promise<number> {
+		const rows = await this.db.prepare(`SELECT item.batch_id, item.source_intake_id,
+			COALESCE(item.story_id, story.id) AS story_id, item.workflow_state
+			FROM editorial_batch_items AS item
+			JOIN stories AS story ON story.id = item.story_id OR
+				(item.story_id IS NULL AND item.candidate_id IS NOT NULL AND story.origin_candidate_id = item.candidate_id)
+			WHERE item.workflow_state IN ('SELECTED', 'GENERATING', 'FAILED') AND story.status = 'PUBLISHED'
+			AND EXISTS (SELECT 1 FROM article_images AS image WHERE image.story_id = story.id AND image.status = 'APPROVED')
+			ORDER BY item.updated_at, item.ordinal LIMIT ?`).bind(record.limit).all<{
+			batch_id: string; source_intake_id: string; story_id: string; workflow_state: EditorialWorkflowState;
+		}>();
+		let changed = 0;
+		for (const row of rows.results) {
+			const results = await this.db.batch([
+				this.db.prepare(`UPDATE editorial_batch_items SET workflow_state = 'PUBLISHED', story_id = ?,
+					failure_stage = NULL, failure_classification = NULL, lease_owner = NULL,
+					lease_acquired_at = NULL, lease_expires_at = NULL, updated_at = ?
+					WHERE batch_id = ? AND source_intake_id = ? AND workflow_state IN ('SELECTED', 'GENERATING', 'FAILED')
+					AND EXISTS (SELECT 1 FROM stories WHERE id = ? AND status = 'PUBLISHED')
+					AND EXISTS (SELECT 1 FROM article_images WHERE story_id = ? AND status = 'APPROVED')`)
+					.bind(row.story_id, record.at, row.batch_id, row.source_intake_id, row.story_id, row.story_id),
+				this.db.prepare(`INSERT INTO editorial_audit_log
+					(id, actor_email, entity_type, entity_id, action, from_status, to_status, created_at)
+					SELECT ?, ?, 'STORY', ?, 'WORKFLOW_RECONCILED', ?, 'PUBLISHED', ? WHERE changes() > 0`)
+					.bind(record.createAuditId(), record.actorEmail, row.story_id, row.workflow_state, record.at),
+				this.event(record.createEventId(), row.batch_id, row.source_intake_id, row.story_id,
+					'WORKFLOW_PUBLISHED_RECONCILED', row.workflow_state, record.at),
+			]);
+			changed += Number(results[0].meta.changes === 1);
+		}
+		return changed;
 	}
 
 	async select(batchId: string, intakeId: string, actorEmail: string, at: string, eventId: string): Promise<boolean> {
@@ -92,20 +151,11 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 		return results[0].meta.changes === 1;
 	}
 
-	async markGenerating(batchId: string, intakeId: string, at: string, eventId: string): Promise<boolean> {
-		const results = await this.db.batch([
-			this.db.prepare(`UPDATE editorial_batch_items SET workflow_state = 'GENERATING', updated_at = ?
-				WHERE batch_id = ? AND source_intake_id = ? AND workflow_state = 'SELECTED'`)
-				.bind(at, batchId, intakeId),
-			this.event(eventId, batchId, intakeId, null, 'GENERATION_STARTED', null, at),
-		]);
-		return results[0].meta.changes === 1;
-	}
-
-	async attachCandidate(batchId: string, intakeId: string, candidateId: string, at: string): Promise<boolean> {
+	async attachCandidate(batchId: string, intakeId: string, candidateId: string, owner: string, at: string): Promise<boolean> {
 		const result = await this.db.prepare(`UPDATE editorial_batch_items SET candidate_id = ?, updated_at = ?
 			WHERE batch_id = ? AND source_intake_id = ? AND workflow_state = 'GENERATING'
-			AND candidate_id IS NULL`).bind(candidateId, at, batchId, intakeId).run();
+			AND lease_owner = ? AND lease_expires_at > ? AND candidate_id IS NULL`)
+			.bind(candidateId, at, batchId, intakeId, owner, at).run();
 		return result.meta.changes === 1;
 	}
 
@@ -116,7 +166,31 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 		return row?.id ?? null;
 	}
 
-	async createReviewStory(record: { batchId: string; intakeId: string; candidateId: string; storyId: string; slug: string; editionDate: string; socialExcerpt: string; actorEmail: string; at: string; eventId: string }): Promise<boolean> {
+	async findStoryIdByCandidate(candidateId: string): Promise<string | null> {
+		const row = await this.db.prepare('SELECT id FROM stories WHERE origin_candidate_id = ?')
+			.bind(candidateId).first<{ id: string }>();
+		return row?.id ?? null;
+	}
+
+	async attachExistingStory(record: { batchId: string; intakeId: string; candidateId: string; storyId: string; owner: string; at: string; eventId: string }): Promise<boolean> {
+		const results = await this.db.batch([
+			this.db.prepare(`UPDATE editorial_batch_items SET story_id = ?, updated_at = ?
+				WHERE batch_id = ? AND source_intake_id = ? AND candidate_id = ? AND workflow_state = 'GENERATING'
+				AND lease_owner = ? AND lease_expires_at > ?
+				AND EXISTS (SELECT 1 FROM stories WHERE id = ? AND origin_candidate_id = ?
+					AND status IN ('REVIEW', 'APPROVED', 'PUBLISHED'))`)
+				.bind(record.storyId, record.at, record.batchId, record.intakeId, record.candidateId,
+					record.owner, record.at, record.storyId, record.candidateId),
+			this.event(record.eventId, record.batchId, record.intakeId, record.storyId,
+				'EXISTING_STORY_ATTACHED', null, record.at),
+		]);
+		return results[0].meta.changes === 1;
+	}
+
+	async ensureReviewStory(record: { batchId: string; intakeId: string; candidateId: string; storyId: string; slug: string; editionDate: string; socialExcerpt: string; actorEmail: string; owner: string; at: string; eventId: string }): Promise<string | null> {
+		const existing = await this.db.prepare('SELECT id FROM stories WHERE origin_candidate_id = ?')
+			.bind(record.candidateId).first<{ id: string }>();
+		const storyId = existing?.id ?? record.storyId;
 		const results = await this.db.batch([
 			this.db.prepare(`INSERT INTO stories (
 				id, slug, headline, deck, body_markdown, edition_date, category_id, status,
@@ -125,56 +199,85 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 				'REVIEW', ?, '[]', ?, ?, id FROM satire_candidates
 				WHERE id = ? AND source_intake_id = ? AND status = 'DRAFT'
 				AND body_generation_state = 'SUCCEEDED' AND trim(draft_body_markdown) <> ''
+				AND EXISTS (SELECT 1 FROM editorial_batch_items AS item WHERE item.batch_id = ?
+					AND item.source_intake_id = ? AND item.candidate_id = satire_candidates.id
+					AND item.workflow_state = 'GENERATING' AND item.lease_owner = ? AND item.lease_expires_at > ?)
 				AND NOT EXISTS (SELECT 1 FROM stories WHERE origin_candidate_id = satire_candidates.id)`)
-				.bind(record.storyId, record.slug, record.editionDate, record.socialExcerpt,
-					record.at, record.at, record.candidateId, record.intakeId),
-			this.db.prepare(`INSERT INTO sources (id, story_id, title, url, publisher, published_at, created_at)
+				.bind(storyId, record.slug, record.editionDate, record.socialExcerpt,
+					record.at, record.at, record.candidateId, record.intakeId,
+					record.batchId, record.intakeId, record.owner, record.at),
+			this.db.prepare(`INSERT OR IGNORE INTO sources (id, story_id, title, url, publisher, published_at, created_at)
 				SELECT ? || ':' || reference.id, ?, reference.source_title, reference.source_url,
 				reference.publisher_name, reference.published_at, ? FROM source_references AS reference
 				WHERE reference.source_intake_id = ? AND EXISTS (SELECT 1 FROM stories WHERE id = ?)`)
-				.bind(record.candidateId, record.storyId, record.at, record.intakeId, record.storyId),
+				.bind(record.candidateId, storyId, record.at, record.intakeId, storyId),
 			this.db.prepare(`UPDATE editorial_batch_items SET story_id = ?, updated_at = ?
 				WHERE batch_id = ? AND source_intake_id = ? AND candidate_id = ?
-				AND workflow_state = 'GENERATING' AND EXISTS (SELECT 1 FROM stories WHERE id = ? AND status = 'REVIEW')`)
-				.bind(record.storyId, record.at, record.batchId, record.intakeId, record.candidateId, record.storyId),
-			this.db.prepare(`INSERT INTO editorial_audit_log
+				AND workflow_state = 'GENERATING' AND lease_owner = ? AND lease_expires_at > ?
+				AND EXISTS (SELECT 1 FROM stories WHERE id = ? AND status IN ('REVIEW', 'APPROVED', 'PUBLISHED'))`)
+				.bind(storyId, record.at, record.batchId, record.intakeId, record.candidateId,
+					record.owner, record.at, storyId),
+			existing ? this.db.prepare('SELECT 1 WHERE 0') : this.db.prepare(`INSERT INTO editorial_audit_log
 				(id, actor_email, entity_type, entity_id, action, from_status, to_status, created_at)
 				SELECT ?, ?, 'STORY', ?, 'CREATED_FOR_FINAL_REVIEW', 'DRAFT', 'REVIEW', ?
 				WHERE EXISTS (SELECT 1 FROM stories WHERE id = ? AND status = 'REVIEW')`)
-				.bind(`${record.eventId}:audit`, record.actorEmail, record.storyId, record.at, record.storyId),
-			this.event(record.eventId, record.batchId, record.intakeId, record.storyId, 'BODY_GENERATED', null, record.at),
+				.bind(`${record.eventId}:audit`, record.actorEmail, storyId, record.at, storyId),
+			this.event(record.eventId, record.batchId, record.intakeId, storyId,
+				existing ? 'EXISTING_STORY_ATTACHED' : 'BODY_GENERATED', null, record.at),
 		]);
-		return results[0].meta.changes === 1 && results[2].meta.changes === 1;
+		if (results[2].meta.changes === 1) return storyId;
+		const racedStoryId = await this.findStoryIdByCandidate(record.candidateId);
+		if (!racedStoryId) return null;
+		return await this.attachExistingStory({ ...record, storyId: racedStoryId, eventId: `${record.eventId}:existing` })
+			? racedStoryId : null;
 	}
 
-	async markReady(batchId: string, intakeId: string, storyId: string, at: string, eventId: string): Promise<boolean> {
+	async markReady(batchId: string, intakeId: string, storyId: string, owner: string, at: string, eventId: string): Promise<boolean> {
 		const results = await this.db.batch([
-			this.db.prepare(`UPDATE editorial_batch_items SET workflow_state = 'READY_FOR_REVIEW', updated_at = ?
+			this.db.prepare(`UPDATE editorial_batch_items SET workflow_state = 'READY_FOR_REVIEW', updated_at = ?,
+				lease_owner = NULL, lease_acquired_at = NULL, lease_expires_at = NULL
 				WHERE batch_id = ? AND source_intake_id = ? AND story_id = ? AND workflow_state = 'GENERATING'
-				AND EXISTS (SELECT 1 FROM article_images WHERE story_id = ? AND status = 'GENERATED')`)
-				.bind(at, batchId, intakeId, storyId, storyId),
+				AND lease_owner = ? AND lease_expires_at > ?
+				AND EXISTS (SELECT 1 FROM article_images WHERE story_id = ? AND status IN ('GENERATED', 'APPROVED'))`)
+				.bind(at, batchId, intakeId, storyId, owner, at, storyId),
 			this.event(eventId, batchId, intakeId, storyId, 'ARTICLE_READY_FOR_REVIEW', null, at),
 		]);
 		return results[0].meta.changes === 1;
 	}
 
-	async markFailed(batchId: string, intakeId: string, stage: string, classification: string, at: string, eventId: string): Promise<void> {
+	async markFailed(batchId: string, intakeId: string, owner: string, stage: string, classification: string, at: string, eventId: string): Promise<void> {
 		await this.db.batch([
 			this.db.prepare(`UPDATE editorial_batch_items SET workflow_state = 'FAILED', failure_stage = ?,
-				failure_classification = ?, updated_at = ? WHERE batch_id = ? AND source_intake_id = ?
-				AND workflow_state IN ('SELECTED', 'GENERATING')`)
-				.bind(stage, classification, at, batchId, intakeId),
+				failure_classification = ?, lease_owner = NULL, lease_acquired_at = NULL,
+				lease_expires_at = NULL, updated_at = ? WHERE batch_id = ? AND source_intake_id = ?
+				AND workflow_state = 'GENERATING' AND lease_owner = ? AND lease_expires_at > ?`)
+				.bind(stage, classification, at, batchId, intakeId, owner, at),
 			this.event(eventId, batchId, intakeId, null, 'GENERATION_FAILED', `${stage}:${classification}`, at),
 		]);
+	}
+
+	async releaseLease(batchId: string, intakeId: string, owner: string, at: string): Promise<boolean> {
+		const result = await this.db.prepare(`UPDATE editorial_batch_items SET lease_owner = NULL,
+			lease_acquired_at = NULL, lease_expires_at = NULL, updated_at = ?
+			WHERE batch_id = ? AND source_intake_id = ? AND workflow_state = 'GENERATING'
+			AND lease_owner = ? AND lease_expires_at > ?`)
+			.bind(at, batchId, intakeId, owner, at).run();
+		return result.meta.changes === 1;
 	}
 
 	async retryFailed(batchId: string, intakeId: string, actorEmail: string, at: string, eventId: string): Promise<boolean> {
 		const results = await this.db.batch([
 			this.db.prepare(`UPDATE editorial_batch_items SET workflow_state = 'SELECTED',
-				failure_stage = NULL, failure_classification = NULL, updated_at = ?
+				failure_stage = NULL, failure_classification = NULL, retry_attempt = retry_attempt + 1,
+				retry_requested_by_email = ?, retry_requested_at = ?, updated_at = ?
 				WHERE batch_id = ? AND source_intake_id = ? AND workflow_state = 'FAILED'`)
-				.bind(at, batchId, intakeId),
-			this.event(eventId, batchId, intakeId, null, 'GENERATION_RETRY_REQUESTED', actorEmail, at),
+				.bind(actorEmail, at, at, batchId, intakeId),
+			this.db.prepare(`INSERT OR IGNORE INTO editorial_workflow_events
+				(id, batch_id, source_intake_id, event_kind, detail, created_at)
+				SELECT ?, ?, ?, 'GENERATION_RETRY_REQUESTED',
+					? || ';attempt=' || retry_attempt || ';key=workflow-retry:v1:' || batch_id || ':' || source_intake_id || ':' || retry_attempt, ?
+				FROM editorial_batch_items WHERE batch_id = ? AND source_intake_id = ? AND changes() > 0`)
+				.bind(eventId, batchId, intakeId, actorEmail, at, batchId, intakeId),
 		]);
 		return results[0].meta.changes === 1;
 	}

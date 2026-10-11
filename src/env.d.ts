@@ -20,5 +20,6 @@ declare namespace Cloudflare {
 		IMAGE_WEBHOOK_ORIGIN: string;
 		REVIEW_NOTIFICATION_WEBHOOK_URL?: string;
 		REVIEW_NOTIFICATION_REVIEW_URL?: string;
+		EDITORIAL_WORKFLOW_GENERATION_ENABLED?: string;
 	}
 }

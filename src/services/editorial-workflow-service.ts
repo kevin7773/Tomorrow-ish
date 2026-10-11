@@ -25,15 +25,21 @@ function boundedFailure(error: unknown): string {
 export class EditorialWorkflowService {
 	private readonly now: () => string;
 	private readonly createId: () => string;
+	private readonly leaseMs: number;
+	private readonly generationEnabled: boolean;
+	private readonly owner: () => string;
 
 	constructor(
 		private readonly repository: EditorialWorkflowRepository,
 		private readonly pipeline?: WorkflowPipelinePort,
 		private readonly images?: FinalReviewImagePort,
-		dependencies: { now?: () => string; createId?: () => string } = {},
+		dependencies: { now?: () => string; createId?: () => string; leaseMs?: number; generationEnabled?: boolean; owner?: () => string } = {},
 	) {
 		this.now = dependencies.now ?? (() => new Date().toISOString());
 		this.createId = dependencies.createId ?? (() => crypto.randomUUID());
+		this.leaseMs = dependencies.leaseMs ?? 10 * 60 * 1_000;
+		this.generationEnabled = dependencies.generationEnabled ?? false;
+		this.owner = dependencies.owner ?? (() => `workflow:${crypto.randomUUID()}`);
 	}
 
 	async triage(identity: EditorialIdentity, batchIdValue: unknown, intakeIds: unknown[], decision: 'SELECT' | 'REJECT'): Promise<number> {
@@ -53,24 +59,29 @@ export class EditorialWorkflowService {
 		return changed;
 	}
 
-	async process(limit = 3): Promise<{ ready: number; pending: number; failed: number }> {
+	async process(limit = 3): Promise<{ reconciled: number; ready: number; pending: number; failed: number }> {
+		const at = this.now();
+		const report = { reconciled: await this.repository.reconcilePublished({
+			limit: Math.max(limit * 10, 50), actorEmail: 'automation@tomorrow-ish.news', at,
+			createEventId: this.createId, createAuditId: this.createId,
+		}), ready: 0, pending: 0, failed: 0 };
+		if (!this.generationEnabled) return report;
 		if (!this.pipeline) throw new Error('Workflow pipeline is not configured.');
-		const report = { ready: 0, pending: 0, failed: 0 };
 		const touchedBatches = new Set<string>();
-		for (let item of await this.repository.listProcessable(limit)) {
+		const owner = this.owner();
+		const leaseExpiresAt = new Date(new Date(at).getTime() + this.leaseMs).toISOString();
+		for (const item of await this.repository.claimProcessable({ limit, owner, at, leaseExpiresAt, createEventId: this.createId })) {
 			touchedBatches.add(item.batchId);
-			if (item.state === 'SELECTED') {
-				const at = this.now();
-				if (!(await this.repository.markGenerating(item.batchId, item.intakeId, at, this.createId()))) continue;
-				item = { ...item, state: 'GENERATING', updatedAt: at };
-			}
 			try {
 				const result = await this.pipeline.advance(item);
 				if (result.ready) {
-					if (await this.repository.markReady(item.batchId, item.intakeId, result.storyId, this.now(), this.createId())) report.ready += 1;
-				} else report.pending += 1;
+					if (await this.repository.markReady(item.batchId, item.intakeId, result.storyId, owner, this.now(), this.createId())) report.ready += 1;
+				} else {
+					await this.repository.releaseLease(item.batchId, item.intakeId, owner, this.now());
+					report.pending += 1;
+				}
 			} catch (error) {
-				await this.repository.markFailed(item.batchId, item.intakeId, 'AUTOMATIC_GENERATION', boundedFailure(error), this.now(), this.createId());
+				await this.repository.markFailed(item.batchId, item.intakeId, owner, 'AUTOMATIC_GENERATION', boundedFailure(error), this.now(), this.createId());
 				report.failed += 1;
 			}
 		}

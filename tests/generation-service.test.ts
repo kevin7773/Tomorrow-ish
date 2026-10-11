@@ -214,6 +214,23 @@ describe('generation authority', () => {
 		expect(record.run.status).toBe('SUCCEEDED');
 	});
 
+	it('never treats a failed idempotency record as a reusable generation success', async () => {
+		const { repo, createdCandidates } = repository();
+		vi.mocked(repo.findModelRunByIdempotencyKey).mockResolvedValue({
+			id: 'failed-run', operation: 'GENERATE_CANDIDATES', status: 'FAILED',
+			normalizedEventVersionId: 'version-1',
+		} as ModelRun);
+		const provider = new FakeModelProvider();
+		const call = vi.spyOn(provider, 'generateCandidates');
+		const service = new GenerationService(repo, provider);
+		await expect(service.generateCandidates(identity, {
+			intakeId: intake.id, normalizedEventVersionId: 'version-1', categoryId: 'cat-civic-life',
+			idempotencyKey: 'failed-key',
+		})).rejects.toThrow(/explicit retry with a new attempt key/i);
+		expect(call).not.toHaveBeenCalled();
+		expect(createdCandidates).not.toHaveBeenCalled();
+	});
+
 	it.each(['cat-sports', 'cat-weather', 'cat-community'])('persists generated drafts in the %s category', async (categoryId) => {
 		const { repo, createdCandidates } = repository(accepted(), 0, new Set([categoryId]));
 		const provider = new FakeModelProvider();
