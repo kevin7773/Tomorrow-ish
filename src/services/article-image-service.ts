@@ -5,12 +5,14 @@ import { produceArticleImagePrompt } from '../images/article-image-prompt';
 import type { ImageAssetStore } from '../images/asset-store';
 import { ImageProviderError, type ImageProvider } from '../images/image-provider';
 import { EditorialValidationError, requiredText } from './validation';
+import { isSmokeTargetIntake, type EditorialSmokeTarget } from './editorial-smoke-target';
 
 export interface ArticleImageServiceDependencies {
 	now?: () => string;
 	createId?: () => string;
 	createWebhookUrl?: (imageId: string) => Promise<string>;
 	processStoredWebhook?: (imageId: string) => Promise<void>;
+	smokeTarget?: EditorialSmokeTarget | null;
 }
 
 export interface ArticleImageGenerationResult {
@@ -39,6 +41,7 @@ export class ArticleImageService {
 	private readonly createId: () => string;
 	private readonly createWebhookUrl?: (imageId: string) => Promise<string>;
 	private readonly processStoredWebhook?: (imageId: string) => Promise<void>;
+	private readonly smokeTarget: EditorialSmokeTarget | null | undefined;
 
 	constructor(
 		private readonly editorialRepository: EditorialRepository,
@@ -51,6 +54,7 @@ export class ArticleImageService {
 		this.createId = dependencies.createId ?? (() => crypto.randomUUID());
 		this.createWebhookUrl = dependencies.createWebhookUrl;
 		this.processStoredWebhook = dependencies.processStoredWebhook;
+		this.smokeTarget = dependencies.smokeTarget;
 	}
 
 	async generate(identity: EditorialIdentity, input: { storyId: unknown }): Promise<ArticleImageGenerationResult> {
@@ -58,6 +62,14 @@ export class ArticleImageService {
 		const storyId = requiredText(input.storyId, 'Story ID', 100);
 		const story = await this.editorialRepository.findEditorialStoryById(storyId);
 		if (!story) throw new EditorialValidationError('The story was not found.', 'not-found');
+		if (this.smokeTarget !== undefined) {
+			const candidate = story.originCandidateId
+				? await this.editorialRepository.findCandidateById(story.originCandidateId)
+				: null;
+			if (!candidate || !isSmokeTargetIntake(this.smokeTarget, candidate.sourceIntakeId)) {
+				throw new EditorialValidationError('Image generation is outside the configured smoke target.', 'conflict');
+			}
+		}
 		if (story.status !== 'REVIEW' && story.status !== 'APPROVED') {
 			throw new EditorialValidationError('Only a story in final review can request paid image generation.');
 		}

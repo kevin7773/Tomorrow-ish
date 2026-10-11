@@ -1,4 +1,5 @@
 import type { APIRoute } from 'astro';
+import { env } from 'cloudflare:workers';
 import { getRuntimeModelConfiguration } from '../../../ai/runtime-model-provider';
 import { getGenerationRepository } from '../../../data/runtime-generation-repository';
 import {
@@ -10,6 +11,7 @@ import {
 } from '../../../lib/editorial-actions';
 import { GenerationService } from '../../../services/generation-service';
 import type { ModelProvider } from '../../../ai/model-provider';
+import { smokeTarget } from '../../../services/editorial-smoke-target';
 
 const unusedProvider: ModelProvider = {
 	providerId: 'unused', modelId: 'unused', estimateMaximumCostMicrousd: () => 0,
@@ -46,6 +48,7 @@ export const POST: APIRoute = async (context) => {
 		const service = new GenerationService(getGenerationRepository(), model.provider, {
 			dailyBudgetMicrousd: model.dailyBudgetMicrousd,
 			generationEnabled: model.generationEnabled,
+			smokeTarget: smokeTarget(env.EDITORIAL_WORKFLOW_SMOKE_BATCH_ID, env.EDITORIAL_WORKFLOW_SMOKE_INTAKE_ID),
 		});
 		switch (action) {
 			case 'normalize': {

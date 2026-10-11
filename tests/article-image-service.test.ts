@@ -78,6 +78,28 @@ function setup(options: { status?: EditorialStory['status']; providerError?: Ima
 }
 
 describe('governed article image service', () => {
+	it('rejects a non-target manual image request before provider submission', async () => {
+		const test = setup({ status: 'REVIEW' });
+		vi.mocked(test.editorialRepository.findEditorialStoryById).mockResolvedValueOnce({
+			...story('REVIEW'), originCandidateId: 'candidate-other',
+		});
+		vi.mocked(test.editorialRepository.findCandidateById).mockResolvedValueOnce({
+			id: 'candidate-other', sourceIntakeId: 'intake-other',
+		} as never);
+		const guarded = new ArticleImageService(
+			test.editorialRepository,
+			test.imageRepository,
+			test.provider,
+			test.assetStore,
+			{ smokeTarget: { batchId: 'batch-target', intakeId: 'intake-target' } },
+		);
+
+		await expect(guarded.generate(identity, { storyId: 'story-1' })).rejects.toThrow(/outside the configured smoke target/i);
+		expect(test.provider.generate).not.toHaveBeenCalled();
+		expect(test.imageRepository.recordPending).not.toHaveBeenCalled();
+		expect(test.imageRepository.recordGenerated).not.toHaveBeenCalled();
+	});
+
 	it('loads persisted sensitive-source governance before producing the provider prompt', async () => {
 		const { service, editorialRepository, provider } = setup();
 		vi.mocked(editorialRepository.findEditorialStoryById).mockResolvedValueOnce({

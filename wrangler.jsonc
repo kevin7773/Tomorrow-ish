@@ -24,7 +24,7 @@
     "AUTOMATION_ACTOR_EMAIL": "automation@tomorrow-ish.news",
     "IMAGE_PROVIDER": "cloudflare-ai-gateway",
     "IMAGE_MODEL": "openai/gpt-image-2",
-    "IMAGE_GENERATION_ENABLED": "true",
+    "IMAGE_GENERATION_ENABLED": "false",
     "CLOUDFLARE_ACCOUNT_ID": "13fbf38daabf893cddf8e7214957bfce",
     "CLOUDFLARE_AI_GATEWAY_ID": "tomorrow-ish",
     "IMAGE_WEBHOOK_ORIGIN": "https://tomorrow-ish.news",

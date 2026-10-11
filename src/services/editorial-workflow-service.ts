@@ -2,6 +2,7 @@ import type { EditorialWorkflowRepository } from '../data/editorial-workflow-rep
 import type { EditorialBatchItem } from '../domain/editorial-workflow';
 import type { EditorialIdentity } from '../domain/editorial';
 import { EditorialValidationError, requiredText } from './validation';
+import { isSmokeTargetPair, type EditorialSmokeTarget } from './editorial-smoke-target';
 
 export interface WorkflowPipelinePort {
 	advance(item: EditorialBatchItem, guard?: { renew(): Promise<void> }): Promise<{ storyId: string; ready: boolean }>;
@@ -28,13 +29,14 @@ export class EditorialWorkflowService {
 	private readonly leaseMs: number;
 	private readonly generationEnabled: boolean;
 	private readonly owner: () => string;
-	private readonly smokeTarget: { batchId: string; intakeId: string } | null;
+	private readonly smokeTarget: EditorialSmokeTarget | null;
+	private readonly imageGenerationEnabled: boolean;
 
 	constructor(
 		private readonly repository: EditorialWorkflowRepository,
 		private readonly pipeline?: WorkflowPipelinePort,
 		private readonly images?: FinalReviewImagePort,
-		dependencies: { now?: () => string; createId?: () => string; leaseMs?: number; generationEnabled?: boolean; owner?: () => string; smokeTarget?: { batchId: string; intakeId: string } | null } = {},
+		dependencies: { now?: () => string; createId?: () => string; leaseMs?: number; generationEnabled?: boolean; owner?: () => string; smokeTarget?: EditorialSmokeTarget | null; imageGenerationEnabled?: boolean } = {},
 	) {
 		this.now = dependencies.now ?? (() => new Date().toISOString());
 		this.createId = dependencies.createId ?? (() => crypto.randomUUID());
@@ -42,6 +44,7 @@ export class EditorialWorkflowService {
 		this.generationEnabled = dependencies.generationEnabled ?? false;
 		this.owner = dependencies.owner ?? (() => `workflow:${crypto.randomUUID()}`);
 		this.smokeTarget = dependencies.smokeTarget ?? null;
+		this.imageGenerationEnabled = dependencies.imageGenerationEnabled ?? true;
 	}
 
 	async triage(identity: EditorialIdentity, batchIdValue: unknown, intakeIds: unknown[], decision: 'SELECT' | 'REJECT'): Promise<number> {
@@ -138,6 +141,12 @@ export class EditorialWorkflowService {
 		if (!this.images) throw new Error('Final-review image operations are not configured.');
 		const batchId = requiredText(batchIdValue, 'Batch ID', 100);
 		const intakeId = requiredText(intakeIdValue, 'Intake ID', 100);
+		if (!isSmokeTargetPair(this.smokeTarget, batchId, intakeId)) {
+			throw new EditorialValidationError('Image generation is outside the configured smoke target.', 'conflict');
+		}
+		if (!this.imageGenerationEnabled) {
+			throw new EditorialValidationError('Article image generation is disabled.', 'model-disabled');
+		}
 		const item = await this.repository.findItem(batchId, intakeId);
 		if (!item?.storyId || item.state !== 'READY_FOR_REVIEW') throw new EditorialValidationError('The article is not ready for final review.', 'conflict');
 		await this.images.regenerate(item.storyId, identity);

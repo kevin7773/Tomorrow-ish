@@ -59,6 +59,19 @@ function repository(version = accepted(), previousRuns = 0, validCategoryIds: Re
 }
 
 describe('generation authority', () => {
+	it('rejects non-target and missing smoke configuration before a manual model reservation or provider call', async () => {
+		for (const smokeTarget of [{ batchId: 'target-batch', intakeId: 'different-intake' }, null]) {
+			const { repo } = repository();
+			const provider = new FakeModelProvider();
+			const call = vi.spyOn(provider, 'normalizeEvent');
+			await expect(new GenerationService(repo, provider, { smokeTarget }).proposeNormalization(
+				identity, intake.id, 'manual-smoke-attempt',
+			)).rejects.toThrow(/outside the configured smoke target/i);
+			expect(repo.claimModelRequest).not.toHaveBeenCalled();
+			expect(call).not.toHaveBeenCalled();
+		}
+	});
+
 	it('does not call the provider when an earlier request reservation is still PENDING', async () => {
 		const { repo } = repository();
 		vi.mocked(repo.claimModelRequest).mockResolvedValueOnce('PENDING');

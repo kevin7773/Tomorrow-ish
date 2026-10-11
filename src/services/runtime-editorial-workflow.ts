@@ -8,30 +8,54 @@ import { getEditorialWorkflowRepository } from '../data/runtime-editorial-workfl
 import type { EditorialBatchItem } from '../domain/editorial-workflow';
 import type { EditorialIdentity } from '../domain/editorial';
 import { getImageProvider } from '../images/runtime-image-provider';
+import { isImageGenerationEnabled } from '../images/image-provider-factory';
+import type { ImageProvider } from '../images/image-provider';
 import { ArticleImageService } from './article-image-service';
 import { getAsyncArticleImageService, getImageWebhookUrl } from './runtime-async-article-image-service';
 import { GenerationService } from './generation-service';
 import { EditorialWorkflowService, type FinalReviewImagePort, type WorkflowPipelinePort } from './editorial-workflow-service';
-import { smokeTarget } from './editorial-smoke-target';
+import { smokeTarget, type EditorialSmokeTarget } from './editorial-smoke-target';
+import { generateWorkflowImageIfEnabled } from './workflow-image-generation';
 
 function slug(headline: string, id: string): string {
 	const base = headline.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 70) || 'story';
 	return `${base}-${id.replace(/[^a-z0-9]/gi, '').slice(-8).toLowerCase()}`;
 }
 
-function imageService(): ArticleImageService {
+function imageService(target: EditorialSmokeTarget | null): ArticleImageService {
 	const repository = getArticleImageRepository();
 	const assets = getArticleImageAssetStore();
 	const asyncService = getAsyncArticleImageService(repository, assets);
 	return new ArticleImageService(getEditorialRepository(), repository, getImageProvider(), assets, {
 		createWebhookUrl: getImageWebhookUrl,
 		processStoredWebhook: (imageId) => asyncService.processStoredWebhook(imageId).then(() => undefined),
+		smokeTarget: target,
 	});
+}
+
+const reviewOnlyImageProvider: ImageProvider = {
+	provider: 'review-only',
+	model: 'none',
+	lifecycle: 'synchronous',
+	async generate() {
+		throw new Error('Image generation is unavailable from the review-only service.');
+	},
+};
+
+function imageReviewService(target: EditorialSmokeTarget | null): ArticleImageService {
+	return new ArticleImageService(
+		getEditorialRepository(),
+		getArticleImageRepository(),
+		reviewOnlyImageProvider,
+		getArticleImageAssetStore(),
+		{ smokeTarget: target },
+	);
 }
 
 class RuntimePipeline implements WorkflowPipelinePort {
 	async advance(item: EditorialBatchItem, guard?: { renew(): Promise<void> }): Promise<{ storyId: string; ready: boolean }> {
 		const workflow = getEditorialWorkflowRepository();
+		const target = smokeTarget(env.EDITORIAL_WORKFLOW_SMOKE_BATCH_ID, env.EDITORIAL_WORKFLOW_SMOKE_INTAKE_ID);
 		if (item.candidateId && !item.storyId) {
 			const existingStoryId = await workflow.findStoryIdByCandidate(item.candidateId);
 			if (existingStoryId) {
@@ -44,8 +68,9 @@ class RuntimePipeline implements WorkflowPipelinePort {
 				}
 				if (existingImages.some((image) => image.status === 'PENDING')) return { storyId: existingStoryId, ready: false };
 				await guard?.renew();
-				const generated = await imageService().generate({ email: item.selectedByEmail ?? 'automation@tomorrow-ish.news' }, { storyId: existingStoryId });
-				return { storyId: existingStoryId, ready: generated.status === 'GENERATED' };
+				const generated = await generateWorkflowImageIfEnabled(env, target, existingStoryId,
+					{ email: item.selectedByEmail ?? 'automation@tomorrow-ish.news' }, imageService);
+				return { storyId: existingStoryId, ready: generated.status === 'GENERATED' || generated.status === 'DISABLED' };
 			}
 		}
 		const generationRepository = new D1GenerationRepository(env.DB);
@@ -58,6 +83,7 @@ class RuntimePipeline implements WorkflowPipelinePort {
 			workflowFence: item.leaseOwner ? { batchId: item.batchId, intakeId: item.intakeId, leaseOwner: item.leaseOwner } : undefined,
 			beforeProviderCall: async () => guard?.renew(),
 			beforePersistResult: async () => guard?.renew(),
+			smokeTarget: target,
 		});
 		const identity = { email: item.selectedByEmail ?? 'automation@tomorrow-ish.news' };
 		let version = await generationRepository.findAcceptedNormalizedVersion(item.intakeId);
@@ -107,8 +133,8 @@ class RuntimePipeline implements WorkflowPipelinePort {
 		if (images.some((image) => image.status === 'GENERATED' || image.status === 'APPROVED')) return { storyId, ready: true };
 		if (images.some((image) => image.status === 'PENDING')) return { storyId, ready: false };
 		await guard?.renew();
-		const result = await imageService().generate(identity, { storyId });
-		return { storyId, ready: result.status === 'GENERATED' };
+		const result = await generateWorkflowImageIfEnabled(env, target, storyId, identity, imageService);
+		return { storyId, ready: result.status === 'GENERATED' || result.status === 'DISABLED' };
 	}
 }
 
@@ -120,18 +146,20 @@ class RuntimeFinalImages implements FinalReviewImagePort {
 		if (approved) return;
 		const generated = images.find((image) => image.status === 'GENERATED');
 		if (!generated) throw new Error('A generated image is required before publication.');
-		await imageService().approve(identity, { storyId, imageId: generated.id, altText: generated.altText ?? 'Tomorrow-ish article illustration.' });
+		await imageReviewService(smokeTarget(env.EDITORIAL_WORKFLOW_SMOKE_BATCH_ID, env.EDITORIAL_WORKFLOW_SMOKE_INTAKE_ID))
+			.approve(identity, { storyId, imageId: generated.id, altText: generated.altText ?? 'Tomorrow-ish article illustration.' });
 	}
 
 	async regenerate(storyId: string, identity: EditorialIdentity): Promise<void> {
 		const repository = getArticleImageRepository();
 		const images = await repository.listByStory(storyId);
 		const current = images.find((image) => image.status === 'GENERATED' || image.status === 'REJECTED');
-		if (current) await imageService().requestRegeneration(identity, { storyId, imageId: current.id });
+		const target = smokeTarget(env.EDITORIAL_WORKFLOW_SMOKE_BATCH_ID, env.EDITORIAL_WORKFLOW_SMOKE_INTAKE_ID);
+		if (current) await imageReviewService(target).requestRegeneration(identity, { storyId, imageId: current.id });
 		else if (!images.some((image) => ['REGENERATE_REQUESTED', 'GENERATION_FAILED', 'APPROVED'].includes(image.status))) {
 			throw new Error('No governed image history is available for regeneration.');
 		}
-		await imageService().generate(identity, { storyId });
+		await generateWorkflowImageIfEnabled(env, target, storyId, identity, imageService);
 	}
 }
 
@@ -140,9 +168,11 @@ function enabled(value: string | undefined): boolean {
 }
 
 export function getEditorialWorkflowService(): EditorialWorkflowService {
+	const target = smokeTarget(env.EDITORIAL_WORKFLOW_SMOKE_BATCH_ID, env.EDITORIAL_WORKFLOW_SMOKE_INTAKE_ID);
 	return new EditorialWorkflowService(getEditorialWorkflowRepository(), new RuntimePipeline(), new RuntimeFinalImages(), {
 		generationEnabled: enabled(env.EDITORIAL_WORKFLOW_GENERATION_ENABLED),
-		smokeTarget: smokeTarget(env.EDITORIAL_WORKFLOW_SMOKE_BATCH_ID, env.EDITORIAL_WORKFLOW_SMOKE_INTAKE_ID),
+		smokeTarget: target,
+		imageGenerationEnabled: isImageGenerationEnabled(env),
 	});
 }
 

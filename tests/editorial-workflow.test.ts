@@ -147,6 +147,23 @@ describe('two-gate editorial workflow', () => {
 		expect(test.events).toEqual(['ARTICLE_EDITED', 'IMAGE_REGENERATED']);
 	});
 
+	it('fails closed before manual image regeneration when the image gate is disabled or the target differs', async () => {
+		const test = setup(workflowItem('READY_FOR_REVIEW'));
+		const disabled = new EditorialWorkflowService(test.repository, test.pipeline, test.images, {
+			now: () => now, createId: () => 'disabled-image', generationEnabled: true,
+			smokeTarget: { batchId: 'batch-1', intakeId: 'intake-1' }, imageGenerationEnabled: false,
+		});
+		await expect(disabled.regenerateImage(identity, 'batch-1', 'intake-1')).rejects.toThrow(/disabled/i);
+		expect(test.images.regenerate).not.toHaveBeenCalled();
+
+		const wrongTarget = new EditorialWorkflowService(test.repository, test.pipeline, test.images, {
+			now: () => now, createId: () => 'wrong-target', generationEnabled: true,
+			smokeTarget: { batchId: 'batch-other', intakeId: 'intake-other' }, imageGenerationEnabled: true,
+		});
+		await expect(wrongTarget.regenerateImage(identity, 'batch-1', 'intake-1')).rejects.toThrow(/outside the configured smoke target/i);
+		expect(test.images.regenerate).not.toHaveBeenCalled();
+	});
+
 	it('rejecting a completed article is terminal but retains its item history', async () => {
 		const test = setup(workflowItem('READY_FOR_REVIEW'));
 		await test.service.reject(identity, 'batch-1', 'intake-1', 'REJECT');

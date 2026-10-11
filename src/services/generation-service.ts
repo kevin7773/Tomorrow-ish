@@ -27,6 +27,7 @@ import {
 import type { GenerateArticleBodyInput } from '../ai/model-provider';
 import type { ProviderResponseDiagnostics } from '../ai/model-provider';
 import { EditorialValidationError, requiredText } from './validation';
+import { isSmokeTargetIntake, type EditorialSmokeTarget } from './editorial-smoke-target';
 
 const STALE_BODY_GENERATION_MINIMUM_MS = 60 * 60 * 1_000;
 
@@ -40,6 +41,7 @@ interface GenerationDependencies {
 	workflowFence?: { batchId: string; intakeId: string; leaseOwner: string };
 	beforeProviderCall?: () => Promise<void>;
 	beforePersistResult?: () => Promise<void>;
+	smokeTarget?: EditorialSmokeTarget | null;
 }
 
 function actor(identity: EditorialIdentity | null | undefined): string {
@@ -146,6 +148,7 @@ export class GenerationService {
 	private readonly workflowFence?: { batchId: string; intakeId: string; leaseOwner: string };
 	private readonly beforeProviderCall: () => Promise<void>;
 	private readonly beforePersistResult: () => Promise<void>;
+	private readonly smokeTarget: EditorialSmokeTarget | null | undefined;
 
 	constructor(
 		private readonly repository: GenerationRepository,
@@ -161,15 +164,17 @@ export class GenerationService {
 		this.workflowFence = dependencies.workflowFence;
 		this.beforeProviderCall = dependencies.beforeProviderCall ?? (async () => undefined);
 		this.beforePersistResult = dependencies.beforePersistResult ?? (async () => undefined);
+		this.smokeTarget = dependencies.smokeTarget;
 		if (!Number.isSafeInteger(this.dailyBudgetMicrousd) || this.dailyBudgetMicrousd <= 0) {
 			throw new EditorialValidationError('The daily model budget is invalid.');
 		}
 	}
 
 	async proposeNormalization(identity: EditorialIdentity, intakeIdValue: unknown, keyValue: unknown): Promise<string> {
-		if (!this.generationEnabled) throw new EditorialValidationError('Model generation is disabled or is not configured.', 'model-disabled');
 		const requestedByEmail = actor(identity);
 		const intakeId = requiredText(intakeIdValue, 'Intake ID', 100);
+		this.requirePaidSmokeTarget(intakeId);
+		if (!this.generationEnabled) throw new EditorialValidationError('Model generation is disabled or is not configured.', 'model-disabled');
 		const key = idempotencyKey(keyValue);
 		const existing = await this.repository.findModelRunByIdempotencyKey(key);
 		if (existing) {
@@ -305,9 +310,10 @@ export class GenerationService {
 	}
 
 	async generateCandidates(identity: EditorialIdentity, input: Record<string, unknown>): Promise<string> {
-		if (!this.generationEnabled) throw new EditorialValidationError('Model generation is disabled or is not configured.', 'model-disabled');
 		const requestedByEmail = actor(identity);
 		const intakeId = requiredText(input.intakeId, 'Intake ID', 100);
+		this.requirePaidSmokeTarget(intakeId);
+		if (!this.generationEnabled) throw new EditorialValidationError('Model generation is disabled or is not configured.', 'model-disabled');
 		const versionId = requiredText(input.normalizedEventVersionId, 'Normalized event version ID', 100);
 		const categoryId = requiredText(input.categoryId, 'Category ID', 100);
 		const key = idempotencyKey(input.idempotencyKey);
@@ -405,6 +411,13 @@ export class GenerationService {
 		throw new EditorialValidationError('The workflow lease is no longer owned by this processor.', 'conflict');
 	}
 
+	private requirePaidSmokeTarget(intakeId: string): void {
+		if (this.smokeTarget === undefined) return;
+		if (!isSmokeTargetIntake(this.smokeTarget, intakeId)) {
+			throw new EditorialValidationError('The paid model operation is outside the configured smoke target.', 'conflict');
+		}
+	}
+
 	private async finishFailedReservation(key: string, error: unknown, completedAt: string): Promise<void> {
 		const cause = error instanceof ModelExecutionError ? error.cause : error;
 		const malformed = cause instanceof ModelOutputError;
@@ -438,6 +451,7 @@ export class GenerationService {
 		const context = await this.repository.findCandidateForBodyGeneration(candidateId);
 		if (!context) throw new EditorialValidationError('The candidate or its source intake was not found.', 'not-found');
 		const { candidate, intake, version } = context;
+		this.requirePaidSmokeTarget(intake.id);
 		if (candidate.status !== 'DRAFT') throw new EditorialValidationError('Only a DRAFT candidate may generate an article body.');
 		if (candidate.draftBodyMarkdown.trim()) throw new EditorialValidationError('The candidate already has an article body.', 'conflict');
 		if (candidate.bodyGenerationState === 'PENDING') throw new EditorialValidationError('Article body generation is already in progress.', 'conflict');
