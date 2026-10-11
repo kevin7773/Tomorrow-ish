@@ -36,6 +36,10 @@ interface GenerationDependencies {
 	limits?: Readonly<ModelLimits>;
 	dailyBudgetMicrousd?: number;
 	generationEnabled?: boolean;
+	requestOwner?: string;
+	workflowFence?: { batchId: string; intakeId: string; leaseOwner: string };
+	beforeProviderCall?: () => Promise<void>;
+	beforePersistResult?: () => Promise<void>;
 }
 
 function actor(identity: EditorialIdentity | null | undefined): string {
@@ -76,6 +80,17 @@ function providerResponseDiagnostics(error: unknown): ProviderResponseDiagnostic
 function persistedProviderDiagnostics(error: unknown): Pick<ModelRunRecord,
 	'providerHttpStatus' | 'providerErrorType' | 'providerErrorCode' | 'providerErrorMessage' |
 	'providerRequestId' | 'providerRetryAfter'> {
+	const cause = error instanceof ModelExecutionError ? error.cause : error;
+	if (cause instanceof ModelOutputError) {
+		const diagnostic = cause.diagnostics;
+		const safeParts = [cause.failedField ? `field=${cause.failedField}` : null,
+			diagnostic?.envelopeStatus ? `envelope_status=${diagnostic.envelopeStatus}` : null,
+			diagnostic?.outputCharacters !== undefined ? `output_characters=${diagnostic.outputCharacters}` : null,
+			diagnostic?.outputHash ? `output_sha256=${diagnostic.outputHash}` : null].filter(Boolean);
+		return { providerHttpStatus: null, providerErrorType: 'MODEL_OUTPUT', providerErrorCode: cause.reason,
+			providerErrorMessage: safeParts.join(';') || null, providerRequestId: diagnostic?.requestId ?? null,
+			providerRetryAfter: null };
+	}
 	const diagnostics = providerResponseDiagnostics(error);
 	return {
 		providerHttpStatus: diagnostics?.httpStatus ?? null,
@@ -104,6 +119,10 @@ function editorialModelFailure(error: unknown): EditorialValidationError {
 	return new EditorialValidationError('The model operation could not be completed.', 'operation-failed');
 }
 
+function isOwnershipFenceLoss(error: unknown): boolean {
+	return error instanceof Error && ['WORKFLOW_LEASE_LOST', 'MODEL_REQUEST_FENCE_LOST'].includes(error.message);
+}
+
 function proposalFromVersion(version: Awaited<ReturnType<GenerationRepository['findNormalizedVersion']>>): NormalizationProposal {
 	if (!version) throw new EditorialValidationError('The normalized event was not found.', 'not-found');
 	return {
@@ -123,6 +142,10 @@ export class GenerationService {
 	private readonly limits: Readonly<ModelLimits>;
 	private readonly dailyBudgetMicrousd: number;
 	private readonly generationEnabled: boolean;
+	private readonly requestOwner: string;
+	private readonly workflowFence?: { batchId: string; intakeId: string; leaseOwner: string };
+	private readonly beforeProviderCall: () => Promise<void>;
+	private readonly beforePersistResult: () => Promise<void>;
 
 	constructor(
 		private readonly repository: GenerationRepository,
@@ -134,12 +157,17 @@ export class GenerationService {
 		this.limits = dependencies.limits ?? DEFAULT_MODEL_LIMITS;
 		this.dailyBudgetMicrousd = dependencies.dailyBudgetMicrousd ?? 1_000_000;
 		this.generationEnabled = dependencies.generationEnabled ?? true;
+		this.requestOwner = dependencies.requestOwner ?? `model:${crypto.randomUUID()}`;
+		this.workflowFence = dependencies.workflowFence;
+		this.beforeProviderCall = dependencies.beforeProviderCall ?? (async () => undefined);
+		this.beforePersistResult = dependencies.beforePersistResult ?? (async () => undefined);
 		if (!Number.isSafeInteger(this.dailyBudgetMicrousd) || this.dailyBudgetMicrousd <= 0) {
 			throw new EditorialValidationError('The daily model budget is invalid.');
 		}
 	}
 
 	async proposeNormalization(identity: EditorialIdentity, intakeIdValue: unknown, keyValue: unknown): Promise<string> {
+		if (!this.generationEnabled) throw new EditorialValidationError('Model generation is disabled or is not configured.', 'model-disabled');
 		const requestedByEmail = actor(identity);
 		const intakeId = requiredText(intakeIdValue, 'Intake ID', 100);
 		const key = idempotencyKey(keyValue);
@@ -160,8 +188,11 @@ export class GenerationService {
 		const createdAt = this.now();
 		const reservedCostMicrousd = await this.requireBudget('NORMALIZE', inputText.length, createdAt);
 		const runId = this.createId();
+		await this.reserveModelRequest('NORMALIZE', key, intakeId, null, createdAt);
 		let executed: { result: ModelResult<unknown>; retryCount: number; latencyMs: number } | null = null;
 		try {
+			await this.beforeProviderCall();
+			if (!(await this.repository.markModelRequestStarted(key, this.requestOwner, this.now()))) throw new Error('MODEL_REQUEST_FENCE_LOST');
 			executed = await runWithLimits((signal) => this.provider.normalizeEvent(input, signal), inputText.length,
 				modelLimitsForOperation('NORMALIZE', this.limits));
 			const parsed = parseNormalizationProposal(executed.result.output);
@@ -177,6 +208,7 @@ export class GenerationService {
 			const outputText = JSON.stringify(parsed);
 			const versionId = this.createId();
 			const completedAt = this.now();
+			await this.beforePersistResult();
 			await this.repository.createNormalization({
 				run: await this.runRecord({ id: runId, operation: 'NORMALIZE', sourceIntakeId: intakeId,
 					normalizedEventVersionId: versionId, key, requestedByEmail, createdAt, completedAt,
@@ -187,12 +219,15 @@ export class GenerationService {
 				assertionIds: parsed.assertions.map(() => this.createId()),
 				createdAt: completedAt,
 			});
+			await this.repository.finishModelRequest({ idempotencyKey: key, owner: this.requestOwner, status: 'SUCCEEDED', completedAt });
 			return versionId;
 		} catch (error) {
 			const raced = await this.repository.findModelRunByIdempotencyKey(key);
 			if (raced?.operation === 'NORMALIZE' && raced.sourceIntakeId === intakeId && raced.normalizedEventVersionId) {
 				return raced.normalizedEventVersionId;
 			}
+			if (isOwnershipFenceLoss(error)) throw new EditorialValidationError(
+				'The workflow lease was lost; the provider outcome remains pending investigation.', 'conflict');
 			const completedAt = this.now();
 			const failed: ModelRunRecord = {
 				id: runId, operation: 'NORMALIZE', status: 'FAILED', sourceIntakeId: intakeId,
@@ -208,6 +243,7 @@ export class GenerationService {
 				...persistedProviderDiagnostics(error),
 			};
 			await this.repository.createModelRun(failed);
+			await this.finishFailedReservation(key, error, completedAt);
 			throw editorialModelFailure(error);
 		}
 	}
@@ -269,6 +305,7 @@ export class GenerationService {
 	}
 
 	async generateCandidates(identity: EditorialIdentity, input: Record<string, unknown>): Promise<string> {
+		if (!this.generationEnabled) throw new EditorialValidationError('Model generation is disabled or is not configured.', 'model-disabled');
 		const requestedByEmail = actor(identity);
 		const intakeId = requiredText(input.intakeId, 'Intake ID', 100);
 		const versionId = requiredText(input.normalizedEventVersionId, 'Normalized event version ID', 100);
@@ -312,13 +349,17 @@ export class GenerationService {
 		const runId = this.createId();
 		const createdAt = this.now();
 		const reservedCostMicrousd = await this.requireBudget('GENERATE_CANDIDATES', inputText.length, createdAt);
+		await this.reserveModelRequest('GENERATE_CANDIDATES', key, intakeId, versionId, createdAt);
 		let executed: { result: ModelResult<unknown>; retryCount: number; latencyMs: number } | null = null;
 		try {
+			await this.beforeProviderCall();
+			if (!(await this.repository.markModelRequestStarted(key, this.requestOwner, this.now()))) throw new Error('MODEL_REQUEST_FENCE_LOST');
 			executed = await runWithLimits((signal) => this.provider.generateCandidates(modelInput, signal), inputText.length,
 				modelLimitsForOperation('GENERATE_CANDIDATES', this.limits));
 			const candidates = parseCandidateBatch(executed.result.output, this.limits.defaultCandidateCount);
 			const outputText = JSON.stringify(candidates);
 			const completedAt = this.now();
+			await this.beforePersistResult();
 			const created = await this.repository.createGeneratedCandidates({
 				run: await this.runRecord({ id: runId, operation: 'GENERATE_CANDIDATES', sourceIntakeId: intakeId,
 					normalizedEventVersionId: versionId, key, requestedByEmail, createdAt, completedAt,
@@ -327,9 +368,12 @@ export class GenerationService {
 				auditIds: candidates.map(() => this.createId()), createdAt: completedAt, editorialReason,
 			});
 			if (!created) throw new EditorialValidationError('Candidates could not be created.');
+			await this.repository.finishModelRequest({ idempotencyKey: key, owner: this.requestOwner, status: 'SUCCEEDED', completedAt });
 			return runId;
 		} catch (error) {
 			if (error instanceof EditorialValidationError) throw error;
+			if (isOwnershipFenceLoss(error)) throw new EditorialValidationError(
+				'The workflow lease was lost; the provider outcome remains pending investigation.', 'conflict');
 			const raced = await this.repository.findModelRunByIdempotencyKey(key);
 			if (raced?.operation === 'GENERATE_CANDIDATES' && raced.normalizedEventVersionId === versionId && raced.status === 'SUCCEEDED') return raced.id;
 			const completedAt = this.now();
@@ -343,8 +387,33 @@ export class GenerationService {
 				estimatedCostMicrousd: executed?.result.usage.estimatedCostMicrousd ?? reservedCostMicrousd,
 				candidateCount: 0, idempotencyKey: key, requestedByEmail,
 				failureClassification: sanitizedFailure(error), ...persistedProviderDiagnostics(error), createdAt, completedAt });
+			await this.finishFailedReservation(key, error, completedAt);
 			throw editorialModelFailure(error);
 		}
+	}
+
+	private async reserveModelRequest(operation: 'NORMALIZE' | 'GENERATE_CANDIDATES', key: string,
+		sourceIntakeId: string, normalizedEventVersionId: string | null, createdAt: string): Promise<void> {
+		const claimed = await this.repository.claimModelRequest({ idempotencyKey: key, operation,
+			attemptKey: key, sourceIntakeId, normalizedEventVersionId, owner: this.requestOwner,
+			createdAt, workflowFence: this.workflowFence });
+		if (claimed === 'CLAIMED') return;
+		if (claimed === 'PENDING') throw new EditorialValidationError(
+			'The provider outcome is pending investigation; an automatic retry is prohibited.', 'conflict');
+		if (claimed === 'TERMINAL') throw new EditorialValidationError(
+			'The prior attempt is terminal; an explicit retry with a new attempt key is required.', 'conflict');
+		throw new EditorialValidationError('The workflow lease is no longer owned by this processor.', 'conflict');
+	}
+
+	private async finishFailedReservation(key: string, error: unknown, completedAt: string): Promise<void> {
+		const cause = error instanceof ModelExecutionError ? error.cause : error;
+		const malformed = cause instanceof ModelOutputError;
+		const diagnostics = malformed ? cause.diagnostics : undefined;
+		await this.repository.finishModelRequest({ idempotencyKey: key, owner: this.requestOwner,
+			status: malformed ? 'FAILED' : 'AMBIGUOUS', completedAt,
+			failureReason: malformed ? cause.reason : sanitizedFailure(error), failureField: malformed ? cause.failedField : null,
+			providerRequestId: diagnostics?.requestId ?? null, envelopeStatus: diagnostics?.envelopeStatus ?? null,
+			outputCharacters: diagnostics?.outputCharacters ?? null, outputHash: diagnostics?.outputHash ?? null });
 	}
 
 	async generateArticleBody(identity: EditorialIdentity, input: Record<string, unknown>): Promise<string> {
@@ -443,6 +512,7 @@ export class GenerationService {
 
 		let executed: { result: ModelResult<unknown>; retryCount: number; latencyMs: number } | null = null;
 		try {
+			await this.beforeProviderCall();
 			executed = await runWithLimits(
 				(signal) => this.provider.generateArticleBody(modelInput, signal),
 				inputText.length,
@@ -461,6 +531,7 @@ export class GenerationService {
 			}
 			const outputText = JSON.stringify(proposal);
 			const completedAt = this.now();
+			await this.beforePersistResult();
 			const run = await this.runRecord({
 				id: runId, operation: 'GENERATE_ARTICLE_BODY', sourceIntakeId: intake.id,
 				normalizedEventVersionId: version.id, key, requestedByEmail, createdAt, completedAt,
@@ -486,6 +557,8 @@ export class GenerationService {
 			return runId;
 		} catch (error) {
 			if (error instanceof EditorialValidationError && error.code === 'conflict') throw error;
+			if (isOwnershipFenceLoss(error)) throw new EditorialValidationError(
+				'The workflow lease was lost; the provider outcome remains pending investigation.', 'conflict');
 			const completedAt = this.now();
 			const diagnostics = persistedProviderDiagnostics(error);
 			await this.repository.failArticleBodyGeneration({

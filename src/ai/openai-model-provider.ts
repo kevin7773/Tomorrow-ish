@@ -65,10 +65,10 @@ function candidateSchema(count: number) { return {
 		candidates: { type: 'array', minItems: count, maxItems: count, items: {
 			type: 'object', additionalProperties: false,
 			properties: {
-				headline: { type: 'string' },
-				deck: { type: 'string' },
-				rationale: { type: 'string' },
-				satiricalMechanism: { type: 'string' },
+				headline: { type: 'string', pattern: '^(?=[\\s\\S]{1,300}$)(?=[\\s\\S]*\\S)[\\s\\S]*$' },
+				deck: { type: 'string', pattern: '^[\\s\\S]{0,1000}$' },
+				rationale: { type: 'string', pattern: '^(?=[\\s\\S]{1,2000}$)(?=[\\s\\S]*\\S)[\\s\\S]*$' },
+				satiricalMechanism: { type: 'string', pattern: '^(?=[\\s\\S]{1,120}$)(?=[\\s\\S]*\\S)[\\s\\S]*$' },
 			},
 			required: ['headline', 'deck', 'rationale', 'satiricalMechanism'],
 		} },
@@ -110,17 +110,17 @@ function safeSourceInput(input: NormalizeEventInput) {
 	};
 }
 
-function responseText(response: OpenAIResponse): string {
-	if (response.status !== 'completed' || !Array.isArray(response.output)) throw new ModelOutputError();
-	const texts = response.output.flatMap((item) => item.type === 'message' && Array.isArray(item.content)
+function responseTexts(response: OpenAIResponse): string[] {
+	if (!Array.isArray(response.output)) return [];
+	return response.output.flatMap((item) => item.type === 'message' && Array.isArray(item.content)
 		? item.content.filter((content) => content.type === 'output_text' && typeof content.text === 'string').map((content) => content.text as string)
 		: []);
-	if (texts.length !== 1) throw new ModelOutputError();
-	return texts[0];
 }
 
 function nonnegativeInteger(value: unknown): number {
-	if (!Number.isInteger(value) || (value as number) < 0) throw new ModelOutputError('Provider usage metadata is invalid.');
+	if (!Number.isInteger(value) || (value as number) < 0) {
+		throw new ModelOutputError('Provider usage metadata is invalid.', 'USAGE_METADATA', 'usage');
+	}
 	return value as number;
 }
 
@@ -137,6 +137,35 @@ function safeHeader(value: string | null, maxLength = 200): string | null {
 	if (value === null) return null;
 	const trimmed = value.trim();
 	return trimmed.length > 0 && trimmed.length <= maxLength && /^[\x20-\x7E]+$/.test(trimmed) ? trimmed : null;
+}
+
+async function safeOutputHash(value: string): Promise<string> {
+	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function diagnosedOutputError(input: {
+	reason: import('./model-provider').ModelOutputFailureReason;
+	requestId: string | null;
+	envelopeStatus: string | null;
+	outputText?: string;
+	failedField?: string | null;
+	message?: string;
+}): Promise<ModelOutputError> {
+	const outputCharacters = input.outputText === undefined ? null : input.outputText.length;
+	return new ModelOutputError(
+		input.message,
+		input.reason,
+		input.failedField ?? null,
+		{
+			reason: input.reason,
+			requestId: input.requestId,
+			envelopeStatus: input.envelopeStatus,
+			outputCharacters,
+			outputHash: input.outputText === undefined ? null : await safeOutputHash(input.outputText),
+			failedField: input.failedField ?? null,
+		},
+	);
 }
 
 function sanitizedProviderMessage(value: unknown): string | null {
@@ -279,21 +308,49 @@ export class OpenAIModelProvider implements ModelProvider {
 			throw new ModelProviderError('PROVIDER_NETWORK', true);
 		}
 		if (!response.ok) throw await httpFailure(response);
+		const requestId = safeIdentifier(response.headers.get('x-request-id'));
+		let rawEnvelope: string;
+		try { rawEnvelope = await response.text(); }
+		catch { throw await diagnosedOutputError({ reason: 'JSON_PARSE', requestId, envelopeStatus: null }); }
 		let envelope: OpenAIResponse;
-		try { envelope = await response.json() as OpenAIResponse; }
-		catch { throw new ModelOutputError(); }
-		const text = responseText(envelope);
+		try { envelope = JSON.parse(rawEnvelope) as OpenAIResponse; }
+		catch {
+			throw await diagnosedOutputError({ reason: 'JSON_PARSE', requestId, envelopeStatus: null, outputText: rawEnvelope });
+		}
+		const envelopeStatus = typeof envelope.status === 'string' ? envelope.status : null;
+		if (envelopeStatus !== 'completed') {
+			throw await diagnosedOutputError({ reason: 'ENVELOPE_STATUS', requestId, envelopeStatus });
+		}
+		const texts = responseTexts(envelope);
+		if (texts.length !== 1) {
+			throw await diagnosedOutputError({ reason: 'OUTPUT_TEXT_SHAPE', requestId, envelopeStatus });
+		}
+		const text = texts[0];
 		let rawOutput: unknown;
 		try { rawOutput = JSON.parse(text); }
-		catch { throw new ModelOutputError(); }
-		const output = validate(rawOutput);
-		const inputTokens = nonnegativeInteger(envelope.usage?.input_tokens);
-		const outputTokens = nonnegativeInteger(envelope.usage?.output_tokens);
+		catch { throw await diagnosedOutputError({ reason: 'JSON_PARSE', requestId, envelopeStatus, outputText: text }); }
+		let output: T;
+		try { output = validate(rawOutput); }
+		catch (error) {
+			if (!(error instanceof ModelOutputError)) throw error;
+			throw await diagnosedOutputError({ reason: 'CONTRACT_VALIDATION', requestId, envelopeStatus,
+				outputText: text, failedField: error.failedField, message: error.message });
+		}
+		let inputTokens: number;
+		let outputTokens: number;
+		try {
+			inputTokens = nonnegativeInteger(envelope.usage?.input_tokens);
+			outputTokens = nonnegativeInteger(envelope.usage?.output_tokens);
+		} catch (error) {
+			if (!(error instanceof ModelOutputError)) throw error;
+			throw await diagnosedOutputError({ reason: 'USAGE_METADATA', requestId, envelopeStatus,
+				outputText: text, failedField: error.failedField, message: error.message });
+		}
 		return {
 			provider: this.providerId,
 			model: this.modelId,
 			providerRevision: typeof envelope.model === 'string' ? envelope.model : null,
-			providerRequestId: safeIdentifier(response.headers.get('x-request-id')),
+			providerRequestId: requestId,
 			output,
 			usage: {
 				inputTokens,

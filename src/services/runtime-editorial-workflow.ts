@@ -12,6 +12,7 @@ import { ArticleImageService } from './article-image-service';
 import { getAsyncArticleImageService, getImageWebhookUrl } from './runtime-async-article-image-service';
 import { GenerationService } from './generation-service';
 import { EditorialWorkflowService, type FinalReviewImagePort, type WorkflowPipelinePort } from './editorial-workflow-service';
+import { smokeTarget } from './editorial-smoke-target';
 
 function slug(headline: string, id: string): string {
 	const base = headline.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 70) || 'story';
@@ -29,7 +30,7 @@ function imageService(): ArticleImageService {
 }
 
 class RuntimePipeline implements WorkflowPipelinePort {
-	async advance(item: EditorialBatchItem): Promise<{ storyId: string; ready: boolean }> {
+	async advance(item: EditorialBatchItem, guard?: { renew(): Promise<void> }): Promise<{ storyId: string; ready: boolean }> {
 		const workflow = getEditorialWorkflowRepository();
 		if (item.candidateId && !item.storyId) {
 			const existingStoryId = await workflow.findStoryIdByCandidate(item.candidateId);
@@ -42,6 +43,7 @@ class RuntimePipeline implements WorkflowPipelinePort {
 					return { storyId: existingStoryId, ready: true };
 				}
 				if (existingImages.some((image) => image.status === 'PENDING')) return { storyId: existingStoryId, ready: false };
+				await guard?.renew();
 				const generated = await imageService().generate({ email: item.selectedByEmail ?? 'automation@tomorrow-ish.news' }, { storyId: existingStoryId });
 				return { storyId: existingStoryId, ready: generated.status === 'GENERATED' };
 			}
@@ -52,18 +54,15 @@ class RuntimePipeline implements WorkflowPipelinePort {
 			dailyBudgetMicrousd: model.dailyBudgetMicrousd,
 			generationEnabled: model.generationEnabled,
 			limits: { ...DEFAULT_MODEL_LIMITS, defaultCandidateCount: 1, maxAttempts: 1 },
+			requestOwner: item.leaseOwner ?? '',
+			workflowFence: item.leaseOwner ? { batchId: item.batchId, intakeId: item.intakeId, leaseOwner: item.leaseOwner } : undefined,
+			beforeProviderCall: async () => guard?.renew(),
+			beforePersistResult: async () => guard?.renew(),
 		});
 		const identity = { email: item.selectedByEmail ?? 'automation@tomorrow-ish.news' };
 		let version = await generationRepository.findAcceptedNormalizedVersion(item.intakeId);
-		if (!version) {
-			const versionId = await generation.proposeNormalization(identity, item.intakeId,
-				`workflow:normalize:v2:${item.batchId}:${item.intakeId}:attempt:${item.retryAttempt}`);
-			const proposed = await generationRepository.findNormalizedVersion(versionId);
-			if (!proposed) throw new Error('NORMALIZATION_MISSING');
-			await generation.reviewNormalization(identity, versionId, 'ACCEPTED', 'Intake selection authorized automatic pipeline continuation.');
-			version = await generationRepository.findAcceptedNormalizedVersion(item.intakeId);
-		}
-		if (!version || version.proposedSuitability === 'UNSUITABLE') throw new Error('NORMALIZATION_INELIGIBLE');
+		if (!version) throw new Error('NORMALIZATION_REVIEW_REQUIRED');
+		if (version.proposedSuitability === 'UNSUITABLE') throw new Error('NORMALIZATION_INELIGIBLE');
 
 		let candidateId = item.candidateId;
 		if (!candidateId) {
@@ -92,6 +91,7 @@ class RuntimePipeline implements WorkflowPipelinePort {
 			const context = await generationRepository.findCandidateForBodyGeneration(candidateId);
 			if (!context || (!storyId && context.candidate.bodyGenerationState !== 'SUCCEEDED')) throw new Error('BODY_MISSING');
 			const proposedStoryId = storyId ?? crypto.randomUUID();
+			await guard?.renew();
 			const now = new Date().toISOString();
 			const attached = await workflow.ensureReviewStory({
 				batchId: item.batchId, intakeId: item.intakeId, candidateId, storyId: proposedStoryId,
@@ -106,6 +106,7 @@ class RuntimePipeline implements WorkflowPipelinePort {
 		const images = await getArticleImageRepository().listByStory(storyId);
 		if (images.some((image) => image.status === 'GENERATED' || image.status === 'APPROVED')) return { storyId, ready: true };
 		if (images.some((image) => image.status === 'PENDING')) return { storyId, ready: false };
+		await guard?.renew();
 		const result = await imageService().generate(identity, { storyId });
 		return { storyId, ready: result.status === 'GENERATED' };
 	}
@@ -141,6 +142,7 @@ function enabled(value: string | undefined): boolean {
 export function getEditorialWorkflowService(): EditorialWorkflowService {
 	return new EditorialWorkflowService(getEditorialWorkflowRepository(), new RuntimePipeline(), new RuntimeFinalImages(), {
 		generationEnabled: enabled(env.EDITORIAL_WORKFLOW_GENERATION_ENABLED),
+		smokeTarget: smokeTarget(env.EDITORIAL_WORKFLOW_SMOKE_BATCH_ID, env.EDITORIAL_WORKFLOW_SMOKE_INTAKE_ID),
 	});
 }
 

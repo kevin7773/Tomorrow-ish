@@ -16,8 +16,11 @@ import type {
 	CreateGeneratedCandidatesRecord,
 	CreateNormalizationRecord,
 	FailArticleBodyGenerationRecord,
+	ClaimModelRequestRecord,
+	FinishModelRequestRecord,
 	ResolveStaleArticleBodyGenerationRecord,
 	GenerationRepository,
+	ModelRequestReservation,
 	ModelRunRecord,
 	ReviewNormalizationRecord,
 } from './generation-repository';
@@ -155,6 +158,52 @@ function insertRun(db: D1Database, run: ModelRunRecord): D1PreparedStatement {
 
 export class D1GenerationRepository implements GenerationRepository {
 	constructor(private readonly db: D1Database) {}
+
+	async claimModelRequest(record: ClaimModelRequestRecord): Promise<'CLAIMED' | 'PENDING' | 'TERMINAL' | 'FENCE_REJECTED'> {
+		const fence = record.workflowFence;
+		const result = await this.db.prepare(`INSERT INTO model_request_reservations (
+			idempotency_key, operation, attempt_key, source_intake_id, normalized_event_version_id,
+			owner, status, workflow_batch_id, workflow_intake_id, created_at
+		) SELECT ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?
+		WHERE ? IS NULL OR EXISTS (
+			SELECT 1 FROM editorial_batch_items WHERE batch_id = ? AND source_intake_id = ?
+			AND lease_owner = ? AND lease_expires_at > ? AND workflow_state = 'GENERATING'
+		) ON CONFLICT DO NOTHING`).bind(record.idempotencyKey, record.operation, record.attemptKey,
+			record.sourceIntakeId, record.normalizedEventVersionId, record.owner, fence?.batchId ?? null,
+			fence?.intakeId ?? null, record.createdAt, fence?.batchId ?? null, fence?.batchId ?? '',
+			fence?.intakeId ?? '', fence?.leaseOwner ?? '', record.createdAt).run();
+		if (result.meta.changes === 1) return 'CLAIMED';
+		const existing = await this.findModelRequestReservation(record.idempotencyKey);
+		if (!existing) return 'FENCE_REJECTED';
+		return existing.status === 'PENDING' ? 'PENDING' : 'TERMINAL';
+	}
+
+	async markModelRequestStarted(idempotencyKey: string, owner: string, at: string): Promise<boolean> {
+		const result = await this.db.prepare(`UPDATE model_request_reservations SET provider_started_at = ?
+			WHERE idempotency_key = ? AND owner = ? AND status = 'PENDING' AND provider_started_at IS NULL`)
+			.bind(at, idempotencyKey, owner).run();
+		return result.meta.changes === 1;
+	}
+
+	async finishModelRequest(record: FinishModelRequestRecord): Promise<boolean> {
+		const result = await this.db.prepare(`UPDATE model_request_reservations SET status = ?, completed_at = ?,
+			failure_reason = ?, failure_field = ?, provider_request_id = ?, envelope_status = ?,
+			output_characters = ?, output_hash = ? WHERE idempotency_key = ? AND owner = ? AND status = 'PENDING'`)
+			.bind(record.status, record.completedAt, record.failureReason ?? null, record.failureField ?? null,
+				record.providerRequestId ?? null, record.envelopeStatus ?? null, record.outputCharacters ?? null,
+				record.outputHash ?? null, record.idempotencyKey, record.owner).run();
+		return result.meta.changes === 1;
+	}
+
+	async findModelRequestReservation(idempotencyKey: string): Promise<ModelRequestReservation | null> {
+		const row = await this.db.prepare(`SELECT idempotency_key, operation, attempt_key, owner, status
+			FROM model_request_reservations WHERE idempotency_key = ? LIMIT 1`).bind(idempotencyKey).first<{
+			idempotency_key: string; operation: ModelRequestReservation['operation']; attempt_key: string;
+			owner: string; status: ModelRequestReservation['status'];
+		}>();
+		return row ? { idempotencyKey: row.idempotency_key, operation: row.operation,
+			attemptKey: row.attempt_key, owner: row.owner, status: row.status } : null;
+	}
 
 	async findIntakeForGeneration(id: string): Promise<SourceIntake | null> {
 		const row = await this.db.prepare('SELECT * FROM source_intakes WHERE id = ? AND archived_at IS NULL LIMIT 1').bind(id).first<IntakeRow>();

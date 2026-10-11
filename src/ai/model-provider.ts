@@ -96,8 +96,31 @@ export interface ProviderResponseDiagnostics {
 	retryAfter: string | null;
 }
 
+export const MODEL_OUTPUT_FAILURE_REASONS = [
+	'ENVELOPE_STATUS',
+	'OUTPUT_TEXT_SHAPE',
+	'JSON_PARSE',
+	'CONTRACT_VALIDATION',
+	'USAGE_METADATA',
+] as const;
+export type ModelOutputFailureReason = (typeof MODEL_OUTPUT_FAILURE_REASONS)[number];
+
+export interface ModelOutputDiagnostics {
+	reason: ModelOutputFailureReason;
+	requestId: string | null;
+	envelopeStatus: string | null;
+	outputCharacters: number | null;
+	outputHash: string | null;
+	failedField: string | null;
+}
+
 export class ModelOutputError extends Error {
-	constructor(message = 'The model returned invalid structured output.') {
+	constructor(
+		message = 'The model returned invalid structured output.',
+		readonly reason: ModelOutputFailureReason = 'CONTRACT_VALIDATION',
+		readonly failedField: string | null = null,
+		readonly diagnostics: ModelOutputDiagnostics | null = null,
+	) {
 		super(message);
 		this.name = 'ModelOutputError';
 	}

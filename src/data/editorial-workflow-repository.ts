@@ -4,7 +4,8 @@ export interface EditorialWorkflowRepository {
 	listBatches(limit?: number): Promise<EditorialBatch[]>;
 	findBatch(id: string): Promise<EditorialBatch | null>;
 	findItem(batchId: string, intakeId: string): Promise<EditorialBatchItem | null>;
-	claimProcessable(record: { limit: number; owner: string; at: string; leaseExpiresAt: string; createEventId: () => string }): Promise<EditorialBatchItem[]>;
+	claimProcessable(record: { limit: number; owner: string; at: string; leaseExpiresAt: string; createEventId: () => string; target?: { batchId: string; intakeId: string } }): Promise<EditorialBatchItem[]>;
+	renewLease?(batchId: string, intakeId: string, owner: string, at: string, leaseExpiresAt: string): Promise<boolean>;
 	reconcilePublished(record: { limit: number; actorEmail: string; at: string; createEventId: () => string; createAuditId: () => string }): Promise<number>;
 	select(batchId: string, intakeId: string, actorEmail: string, at: string, eventId: string): Promise<boolean>;
 	rejectIntake(batchId: string, intakeId: string, actorEmail: string, at: string, eventId: string): Promise<boolean>;

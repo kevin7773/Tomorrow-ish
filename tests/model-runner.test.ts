@@ -21,14 +21,14 @@ describe('model execution limits', () => {
 	it('keeps normalization at eight seconds and candidate generation at twenty-five seconds', () => {
 		expect(modelLimitsForOperation('NORMALIZE').timeoutMs).toBe(8_000);
 		expect(modelLimitsForOperation('GENERATE_CANDIDATES').timeoutMs).toBe(25_000);
-		expect(DEFAULT_MODEL_LIMITS.maxAttempts).toBe(2);
+		expect(DEFAULT_MODEL_LIMITS.maxAttempts).toBe(1);
 	});
-	it('uses bounded retries and exposes sanitized accounting metadata', async () => {
+	it('does not automatically retry failed editorial model operations', async () => {
 		const operation = vi.fn(async () => { throw new Error('provider unavailable'); });
 		const error = await runWithLimits(operation, 10, limits).catch((caught) => caught);
-		expect(operation).toHaveBeenCalledTimes(2);
+		expect(operation).toHaveBeenCalledTimes(1);
 		expect(error).toBeInstanceOf(ModelExecutionError);
-		expect(error.retryCount).toBe(1);
+		expect(error.retryCount).toBe(0);
 		expect(error.latencyMs).toBeGreaterThanOrEqual(0);
 	});
 

@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { EditorialWorkflowRepository } from '../src/data/editorial-workflow-repository';
 import type { EditorialBatchItem } from '../src/domain/editorial-workflow';
 import { EditorialWorkflowService, type FinalReviewImagePort, type WorkflowPipelinePort } from '../src/services/editorial-workflow-service';
+import { SMOKE_BATCH_ID, SMOKE_INTAKE_ID, smokeTarget } from '../src/services/editorial-smoke-target';
 
 const identity = { email: 'Editor@Tomorrow-ish.news' };
 const now = '2026-09-27T12:00:00.000Z';
@@ -28,6 +29,7 @@ function setup(initial = workflowItem()) {
 			item = { ...item, state: 'GENERATING', leaseOwner: owner, leaseAcquiredAt: at, leaseExpiresAt, attemptCount: item.attemptCount + 1 };
 			events.push('GENERATION_STARTED'); return [{ ...item }];
 		}),
+		renewLease: vi.fn(async () => true),
 		reconcilePublished: vi.fn(async () => 0),
 		select: vi.fn(async () => { if (item.state !== 'INGESTED') return false; item = { ...item, state: 'SELECTED', selectedByEmail: identity.email.toLowerCase(), selectedAt: now }; events.push('INTAKE_SELECTED'); return true; }),
 		rejectIntake: vi.fn(async () => { if (item.state !== 'INGESTED') return false; item = { ...item, state: 'REJECTED' }; events.push('INTAKE_REJECTED'); return true; }),
@@ -44,11 +46,19 @@ function setup(initial = workflowItem()) {
 	const pipeline: WorkflowPipelinePort = { advance: vi.fn(async () => ({ storyId: 'story-1', ready: true })) };
 	const images: FinalReviewImagePort = { approveLatestGenerated: vi.fn(async () => undefined), regenerate: vi.fn(async () => undefined) };
 	let id = 0;
-	const service = new EditorialWorkflowService(repository, pipeline, images, { now: () => now, createId: () => `id-${++id}`, generationEnabled: true });
+	const service = new EditorialWorkflowService(repository, pipeline, images, { now: () => now, createId: () => `id-${++id}`, generationEnabled: true,
+		smokeTarget: { batchId: 'batch-1', intakeId: 'intake-1' } });
 	return { service, repository, pipeline, images, events, getItem: () => item };
 }
 
 describe('two-gate editorial workflow', () => {
+	it('fails closed unless the exact single smoke batch/intake pair is configured', () => {
+		expect(smokeTarget(SMOKE_BATCH_ID, SMOKE_INTAKE_ID)).toEqual({ batchId: SMOKE_BATCH_ID, intakeId: SMOKE_INTAKE_ID });
+		expect(smokeTarget(undefined, undefined)).toBeNull();
+		expect(smokeTarget(SMOKE_BATCH_ID, undefined)).toBeNull();
+		expect(smokeTarget(`${SMOKE_BATCH_ID}-other`, SMOKE_INTAKE_ID)).toBeNull();
+		expect(smokeTarget(SMOKE_BATCH_ID, `${SMOKE_INTAKE_ID},another`)).toBeNull();
+	});
 	it('demonstrates a complete three-item session with no hidden intermediate human gate', async () => {
 		const items = new Map(['intake-1', 'intake-2', 'intake-3'].map((intakeId, index) => [intakeId, {
 			...workflowItem(), intakeId, ordinal: index + 1,
@@ -57,13 +67,14 @@ describe('two-gate editorial workflow', () => {
 		const repository: EditorialWorkflowRepository = {
 			listBatches: vi.fn(), findBatch: vi.fn(),
 			findItem: vi.fn(async (_batchId, intakeId) => ({ ...items.get(intakeId)! })),
-			claimProcessable: vi.fn(async ({ owner, at, leaseExpiresAt }) => [...items.values()]
-				.filter((item) => ['SELECTED', 'GENERATING'].includes(item.state)).map((item) => {
+			claimProcessable: vi.fn(async ({ owner, at, leaseExpiresAt, limit, target }) => [...items.values()]
+				.filter((item) => ['SELECTED', 'GENERATING'].includes(item.state)
+					&& (!target || (item.batchId === target.batchId && item.intakeId === target.intakeId))).slice(0, limit).map((item) => {
 					const claimed = { ...item, state: 'GENERATING' as const, leaseOwner: owner, leaseAcquiredAt: at,
 						leaseExpiresAt, attemptCount: item.attemptCount + 1 }; items.set(item.intakeId, claimed);
 					events.push('GENERATION_STARTED'); return { ...claimed };
 				})),
-			reconcilePublished: vi.fn(async () => 0),
+			renewLease: vi.fn(async () => true), reconcilePublished: vi.fn(async () => 0),
 			select: vi.fn(async (_batchId, intakeId) => { const item = items.get(intakeId)!; if (item.state !== 'INGESTED') return false; items.set(intakeId, { ...item, state: 'SELECTED', selectedByEmail: identity.email.toLowerCase(), selectedAt: now }); events.push('INTAKE_SELECTED'); return true; }),
 			rejectIntake: vi.fn(async (_batchId, intakeId) => { const item = items.get(intakeId)!; if (item.state !== 'INGESTED') return false; items.set(intakeId, { ...item, state: 'REJECTED' }); events.push('INTAKE_REJECTED'); return true; }),
 			attachCandidate: vi.fn(), findGeneratedCandidateId: vi.fn(), findStoryIdByCandidate: vi.fn(), attachExistingStory: vi.fn(), ensureReviewStory: vi.fn(),
@@ -76,22 +87,21 @@ describe('two-gate editorial workflow', () => {
 		const pipeline: WorkflowPipelinePort = { advance: vi.fn(async (item) => ({ storyId: `story-${item.intakeId.at(-1)}`, ready: true })) };
 		const images: FinalReviewImagePort = { approveLatestGenerated: vi.fn(async () => undefined), regenerate: vi.fn(async () => undefined) };
 		let id = 0;
-		const service = new EditorialWorkflowService(repository, pipeline, images, { now: () => now, createId: () => `demo-${++id}`, generationEnabled: true });
+		const service = new EditorialWorkflowService(repository, pipeline, images, { now: () => now, createId: () => `demo-${++id}`, generationEnabled: true,
+			smokeTarget: { batchId: 'batch-1', intakeId: 'intake-1' } });
 
 		await service.triage(identity, 'batch-1', ['intake-1', 'intake-2'], 'SELECT');
 		await service.triage(identity, 'batch-1', ['intake-3'], 'REJECT');
-		expect(await service.process()).toEqual({ reconciled: 0, ready: 2, pending: 0, failed: 0 });
-		expect(pipeline.advance).toHaveBeenCalledTimes(2);
-		expect([...items.values()].map((item) => item.state)).toEqual(['READY_FOR_REVIEW', 'READY_FOR_REVIEW', 'REJECTED']);
+		expect(await service.process()).toEqual({ reconciled: 0, ready: 1, pending: 0, failed: 0 });
+		expect(pipeline.advance).toHaveBeenCalledTimes(1);
+		expect([...items.values()].map((item) => item.state)).toEqual(['READY_FOR_REVIEW', 'SELECTED', 'REJECTED']);
 
 		await service.recordEdit(identity, 'batch-1', 'intake-1', 'story-1');
-		await service.regenerateImage(identity, 'batch-1', 'intake-2');
 		await service.publish(identity, 'batch-1', 'intake-1', 'PUBLISH');
-		await service.reject(identity, 'batch-1', 'intake-2', 'REJECT');
-		expect([...items.values()].map((item) => item.state)).toEqual(['PUBLISHED', 'REJECTED', 'REJECTED']);
+		expect([...items.values()].map((item) => item.state)).toEqual(['PUBLISHED', 'SELECTED', 'REJECTED']);
 		expect([...items.values()].filter((item) => item.state === 'READY_FOR_REVIEW')).toHaveLength(0);
 		expect(events).toContain('ARTICLE_EDITED');
-		expect(events).toContain('IMAGE_REGENERATED');
+		expect(events).not.toContain('IMAGE_REGENERATED');
 	});
 
 	it('rejecting at Gate 1 prevents generation', async () => {
@@ -165,7 +175,7 @@ describe('two-gate editorial workflow', () => {
 
 	it('uses the audited retry attempt in every automatic model idempotency key and disables model-level retries', () => {
 		const runtime = readFileSync(join(process.cwd(), 'src/services/runtime-editorial-workflow.ts'), 'utf8');
-		expect(runtime).toContain('workflow:normalize:v2:${item.batchId}:${item.intakeId}:attempt:${item.retryAttempt}');
+		expect(runtime).toContain("throw new Error('NORMALIZATION_REVIEW_REQUIRED')");
 		expect(runtime).toContain('workflow:candidate:v2:${item.batchId}:${item.intakeId}:attempt:${item.retryAttempt}');
 		expect(runtime).toContain('workflow:body:v2:${item.batchId}:${item.intakeId}:attempt:${item.retryAttempt}');
 		expect(runtime).toContain('maxAttempts: 1');

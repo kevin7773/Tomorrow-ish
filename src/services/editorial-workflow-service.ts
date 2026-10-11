@@ -4,7 +4,7 @@ import type { EditorialIdentity } from '../domain/editorial';
 import { EditorialValidationError, requiredText } from './validation';
 
 export interface WorkflowPipelinePort {
-	advance(item: EditorialBatchItem): Promise<{ storyId: string; ready: boolean }>;
+	advance(item: EditorialBatchItem, guard?: { renew(): Promise<void> }): Promise<{ storyId: string; ready: boolean }>;
 }
 
 export interface FinalReviewImagePort {
@@ -28,18 +28,20 @@ export class EditorialWorkflowService {
 	private readonly leaseMs: number;
 	private readonly generationEnabled: boolean;
 	private readonly owner: () => string;
+	private readonly smokeTarget: { batchId: string; intakeId: string } | null;
 
 	constructor(
 		private readonly repository: EditorialWorkflowRepository,
 		private readonly pipeline?: WorkflowPipelinePort,
 		private readonly images?: FinalReviewImagePort,
-		dependencies: { now?: () => string; createId?: () => string; leaseMs?: number; generationEnabled?: boolean; owner?: () => string } = {},
+		dependencies: { now?: () => string; createId?: () => string; leaseMs?: number; generationEnabled?: boolean; owner?: () => string; smokeTarget?: { batchId: string; intakeId: string } | null } = {},
 	) {
 		this.now = dependencies.now ?? (() => new Date().toISOString());
 		this.createId = dependencies.createId ?? (() => crypto.randomUUID());
 		this.leaseMs = dependencies.leaseMs ?? 10 * 60 * 1_000;
 		this.generationEnabled = dependencies.generationEnabled ?? false;
 		this.owner = dependencies.owner ?? (() => `workflow:${crypto.randomUUID()}`);
+		this.smokeTarget = dependencies.smokeTarget ?? null;
 	}
 
 	async triage(identity: EditorialIdentity, batchIdValue: unknown, intakeIds: unknown[], decision: 'SELECT' | 'REJECT'): Promise<number> {
@@ -65,15 +67,22 @@ export class EditorialWorkflowService {
 			limit: Math.max(limit * 10, 50), actorEmail: 'automation@tomorrow-ish.news', at,
 			createEventId: this.createId, createAuditId: this.createId,
 		}), ready: 0, pending: 0, failed: 0 };
-		if (!this.generationEnabled) return report;
+		if (!this.generationEnabled || !this.smokeTarget) return report;
 		if (!this.pipeline) throw new Error('Workflow pipeline is not configured.');
 		const touchedBatches = new Set<string>();
 		const owner = this.owner();
 		const leaseExpiresAt = new Date(new Date(at).getTime() + this.leaseMs).toISOString();
-		for (const item of await this.repository.claimProcessable({ limit, owner, at, leaseExpiresAt, createEventId: this.createId })) {
+		for (const item of await this.repository.claimProcessable({ limit: 1, owner, at, leaseExpiresAt, createEventId: this.createId, target: this.smokeTarget })) {
 			touchedBatches.add(item.batchId);
 			try {
-				const result = await this.pipeline.advance(item);
+				const renew = async () => {
+					const renewedAt = this.now();
+					const renewedUntil = new Date(new Date(renewedAt).getTime() + this.leaseMs).toISOString();
+					if (!this.repository.renewLease || !(await this.repository.renewLease(item.batchId, item.intakeId, owner, renewedAt, renewedUntil))) {
+						throw new Error('WORKFLOW_LEASE_LOST');
+					}
+				};
+				const result = await this.pipeline.advance(item, { renew });
 				if (result.ready) {
 					if (await this.repository.markReady(item.batchId, item.intakeId, result.storyId, owner, this.now(), this.createId())) report.ready += 1;
 				} else {

@@ -4,7 +4,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it, vi } from 'vitest';
 import { D1EditorialCronWindowRepository } from '../src/data/d1-editorial-cron-window-repository';
 import { D1EditorialWorkflowRepository } from '../src/data/d1-editorial-workflow-repository';
+import { D1GenerationRepository } from '../src/data/d1-generation-repository';
 import { fiveMinuteWindow, runDeduplicatedCronWindow } from '../src/services/editorial-cron-window';
+import { SMOKE_BATCH_ID, SMOKE_INTAKE_ID } from '../src/services/editorial-smoke-target';
 
 const NOW = '2026-10-11T12:00:00.000Z';
 const execute = Symbol('execute');
@@ -61,6 +63,27 @@ describe('editorial workflow recovery primitives', () => {
 		sqlite.close();
 	});
 
+	it('claims only the exact one-item smoke allowlist target and never falls back', async () => {
+		const sqlite = database();
+		sqlite.prepare("INSERT INTO automation_runs (id,trigger_kind,status,started_at,completed_at) VALUES (?,'SCHEDULED','SUCCEEDED',?,?)")
+			.run(SMOKE_BATCH_ID, NOW, NOW);
+		sqlite.prepare('INSERT INTO editorial_batches (id,item_count,created_at) VALUES (?,2,?)').run(SMOKE_BATCH_ID, NOW);
+		intake(sqlite, SMOKE_INTAKE_ID); intake(sqlite, 'other-intake');
+		for (const [id, ordinal] of [[SMOKE_INTAKE_ID, 1], ['other-intake', 2]] as const) {
+			sqlite.prepare(`INSERT INTO editorial_batch_items (batch_id,source_intake_id,ordinal,category_id,workflow_state,
+				selected_by_email,selected_at,created_at,updated_at) VALUES (?,?,?,'cat','SELECTED','editor@test',?,?,?)`)
+				.run(SMOKE_BATCH_ID, id, ordinal, NOW, NOW, NOW);
+		}
+		const repository = new D1EditorialWorkflowRepository(d1(sqlite));
+		const claimed = await repository.claimProcessable({ limit: 1, owner: 'smoke', at: NOW,
+			leaseExpiresAt: '2026-10-11T12:10:00.000Z', createEventId: () => 'smoke-event',
+			target: { batchId: SMOKE_BATCH_ID, intakeId: SMOKE_INTAKE_ID } });
+		expect(claimed.map((item) => [item.batchId, item.intakeId])).toEqual([[SMOKE_BATCH_ID, SMOKE_INTAKE_ID]]);
+		expect(sqlite.prepare("SELECT workflow_state FROM editorial_batch_items WHERE source_intake_id='other-intake'").get())
+			.toEqual({ workflow_state: 'SELECTED' });
+		sqlite.close();
+	});
+
 	it('recovers an expired lease and does not let an active blocked row starve selected work', async () => {
 		const sqlite = database(); batchItem(sqlite, 'stale', 1, 'GENERATING'); batchItem(sqlite, 'blocked', 2, 'GENERATING'); batchItem(sqlite, 'fresh', 3);
 		sqlite.prepare(`UPDATE editorial_batch_items SET lease_owner='old',lease_acquired_at=?,lease_expires_at=?,attempt_count=1 WHERE source_intake_id='stale'`)
@@ -73,6 +96,46 @@ describe('editorial workflow recovery primitives', () => {
 		expect(claimed.map((item) => item.intakeId)).toEqual(['fresh', 'stale']);
 		expect(claimed.map((item) => item.attemptCount)).toEqual([1, 2]);
 		expect(sqlite.prepare("SELECT lease_owner FROM editorial_batch_items WHERE source_intake_id='blocked'").get()).toEqual({ lease_owner: 'active' });
+		sqlite.close();
+	});
+
+	it('keeps a PENDING provider reservation protective after workflow lease expiry and recovery', async () => {
+		const sqlite = database(); batchItem(sqlite, 'intake-1', 1);
+		const workflow = new D1EditorialWorkflowRepository(d1(sqlite));
+		const generation = new D1GenerationRepository(d1(sqlite));
+		await workflow.claimProcessable({ limit: 1, owner: 'worker-a', at: NOW,
+			leaseExpiresAt: '2026-10-11T12:10:00.000Z', createEventId: () => 'claim-a' });
+		const record = { idempotencyKey: 'workflow:normalize:v2:batch:intake-1:attempt:0', operation: 'NORMALIZE' as const,
+			attemptKey: 'attempt:0', sourceIntakeId: 'intake-1', normalizedEventVersionId: null, owner: 'worker-a', createdAt: NOW,
+			workflowFence: { batchId: 'batch', intakeId: 'intake-1', leaseOwner: 'worker-a' } };
+		expect(await generation.claimModelRequest(record)).toBe('CLAIMED');
+		expect(await generation.markModelRequestStarted(record.idempotencyKey, 'worker-a', NOW)).toBe(true);
+		sqlite.prepare("UPDATE editorial_batch_items SET lease_expires_at='2026-10-11T11:59:00.000Z' WHERE source_intake_id='intake-1'").run();
+		await workflow.claimProcessable({ limit: 1, owner: 'worker-b', at: NOW,
+			leaseExpiresAt: '2026-10-11T12:10:00.000Z', createEventId: () => 'claim-b' });
+		expect(await generation.claimModelRequest({ ...record, owner: 'worker-b',
+			workflowFence: { ...record.workflowFence, leaseOwner: 'worker-b' } })).toBe('PENDING');
+		expect(await generation.finishModelRequest({ idempotencyKey: record.idempotencyKey, owner: 'worker-b',
+			status: 'SUCCEEDED', completedAt: NOW })).toBe(false);
+		expect(await workflow.renewLease('batch', 'intake-1', 'worker-a', NOW, '2026-10-11T12:20:00.000Z')).toBe(false);
+		sqlite.close();
+	});
+
+	it('atomically creates only one provider reservation under concurrent Cron processors', async () => {
+		const sqlite = database(); batchItem(sqlite, 'intake-1', 1);
+		const workflow = new D1EditorialWorkflowRepository(d1(sqlite));
+		await workflow.claimProcessable({ limit: 1, owner: 'worker', at: NOW,
+			leaseExpiresAt: '2026-10-11T12:10:00.000Z', createEventId: () => 'claim' });
+		const generation = new D1GenerationRepository(d1(sqlite));
+		const base = { idempotencyKey: 'request-1', operation: 'NORMALIZE' as const, attemptKey: 'attempt-1',
+			sourceIntakeId: 'intake-1', normalizedEventVersionId: null, createdAt: NOW,
+			workflowFence: { batchId: 'batch', intakeId: 'intake-1', leaseOwner: 'worker' } };
+		const results = await Promise.all([
+			generation.claimModelRequest({ ...base, owner: 'worker' }),
+			generation.claimModelRequest({ ...base, owner: 'worker' }),
+		]);
+		expect(results.sort()).toEqual(['CLAIMED', 'PENDING']);
+		expect(sqlite.prepare('SELECT COUNT(*) count FROM model_request_reservations').get()).toEqual({ count: 1 });
 		sqlite.close();
 	});
 

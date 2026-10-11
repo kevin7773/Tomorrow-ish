@@ -63,13 +63,15 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 		return row ? item(row) : null;
 	}
 
-	async claimProcessable(record: { limit: number; owner: string; at: string; leaseExpiresAt: string; createEventId: () => string }): Promise<EditorialBatchItem[]> {
+	async claimProcessable(record: { limit: number; owner: string; at: string; leaseExpiresAt: string; createEventId: () => string; target?: { batchId: string; intakeId: string } }): Promise<EditorialBatchItem[]> {
 		const candidates = await this.db.prepare(`SELECT * FROM editorial_batch_items
 			WHERE workflow_state IN ('SELECTED', 'GENERATING')
 			AND (lease_owner IS NULL OR lease_expires_at <= ?)
+			AND (? IS NULL OR (batch_id = ? AND source_intake_id = ?))
 			ORDER BY CASE workflow_state WHEN 'SELECTED' THEN 0 ELSE 1 END,
 				COALESCE(lease_expires_at, selected_at), ordinal LIMIT ?`)
-			.bind(record.at, Math.max(record.limit * 8, record.limit)).all<ItemRow>();
+			.bind(record.at, record.target?.batchId ?? null, record.target?.batchId ?? '',
+				record.target?.intakeId ?? '', Math.max(record.limit * 8, record.limit)).all<ItemRow>();
 		const claimed: EditorialBatchItem[] = [];
 		for (const candidate of candidates.results) {
 			if (claimed.length >= record.limit) break;
@@ -90,6 +92,13 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 			}
 		}
 		return claimed;
+	}
+
+	async renewLease(batchId: string, intakeId: string, owner: string, at: string, leaseExpiresAt: string): Promise<boolean> {
+		const result = await this.db.prepare(`UPDATE editorial_batch_items SET lease_expires_at = ?, updated_at = ?
+			WHERE batch_id = ? AND source_intake_id = ? AND workflow_state = 'GENERATING'
+			AND lease_owner = ? AND lease_expires_at > ?`).bind(leaseExpiresAt, at, batchId, intakeId, owner, at).run();
+		return result.meta.changes === 1;
 	}
 
 	async reconcilePublished(record: { limit: number; actorEmail: string; at: string; createEventId: () => string; createAuditId: () => string }): Promise<number> {

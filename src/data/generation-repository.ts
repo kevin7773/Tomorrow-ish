@@ -170,7 +170,45 @@ export interface ResolveStaleArticleBodyGenerationRecord {
 	auditId: string;
 }
 
+export type ModelRequestReservationStatus = 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'AMBIGUOUS';
+
+export interface ModelRequestReservation {
+	idempotencyKey: string;
+	operation: 'NORMALIZE' | 'GENERATE_CANDIDATES';
+	attemptKey: string;
+	owner: string;
+	status: ModelRequestReservationStatus;
+}
+
+export interface ClaimModelRequestRecord {
+	idempotencyKey: string;
+	operation: ModelRequestReservation['operation'];
+	attemptKey: string;
+	sourceIntakeId: string;
+	normalizedEventVersionId: string | null;
+	owner: string;
+	createdAt: string;
+	workflowFence?: { batchId: string; intakeId: string; leaseOwner: string };
+}
+
+export interface FinishModelRequestRecord {
+	idempotencyKey: string;
+	owner: string;
+	status: Exclude<ModelRequestReservationStatus, 'PENDING'>;
+	completedAt: string;
+	failureReason?: string | null;
+	failureField?: string | null;
+	providerRequestId?: string | null;
+	envelopeStatus?: string | null;
+	outputCharacters?: number | null;
+	outputHash?: string | null;
+}
+
 export interface GenerationRepository {
+	claimModelRequest(record: ClaimModelRequestRecord): Promise<'CLAIMED' | 'PENDING' | 'TERMINAL' | 'FENCE_REJECTED'>;
+	markModelRequestStarted(idempotencyKey: string, owner: string, at: string): Promise<boolean>;
+	finishModelRequest(record: FinishModelRequestRecord): Promise<boolean>;
+	findModelRequestReservation(idempotencyKey: string): Promise<ModelRequestReservation | null>;
 	findIntakeForGeneration(id: string): Promise<SourceIntake | null>;
 	getNextNormalizedVersionNumber(intakeId: string): Promise<number>;
 	listNormalizedVersions(intakeId: string): Promise<NormalizedEventVersion[]>;

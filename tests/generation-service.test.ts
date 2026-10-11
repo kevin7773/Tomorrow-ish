@@ -40,6 +40,9 @@ function repository(version = accepted(), previousRuns = 0, validCategoryIds: Re
 		return true;
 	});
 	const repo = {
+		claimModelRequest: vi.fn(async () => 'CLAIMED' as const),
+		markModelRequestStarted: vi.fn(async () => true), finishModelRequest: vi.fn(async () => true),
+		findModelRequestReservation: vi.fn(async () => null),
 		findIntakeForGeneration: vi.fn(async () => intake), getNextNormalizedVersionNumber: vi.fn(async () => 1),
 		listNormalizedVersions: vi.fn(async () => []), findNormalizedVersion: vi.fn(async () => version),
 		findAcceptedNormalizedVersion: vi.fn(async () => version), findModelRun: vi.fn(async () => null),
@@ -56,6 +59,43 @@ function repository(version = accepted(), previousRuns = 0, validCategoryIds: Re
 }
 
 describe('generation authority', () => {
+	it('does not call the provider when an earlier request reservation is still PENDING', async () => {
+		const { repo } = repository();
+		vi.mocked(repo.claimModelRequest).mockResolvedValueOnce('PENDING');
+		const provider = new FakeModelProvider();
+		const call = vi.spyOn(provider, 'normalizeEvent');
+		await expect(new GenerationService(repo, provider).proposeNormalization(identity, intake.id, 'pending-attempt'))
+			.rejects.toThrow(/pending investigation/i);
+		expect(call).not.toHaveBeenCalled();
+	});
+
+	it('fences result persistence when lease renewal fails after the provider returns', async () => {
+		const { repo, createdNormalization } = repository();
+		const provider = new FakeModelProvider();
+		const beforePersistResult = vi.fn(async () => { throw new Error('WORKFLOW_LEASE_LOST'); });
+		await expect(new GenerationService(repo, provider, { beforePersistResult }).proposeNormalization(
+			identity, intake.id, 'stale-owner-attempt')).rejects.toThrow();
+		expect(createdNormalization).not.toHaveBeenCalled();
+		expect(repo.createModelRun).not.toHaveBeenCalled();
+		expect(repo.finishModelRequest).not.toHaveBeenCalled();
+	});
+
+	it('persists one safe malformed-output reason without retrying the provider', async () => {
+		const { repo, createdCandidates } = repository();
+		const transport = vi.fn(async () => new Response(JSON.stringify({ status: 'completed', model: OPENAI_MODEL,
+			output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ candidates: [] }) }] }],
+			usage: { input_tokens: 10, output_tokens: 5 } }), { headers: { 'x-request-id': 'req_malformed_1' } }));
+		const service = new GenerationService(repo, new OpenAIModelProvider('test-key', OPENAI_MODEL, transport));
+		await expect(service.generateCandidates(identity, { intakeId: intake.id, normalizedEventVersionId: 'version-1',
+			categoryId: 'cat-civic-life', idempotencyKey: 'malformed-attempt-1' })).rejects.toThrow(/invalid output/i);
+		expect(transport).toHaveBeenCalledTimes(1);
+		expect(createdCandidates).not.toHaveBeenCalled();
+		expect(repo.createModelRun).toHaveBeenCalledWith(expect.objectContaining({ providerErrorType: 'MODEL_OUTPUT',
+			providerErrorCode: 'CONTRACT_VALIDATION', providerRequestId: 'req_malformed_1' }));
+		expect(repo.finishModelRequest).toHaveBeenCalledWith(expect.objectContaining({ status: 'FAILED',
+			failureReason: 'CONTRACT_VALIDATION', providerRequestId: 'req_malformed_1' }));
+	});
+
 	it('completes normalization with a successful injected OpenAI transport', async () => {
 		const output = {
 			eventStatement: 'Agency opened a drawer.',
@@ -114,10 +154,10 @@ describe('generation authority', () => {
 		});
 		const caught: unknown = await service.proposeNormalization(identity, intake.id, 'openai-network-failure').catch((error: unknown) => error);
 		expect(caught).toMatchObject({ code: 'provider-unavailable' });
-		expect(transport).toHaveBeenCalledTimes(2);
+		expect(transport).toHaveBeenCalledTimes(1);
 		expect(createdNormalization).not.toHaveBeenCalled();
 		expect(repo.createModelRun).toHaveBeenCalledWith(expect.objectContaining({
-			id: 'failed-run-id', status: 'FAILED', failureClassification: 'PROVIDER_NETWORK', normalizedEventVersionId: null, retryCount: 1,
+			id: 'failed-run-id', status: 'FAILED', failureClassification: 'PROVIDER_NETWORK', normalizedEventVersionId: null, retryCount: 0,
 		}));
 		const response = actionErrorResponse(caught, `/editorial/intakes/${intake.id}/normalize`);
 		expect(response.headers.get('Location')).toContain('error=provider-unavailable');
@@ -260,7 +300,7 @@ describe('generation authority', () => {
 		expect(createdCandidates).not.toHaveBeenCalled();
 	});
 
-	it('records candidate timeout after two longer-timeout attempts without persisting candidates', async () => {
+	it('records candidate timeout after one longer-timeout attempt without persisting candidates', async () => {
 		const { repo, createdCandidates } = repository();
 		const provider = new FakeModelProvider();
 		const invoke = vi.spyOn(provider, 'generateCandidates').mockImplementation((_input, signal) => new Promise((_resolve, reject) => {
@@ -277,11 +317,11 @@ describe('generation authority', () => {
 			intakeId: intake.id, normalizedEventVersionId: 'version-1', categoryId: 'cat-civic-life', idempotencyKey: 'candidate-timeout',
 		}).catch((error: unknown) => error);
 		expect(caught).toMatchObject({ code: 'provider-unavailable' });
-		expect(invoke).toHaveBeenCalledTimes(2);
+		expect(invoke).toHaveBeenCalledTimes(1);
 		expect(createdCandidates).not.toHaveBeenCalled();
 		expect(repo.createModelRun).toHaveBeenCalledWith(expect.objectContaining({
 			id: 'candidate-timeout-run', status: 'FAILED', failureClassification: 'TIMEOUT',
-			candidateCount: 0, retryCount: 1,
+			candidateCount: 0, retryCount: 0,
 		}));
 	});
 

@@ -69,7 +69,9 @@ describe('OpenAI Responses provider', () => {
 		const bodySchema = JSON.stringify(ARTICLE_BODY_SCHEMA);
 		expect(normalizationSchema).not.toContain('uniqueItems');
 		expect(normalizationSchema).not.toMatch(/minLength|maxLength/);
-		expect(candidateSchema).not.toMatch(/uniqueItems|minLength|maxLength/);
+		expect(candidateSchema).not.toContain('uniqueItems');
+		expect(candidateSchema).not.toMatch(/minLength|maxLength/);
+		expect(CANDIDATE_SCHEMA.properties.candidates.items.properties.headline).toHaveProperty('pattern');
 		expect(CANDIDATE_SCHEMA.properties.candidates).toMatchObject({ minItems: 5, maxItems: 5 });
 		expect(CANDIDATE_SCHEMA.additionalProperties).toBe(false);
 		expect(bodySchema).not.toMatch(/uniqueItems|minLength|maxLength/);
@@ -155,6 +157,16 @@ describe('OpenAI Responses provider', () => {
 		const request = JSON.parse(String(transport.mock.calls[0][1]?.body));
 		expect(request.text.format.schema.properties.candidates).toMatchObject({ minItems: 1, maxItems: 1 });
 		expect(result.output).toEqual(oneCandidate);
+	});
+
+	it.each([
+		[{ ...candidates[0], headline: '   ' }, 'candidates[].headline'],
+		[{ ...candidates[0], deck: 'x'.repeat(1_001) }, 'candidates[].deck'],
+	] as const)('matches candidate schema string constraints in local validation', async (candidate, field) => {
+		const provider = new OpenAIModelProvider('test-key', OPENAI_MODEL, async () => response({ candidates: [candidate] }));
+		const caught = await provider.generateCandidates({ eventStatement: 'Event', facts: [], uncertainties: [], context: [],
+			suitabilityReason: 'Reviewed.', guardrailFlags: [], count: 1 }, signal).catch((error: unknown) => error);
+		expect(caught).toMatchObject({ reason: 'CONTRACT_VALIDATION', failedField: field });
 	});
 
 	it('uses a separate governed contract for a complete article body', async () => {
@@ -265,17 +277,33 @@ describe('OpenAI Responses provider', () => {
 		}, signal)).rejects.toBeInstanceOf(ModelOutputError);
 	});
 
-	it('retries bounded transient failures and captures successful usage', async () => {
+	it.each([
+		['ENVELOPE_STATUS', { status: 'incomplete', output: [], usage: { input_tokens: 1, output_tokens: 1 } }],
+		['OUTPUT_TEXT_SHAPE', { status: 'completed', output: [], usage: { input_tokens: 1, output_tokens: 1 } }],
+		['JSON_PARSE', { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: '{not-json' }] }], usage: { input_tokens: 1, output_tokens: 1 } }],
+		['CONTRACT_VALIDATION', { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ candidates: candidates.slice(0, 4) }) }] }], usage: { input_tokens: 1, output_tokens: 1 } }],
+		['USAGE_METADATA', { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ candidates }) }] }], usage: { input_tokens: -1, output_tokens: 1 } }],
+	] as const)('classifies malformed output as %s with one call and safe diagnostics', async (reason, envelope) => {
+		const transport = vi.fn(async () => new Response(JSON.stringify(envelope), { headers: { 'x-request-id': 'req_safe_456' } }));
+		const provider = new OpenAIModelProvider('test-key', OPENAI_MODEL, transport);
+		const caught = await provider.generateCandidates({ eventStatement: 'Event', facts: [], uncertainties: [], context: [],
+			suitabilityReason: 'Reviewed.', guardrailFlags: [], count: 5 }, signal).catch((error: unknown) => error);
+		expect(transport).toHaveBeenCalledTimes(1);
+		expect(caught).toBeInstanceOf(ModelOutputError);
+		expect(caught).toMatchObject({ reason, diagnostics: { requestId: 'req_safe_456' } });
+		expect(JSON.stringify(caught)).not.toContain('{not-json');
+	});
+
+	it('does not automatically retry transient provider failures', async () => {
 		const transport = vi.fn()
 			.mockResolvedValueOnce(new Response('sensitive provider text', { status: 500 }))
 			.mockResolvedValueOnce(response(normalization));
 		const provider = new OpenAIModelProvider('test-key', OPENAI_MODEL, transport);
-		const executed = await runWithLimits((requestSignal) => provider.normalizeEvent({
+		const caught = await runWithLimits((requestSignal) => provider.normalizeEvent({
 			title: 'Event', neutralBrief: 'Brief', references: [reference],
-		}, requestSignal), 100, { timeoutMs: 100, candidateTimeoutMs: 250, maxAttempts: 2, defaultCandidateCount: 5, maxInputCharacters: 1_000, maxOutputCharacters: 10_000, maxEstimatedCostMicrousd: 10_000 });
-		expect(transport).toHaveBeenCalledTimes(2);
-		expect(executed.retryCount).toBe(1);
-		expect(executed.result.usage.estimatedCostMicrousd).toBe(800);
+		}, requestSignal), 100, { timeoutMs: 100, candidateTimeoutMs: 250, maxAttempts: 2, defaultCandidateCount: 5, maxInputCharacters: 1_000, maxOutputCharacters: 10_000, maxEstimatedCostMicrousd: 10_000 }).catch((error: unknown) => error);
+		expect(transport).toHaveBeenCalledTimes(1);
+		expect(caught).toBeInstanceOf(ModelExecutionError);
 	});
 
 	it('does not retry permanent failures or expose provider response text', async () => {
@@ -353,8 +381,8 @@ describe('OpenAI Responses provider', () => {
 		}, requestSignal), 100, { timeoutMs: 5, candidateTimeoutMs: 10, maxAttempts: 2, defaultCandidateCount: 5, maxInputCharacters: 1_000, maxOutputCharacters: 10_000, maxEstimatedCostMicrousd: 10_000 }).catch((error: unknown) => error);
 		expect(caught).toBeInstanceOf(ModelExecutionError);
 		if (!(caught instanceof ModelExecutionError)) throw new Error('Expected a model execution error.');
-		expect(caught.retryCount).toBe(1);
-		expect(transport).toHaveBeenCalledTimes(2);
+		expect(caught.retryCount).toBe(0);
+		expect(transport).toHaveBeenCalledTimes(1);
 		expect((caught.cause as DOMException).name).toBe('AbortError');
 	});
 });

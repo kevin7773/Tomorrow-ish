@@ -82,6 +82,9 @@ function repository(bodyContext: ArticleBodyGenerationContext | null = context()
 	const fail = vi.fn(async () => true);
 	const resolveStale = vi.fn(async () => true);
 	const repo = {
+		claimModelRequest: vi.fn(async () => 'CLAIMED' as const),
+		markModelRequestStarted: vi.fn(async () => true), finishModelRequest: vi.fn(async () => true),
+		findModelRequestReservation: vi.fn(async () => null),
 		findIntakeForGeneration: vi.fn(async () => intake), getNextNormalizedVersionNumber: vi.fn(async () => 1),
 		listNormalizedVersions: vi.fn(async () => []), findNormalizedVersion: vi.fn(async () => version),
 		findAcceptedNormalizedVersion: vi.fn(async () => version), findModelRun: vi.fn(async () => null),
@@ -109,6 +112,24 @@ function service(repo: GenerationRepository, provider = new FakeModelProvider(),
 }
 
 describe('governed article body generation', () => {
+	it('leaves a billable body request PENDING when lease ownership is lost before persistence', async () => {
+		const original = context();
+		const { repo, complete, fail } = repository(original);
+		const provider = new FakeModelProvider();
+		const generate = vi.spyOn(provider, 'generateArticleBody');
+		const guarded = new GenerationService(repo, provider, {
+			now: () => '2026-09-12T03:00:00.000Z', createId: () => 'guarded-body-run',
+			beforeProviderCall: async () => undefined,
+			beforePersistResult: async () => { throw new Error('WORKFLOW_LEASE_LOST'); },
+		});
+		await expect(guarded.generateArticleBody(identity, {
+			candidateId: original.candidate.id, idempotencyKey: 'guarded-body-attempt',
+		})).rejects.toThrow(/pending investigation/i);
+		expect(generate).toHaveBeenCalledTimes(1);
+		expect(complete).not.toHaveBeenCalled();
+		expect(fail).not.toHaveBeenCalled();
+	});
+
 	it('claims one eligible DRAFT candidate, supplies sensitive source governance, and persists only its body', async () => {
 		const original = context();
 		const { repo, claim, complete, fail } = repository(original);
