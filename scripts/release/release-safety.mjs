@@ -2,6 +2,8 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { init, parse } from 'es-module-lexer';
 
+export const LIVE_SNAPSHOT_MAX_AGE_MS = 10 * 60 * 1000;
+
 export class ReleaseSafetyError extends Error {
 	constructor(message, details = []) {
 		super([message, ...details.map((detail) => `- ${detail}`)].join('\n'));
@@ -166,6 +168,14 @@ export async function validateDryRunPackage(serverDirectory, packageDirectory, c
 export function validateLiveSnapshot(snapshot, baseline, options = {}) {
 	const errors = [];
 	const expectedCrons = options.paused ? [] : baseline.crons;
+	const now = options.now instanceof Date ? options.now : new Date(options.now ?? Date.now());
+	const capturedAtFormat = typeof snapshot.capturedAt === 'string'
+		&& /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(snapshot.capturedAt);
+	const capturedAt = capturedAtFormat ? new Date(snapshot.capturedAt) : null;
+	const ageMs = capturedAt && Number.isFinite(capturedAt.getTime()) ? now.getTime() - capturedAt.getTime() : null;
+	check(errors, ageMs !== null, 'live snapshot capturedAt must be a valid timestamp');
+	check(errors, ageMs !== null && ageMs >= 0 && ageMs <= LIVE_SNAPSHOT_MAX_AGE_MS,
+		'live snapshot is stale or dated in the future');
 	check(errors, snapshot.accountId === baseline.accountId, 'authenticated Cloudflare account does not match production');
 	check(errors, snapshot.workerName === baseline.workerName, 'live Worker identity does not match production');
 	check(errors, same(snapshot.d1, baseline.d1), 'live D1 bindings do not match production');

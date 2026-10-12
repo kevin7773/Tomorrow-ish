@@ -13,15 +13,18 @@ const packageDirectory = option('--package-dir', null);
 const liveSnapshotPath = option('--live-snapshot', null);
 const versionSnapshotPath = option('--version-snapshot', null);
 const moduleInventoryPath = option('--module-inventory', null);
+const paused = process.argv.includes('--paused');
+if (paused && !liveSnapshotPath) throw new Error('--paused requires --live-snapshot so the observed zero-schedule state can be verified.');
 const config = await readJson(configPath);
 const baseline = await readJson(baselinePath);
 const configuration = validateGeneratedConfiguration(config, baseline);
 const modules = packageDirectory
 	? await validateDryRunPackage(resolve(configPath, '..'), resolve(packageDirectory), config)
 	: null;
-if (liveSnapshotPath) validateLiveSnapshot(await readJson(resolve(liveSnapshotPath)), baseline);
+if (liveSnapshotPath) validateLiveSnapshot(await readJson(resolve(liveSnapshotPath)), baseline, { paused });
 const version = versionSnapshotPath ? validateUploadedVersion(await readJson(resolve(versionSnapshotPath)), baseline) : null;
 const deployedModules = moduleInventoryPath
 	? await validateDeployedModuleInventory(resolve(configPath, '..'), await readJson(resolve(moduleInventoryPath)))
 	: null;
-console.log(JSON.stringify({ ok: true, configuration, modules, liveSnapshot: Boolean(liveSnapshotPath), version, deployedModules }, null, 2));
+console.log(JSON.stringify({ ok: true, configuration, modules, liveSnapshot: Boolean(liveSnapshotPath),
+	liveSnapshotMode: liveSnapshotPath ? (paused ? 'paused' : 'normal') : null, version, deployedModules }, null, 2));

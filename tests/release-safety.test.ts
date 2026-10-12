@@ -13,6 +13,7 @@ import {
 } from '../scripts/release/release-safety.mjs';
 
 const roots: string[] = [];
+const snapshotNow = new Date('2026-10-12T22:00:00.000Z');
 afterEach(async () => {
 	const { rm } = await import('node:fs/promises');
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -21,7 +22,7 @@ afterEach(async () => {
 const baseline = {
 	accountId: 'account-1', workerName: 'worker-1', main: 'entry.mjs', workersDev: false, previewUrls: false,
 	compatibilityDate: '2026-09-10', compatibilityFlags: ['nodejs_compat'],
-	routes: [{ pattern: 'example.com', custom_domain: true }], crons: ['*/5 * * * *'],
+	routes: [{ pattern: 'example.com', custom_domain: true }], crons: ['0 13 * * *', '0 21 * * *', '*/5 * * * *'],
 	assets: { binding: 'ASSETS', directory: '../client' },
 	d1: [{ binding: 'DB', database_name: 'production', database_id: 'db-1' }],
 	r2: [{ binding: 'IMAGES', bucket_name: 'images' }], requiredSecrets: ['SECRET_A'],
@@ -41,9 +42,13 @@ function config() {
 }
 
 function liveSnapshot(overrides = {}) {
-	return { accountId: 'account-1', workerName: 'worker-1', d1: baseline.d1, r2: baseline.r2,
+	return { capturedAt: '2026-10-12T21:55:00.000Z', accountId: 'account-1', workerName: 'worker-1', d1: baseline.d1, r2: baseline.r2,
 		assets: baseline.assets, workersDev: false, previewUrls: false, routes: baseline.routes,
 		crons: baseline.crons, secretNames: ['SECRET_A'], vars: disabledVars, ...overrides };
+}
+
+function validateLive(snapshot: ReturnType<typeof liveSnapshot>, paused = false) {
+	return validateLiveSnapshot(snapshot, baseline, { paused, now: snapshotNow });
 }
 
 async function packageFixture(includeDependency = true) {
@@ -84,26 +89,54 @@ describe('production release safety', () => {
 	});
 
 	it('rejects the wrong authenticated account', () => {
-		expect(() => validateLiveSnapshot(liveSnapshot({ accountId: 'wrong' }), baseline))
+		expect(() => validateLive(liveSnapshot({ accountId: 'wrong' })))
 			.toThrow(/account/);
 	});
 
-	it.each([['workersDev', true], ['previewUrls', true]] as const)('rejects unintended %s exposure', (field, value) => {
-		expect(() => validateLiveSnapshot(liveSnapshot({ [field]: value }), baseline)).toThrow(/exposure/);
+	it('rejects the wrong Worker identity and stale snapshots', () => {
+		expect(() => validateLive(liveSnapshot({ workerName: 'wrong' }))).toThrow(/Worker identity/);
+		expect(() => validateLive(liveSnapshot({ capturedAt: '2026-10-12T21:40:00.000Z' }))).toThrow(/stale/);
+		expect(() => validateLive(liveSnapshot({ capturedAt: 'not-a-date' }))).toThrow(/capturedAt/);
 	});
 
-	it('detects incomplete Cron restoration and permits only a Cron-only pause', () => {
+	it.each([['workersDev', true], ['previewUrls', true]] as const)('rejects unintended %s exposure', (field, value) => {
+		expect(() => validateLive(liveSnapshot({ [field]: value }))).toThrow(/exposure/);
+	});
+
+	it('accepts exact schedules only in the matching normal or paused mode', () => {
 		const paused = createCronConfiguration(config(), baseline, true);
 		expect(paused.triggers.crons).toEqual([]);
-		expect(() => validateLiveSnapshot(liveSnapshot({ crons: [] }), baseline))
-			.toThrow(/Cron schedules/);
+		expect(() => validateLive(liveSnapshot())).not.toThrow();
+		expect(() => validateLive(liveSnapshot({ crons: [] }), true)).not.toThrow();
+		expect(() => validateLive(liveSnapshot({ crons: [] }))).toThrow(/Cron schedules/);
+		expect(() => validateLive(liveSnapshot(), true)).toThrow(/not fully paused/);
+	});
+
+	it.each([
+		['normal', ['0 13 * * *', '*/5 * * * *'], false],
+		['normal', [...baseline.crons, '15 3 * * *'], false],
+		['paused', ['*/5 * * * *'], true],
+		['paused', ['unexpected'], true],
+	] as const)('rejects partial or unexpected schedules in %s mode', (_mode, crons, paused) => {
+		expect(() => validateLive(liveSnapshot({ crons }), paused)).toThrow(/Cron schedules|not fully paused/);
+	});
+
+	it('rejects malformed schedule values in both modes', () => {
+		expect(() => validateLive(liveSnapshot({ crons: '*/5 * * * *' }))).toThrow(/Cron schedules/);
+		expect(() => validateLive(liveSnapshot({ crons: null }), true)).toThrow(/not fully paused/);
 	});
 
 	it('rejects unexpected variables or live binding drift', () => {
 		expect(() => validateGeneratedConfiguration({ ...config(), vars: { ...baseline.requiredVars, UNREVIEWED: 'true' } }, baseline))
 			.toThrow(/variables differ/);
-		expect(() => validateLiveSnapshot(liveSnapshot({ r2: [{ binding: 'IMAGE_ASSETS', bucket_name: 'wrong' }] }), baseline))
+		expect(() => validateLive(liveSnapshot({ r2: [{ binding: 'IMAGE_ASSETS', bucket_name: 'wrong' }] })))
 			.toThrow(/R2 bindings/);
+	});
+
+	it('rejects non-Cron configuration drift in paused mode', () => {
+		expect(() => validateLive(liveSnapshot({ crons: [], routes: [] }), true)).toThrow(/custom-domain routes/);
+		expect(() => validateLive(liveSnapshot({ crons: [], vars: { ...disabledVars, IMAGE_GENERATION_ENABLED: 'true' } }), true))
+			.toThrow(/variables differ/);
 	});
 
 	it('requires complete uploaded bindings and deployed module inventory before activation', async () => {

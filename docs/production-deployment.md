@@ -126,6 +126,7 @@ Before any remote mutation, capture a reviewed JSON snapshot containing:
 
 ```json
 {
+  "capturedAt": "<current RFC3339 timestamp; snapshots older than ten minutes fail closed>",
   "accountId": "13fbf38daabf893cddf8e7214957bfce",
   "workerName": "tomorrow-ish",
   "d1": [{ "binding": "DB", "database_name": "tomorrow-ish-production", "database_id": "96f4a86d-1d60-47b1-a240-86552d001191" }],
@@ -186,6 +187,12 @@ npm run release:operator -- cron-pause --execute --commit <approved-commit-sha> 
 
 This uses `wrangler triggers deploy` with the complete Astro-generated configuration. Immediately reread schedules, routes, custom domain, `workers.dev`, preview URLs, and bindings. The pause is valid only when schedules are empty and every other value matches the baseline.
 
+Capture that fresh paused state and explicitly validate it in paused mode before upload:
+
+```powershell
+npm run release:validate -- --paused --live-snapshot .release/live-paused.json
+```
+
 ### 4. Upload, inspect, and activate a version
 
 Upload creates a version but does not activate it:
@@ -198,7 +205,7 @@ npx wrangler versions view <new-version-id> --name tomorrow-ish --json > .releas
 Obtain the version-specific multipart module inventory through the authenticated Workers API and normalize its part names as `{ "modules": ["entry.mjs", "chunks/...mjs"] }` in `.release/module-inventory.json`. Then validate the actual uploaded bindings and every generated module before activation:
 
 ```powershell
-npm run release:validate -- --live-snapshot .release/live-paused.json --version-snapshot .release/version.json --module-inventory .release/module-inventory.json
+npm run release:validate -- --paused --live-snapshot .release/live-paused.json --version-snapshot .release/version.json --module-inventory .release/module-inventory.json
 npm run release:operator -- activate --execute --commit <approved-commit-sha> --live-snapshot .release/live-paused.json --version <new-version-id> --version-snapshot .release/version.json --module-inventory .release/module-inventory.json --message "<reviewed-activation-message>"
 ```
 
@@ -211,7 +218,13 @@ npm run release:cron:restore-config
 npm run release:operator -- cron-restore --execute --commit <approved-commit-sha> --live-snapshot .release/live-paused.json
 ```
 
-Capture `.release/live-after.json` and rerun `release:validate`. The release is incomplete until all three original schedules are restored exactly once, the custom domain and Access boundary are healthy, the intended version is at 100%, a five-minute Cron window completes with one owner, and before/after data/provider invariants pass.
+Capture `.release/live-after.json` with a fresh `capturedAt` and rerun normal-mode validation (omit `--paused`):
+
+```powershell
+npm run release:validate -- --live-snapshot .release/live-after.json
+```
+
+The release is incomplete until all three original schedules are restored exactly once, the custom domain and Access boundary are healthy, the intended version is at 100%, a five-minute Cron window completes with one owner, and before/after data/provider invariants pass. Normal mode rejects zero, partial, or unexpected schedules; paused mode requires exactly zero schedules.
 
 ### 6. Safe rollback
 
