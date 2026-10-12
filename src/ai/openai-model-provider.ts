@@ -65,10 +65,10 @@ function candidateSchema(count: number) { return {
 		candidates: { type: 'array', minItems: count, maxItems: count, items: {
 			type: 'object', additionalProperties: false,
 			properties: {
-				headline: { type: 'string', pattern: '^(?=[\\s\\S]{1,300}$)(?=[\\s\\S]*\\S)[\\s\\S]*$' },
+				headline: { type: 'string', pattern: '^[\\s\\S]{1,300}$' },
 				deck: { type: 'string', pattern: '^[\\s\\S]{0,1000}$' },
-				rationale: { type: 'string', pattern: '^(?=[\\s\\S]{1,2000}$)(?=[\\s\\S]*\\S)[\\s\\S]*$' },
-				satiricalMechanism: { type: 'string', pattern: '^(?=[\\s\\S]{1,120}$)(?=[\\s\\S]*\\S)[\\s\\S]*$' },
+				rationale: { type: 'string', pattern: '^[\\s\\S]{1,2000}$' },
+				satiricalMechanism: { type: 'string', pattern: '^[\\s\\S]{1,120}$' },
 			},
 			required: ['headline', 'deck', 'rationale', 'satiricalMechanism'],
 		} },
@@ -76,6 +76,27 @@ function candidateSchema(count: number) { return {
 } as const; }
 
 export const CANDIDATE_SCHEMA = candidateSchema(5);
+
+const UNSUPPORTED_PATTERN_CONSTRUCTS = ['(?=', '(?!', '(?<=', '(?<!'] as const;
+
+export function assertProviderCompatibleStructuredOutputSchema(schema: unknown): void {
+	const visit = (value: unknown): void => {
+		if (!value || typeof value !== 'object') return;
+		if (Array.isArray(value)) {
+			value.forEach(visit);
+			return;
+		}
+		for (const [key, child] of Object.entries(value)) {
+			if (key === 'pattern' && typeof child === 'string'
+				&& UNSUPPORTED_PATTERN_CONSTRUCTS.some((construct) => child.includes(construct))) {
+				throw new ModelProviderError('PROVIDER_CONFIGURATION', false,
+					'The structured-output schema contains an unsupported regular-expression construct.');
+			}
+			visit(child);
+		}
+	};
+	visit(schema);
+}
 
 export const ARTICLE_BODY_SCHEMA = {
 	type: 'object', additionalProperties: false,
@@ -282,6 +303,7 @@ export class OpenAIModelProvider implements ModelProvider {
 		validate: (value: unknown) => T,
 		signal: AbortSignal,
 	): Promise<ModelResult<T>> {
+		assertProviderCompatibleStructuredOutputSchema(schema);
 		const inputText = JSON.stringify(input);
 		let response: Response;
 		try {

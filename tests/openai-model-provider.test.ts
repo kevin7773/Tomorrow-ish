@@ -5,6 +5,7 @@ import {
 	ARTICLE_BODY_SCHEMA,
 	CANDIDATE_SCHEMA,
 	NORMALIZATION_SCHEMA,
+	assertProviderCompatibleStructuredOutputSchema,
 	OpenAIModelProvider,
 	OPENAI_MODEL,
 	OPENAI_RESPONSES_URL,
@@ -71,7 +72,13 @@ describe('OpenAI Responses provider', () => {
 		expect(normalizationSchema).not.toMatch(/minLength|maxLength/);
 		expect(candidateSchema).not.toContain('uniqueItems');
 		expect(candidateSchema).not.toMatch(/minLength|maxLength/);
-		expect(CANDIDATE_SCHEMA.properties.candidates.items.properties.headline).toHaveProperty('pattern');
+		expect(candidateSchema).not.toMatch(/\(\?(?:[=!]|<[=!])/);
+		expect(CANDIDATE_SCHEMA.properties.candidates.items.properties).toMatchObject({
+			headline: { pattern: '^[\\s\\S]{1,300}$' },
+			deck: { pattern: '^[\\s\\S]{0,1000}$' },
+			rationale: { pattern: '^[\\s\\S]{1,2000}$' },
+			satiricalMechanism: { pattern: '^[\\s\\S]{1,120}$' },
+		});
 		expect(CANDIDATE_SCHEMA.properties.candidates).toMatchObject({ minItems: 5, maxItems: 5 });
 		expect(CANDIDATE_SCHEMA.additionalProperties).toBe(false);
 		expect(bodySchema).not.toMatch(/uniqueItems|minLength|maxLength/);
@@ -79,6 +86,18 @@ describe('OpenAI Responses provider', () => {
 		expect(ARTICLE_BODY_SCHEMA.properties.factual_assertion_ids_used).toMatchObject({ minItems: 1, maxItems: 30 });
 		expect(ARTICLE_BODY_SCHEMA.required).toContain('factual_assertion_ids_used');
 		expect(ARTICLE_BODY_SCHEMA.properties).not.toHaveProperty('factual_assertions_used');
+	});
+
+	it('accepts the realistic serialized candidate schema and rejects regex lookaround locally', () => {
+		const serialized = JSON.parse(JSON.stringify(CANDIDATE_SCHEMA)) as typeof CANDIDATE_SCHEMA;
+		expect(() => assertProviderCompatibleStructuredOutputSchema(serialized)).not.toThrow();
+		const unsupported = structuredClone(serialized) as unknown as {
+			properties: { candidates: { items: { properties: { headline: { pattern: string } } } } };
+		};
+		unsupported.properties.candidates.items.properties.headline.pattern = '^(?=[\\s\\S]{1,300}$)[\\s\\S]*$';
+		expect(() => assertProviderCompatibleStructuredOutputSchema(unsupported)).toThrow(
+			expect.objectContaining({ failureClassification: 'PROVIDER_CONFIGURATION', retryable: false }),
+		);
 	});
 
 	it('uses a receiver-safe native fetch wrapper by default', async () => {
@@ -161,7 +180,12 @@ describe('OpenAI Responses provider', () => {
 
 	it.each([
 		[{ ...candidates[0], headline: '   ' }, 'candidates[].headline'],
+		[{ ...candidates[0], headline: 'x'.repeat(301) }, 'candidates[].headline'],
 		[{ ...candidates[0], deck: 'x'.repeat(1_001) }, 'candidates[].deck'],
+		[{ ...candidates[0], rationale: '   ' }, 'candidates[].rationale'],
+		[{ ...candidates[0], rationale: 'x'.repeat(2_001) }, 'candidates[].rationale'],
+		[{ ...candidates[0], satiricalMechanism: '   ' }, 'candidates[].satiricalMechanism'],
+		[{ ...candidates[0], satiricalMechanism: 'x'.repeat(121) }, 'candidates[].satiricalMechanism'],
 	] as const)('matches candidate schema string constraints in local validation', async (candidate, field) => {
 		const provider = new OpenAIModelProvider('test-key', OPENAI_MODEL, async () => response({ candidates: [candidate] }));
 		const caught = await provider.generateCandidates({ eventStatement: 'Event', facts: [], uncertainties: [], context: [],

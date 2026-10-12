@@ -90,7 +90,9 @@ describe('generation authority', () => {
 			identity, intake.id, 'stale-owner-attempt')).rejects.toThrow();
 		expect(createdNormalization).not.toHaveBeenCalled();
 		expect(repo.createModelRun).not.toHaveBeenCalled();
-		expect(repo.finishModelRequest).not.toHaveBeenCalled();
+		expect(repo.finishModelRequest).toHaveBeenCalledWith(expect.objectContaining({
+			status: 'AMBIGUOUS', failureReason: 'PROVIDER_FAILURE',
+		}));
 	});
 
 	it('persists one safe malformed-output reason without retrying the provider', async () => {
@@ -172,6 +174,9 @@ describe('generation authority', () => {
 		expect(repo.createModelRun).toHaveBeenCalledWith(expect.objectContaining({
 			id: 'failed-run-id', status: 'FAILED', failureClassification: 'PROVIDER_NETWORK', normalizedEventVersionId: null, retryCount: 0,
 		}));
+		expect(repo.finishModelRequest).toHaveBeenCalledWith(expect.objectContaining({
+			status: 'AMBIGUOUS', failureReason: 'PROVIDER_NETWORK',
+		}));
 		const response = actionErrorResponse(caught, `/editorial/intakes/${intake.id}/normalize`);
 		expect(response.headers.get('Location')).toContain('error=provider-unavailable');
 		expect(response.headers.get('Location')).not.toContain('invalid-request');
@@ -181,8 +186,8 @@ describe('generation authority', () => {
 		const rawBodySecret = 'raw-body-secret-must-not-persist';
 		const transport = vi.fn(async () => new Response(JSON.stringify({
 			error: {
-				type: 'invalid_request_error', code: 'invalid_value',
-				message: 'The request field is not supported.', private_detail: rawBodySecret,
+				type: 'invalid_request_error', code: 'invalid_json_schema',
+				message: 'The structured-output schema is not supported.', private_detail: rawBodySecret,
 			},
 		}), {
 			status: 400,
@@ -201,9 +206,12 @@ describe('generation authority', () => {
 		expect(createdNormalization).not.toHaveBeenCalled();
 		expect(repo.createModelRun).toHaveBeenCalledWith(expect.objectContaining({
 			status: 'FAILED', failureClassification: 'PROVIDER_REQUEST', providerHttpStatus: 400,
-			providerErrorType: 'invalid_request_error', providerErrorCode: 'invalid_value',
-			providerErrorMessage: 'The request field is not supported.', providerRequestId: 'req_safe_456',
+			providerErrorType: 'invalid_request_error', providerErrorCode: 'invalid_json_schema',
+			providerErrorMessage: 'The structured-output schema is not supported.', providerRequestId: 'req_safe_456',
 			providerRetryAfter: '7',
+		}));
+		expect(repo.finishModelRequest).toHaveBeenCalledWith(expect.objectContaining({
+			status: 'FAILED', failureReason: 'PROVIDER_REQUEST', providerRequestId: 'req_safe_456',
 		}));
 		const persisted = JSON.stringify(vi.mocked(repo.createModelRun).mock.calls[0][0]);
 		expect(persisted).not.toContain(rawBodySecret);
@@ -269,10 +277,10 @@ describe('generation authority', () => {
 
 	it('never treats a failed idempotency record as a reusable generation success', async () => {
 		const { repo, createdCandidates } = repository();
-		vi.mocked(repo.findModelRunByIdempotencyKey).mockResolvedValue({
+		vi.mocked(repo.findModelRunByIdempotencyKey).mockImplementation(async (key) => key === 'failed-key' ? ({
 			id: 'failed-run', operation: 'GENERATE_CANDIDATES', status: 'FAILED',
 			normalizedEventVersionId: 'version-1',
-		} as ModelRun);
+		} as ModelRun) : null);
 		const provider = new FakeModelProvider();
 		const call = vi.spyOn(provider, 'generateCandidates');
 		const service = new GenerationService(repo, provider);
@@ -282,6 +290,11 @@ describe('generation authority', () => {
 		})).rejects.toThrow(/explicit retry with a new attempt key/i);
 		expect(call).not.toHaveBeenCalled();
 		expect(createdCandidates).not.toHaveBeenCalled();
+		await expect(service.generateCandidates(identity, {
+			intakeId: intake.id, normalizedEventVersionId: 'version-1', categoryId: 'cat-civic-life',
+			idempotencyKey: 'explicit-new-attempt-key',
+		})).resolves.toBeTruthy();
+		expect(call).toHaveBeenCalledTimes(1);
 	});
 
 	it.each(['cat-sports', 'cat-weather', 'cat-community'])('persists generated drafts in the %s category', async (categoryId) => {
@@ -335,6 +348,9 @@ describe('generation authority', () => {
 		expect(repo.createModelRun).toHaveBeenCalledWith(expect.objectContaining({
 			id: 'candidate-timeout-run', status: 'FAILED', failureClassification: 'TIMEOUT',
 			candidateCount: 0, retryCount: 0,
+		}));
+		expect(repo.finishModelRequest).toHaveBeenCalledWith(expect.objectContaining({
+			status: 'AMBIGUOUS', failureReason: 'TIMEOUT',
 		}));
 	});
 

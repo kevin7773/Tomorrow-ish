@@ -125,6 +125,14 @@ function isOwnershipFenceLoss(error: unknown): boolean {
 	return error instanceof Error && ['WORKFLOW_LEASE_LOST', 'MODEL_REQUEST_FENCE_LOST'].includes(error.message);
 }
 
+function reservationFailureStatus(error: unknown): 'FAILED' | 'AMBIGUOUS' {
+	const cause = error instanceof ModelExecutionError ? error.cause : error;
+	if (cause instanceof ModelOutputError) return 'FAILED';
+	if (cause instanceof ModelProviderError && !cause.retryable
+		&& cause.responseDiagnostics?.httpStatus === 400) return 'FAILED';
+	return 'AMBIGUOUS';
+}
+
 function proposalFromVersion(version: Awaited<ReturnType<GenerationRepository['findNormalizedVersion']>>): NormalizationProposal {
 	if (!version) throw new EditorialValidationError('The normalized event was not found.', 'not-found');
 	return {
@@ -231,8 +239,11 @@ export class GenerationService {
 			if (raced?.operation === 'NORMALIZE' && raced.sourceIntakeId === intakeId && raced.normalizedEventVersionId) {
 				return raced.normalizedEventVersionId;
 			}
-			if (isOwnershipFenceLoss(error)) throw new EditorialValidationError(
-				'The workflow lease was lost; the provider outcome remains pending investigation.', 'conflict');
+			if (isOwnershipFenceLoss(error)) {
+				await this.finishFailedReservation(key, error, this.now());
+				throw new EditorialValidationError(
+					'The workflow lease was lost; the provider outcome remains pending investigation.', 'conflict');
+			}
 			const completedAt = this.now();
 			const failed: ModelRunRecord = {
 				id: runId, operation: 'NORMALIZE', status: 'FAILED', sourceIntakeId: intakeId,
@@ -378,8 +389,11 @@ export class GenerationService {
 			return runId;
 		} catch (error) {
 			if (error instanceof EditorialValidationError) throw error;
-			if (isOwnershipFenceLoss(error)) throw new EditorialValidationError(
-				'The workflow lease was lost; the provider outcome remains pending investigation.', 'conflict');
+			if (isOwnershipFenceLoss(error)) {
+				await this.finishFailedReservation(key, error, this.now());
+				throw new EditorialValidationError(
+					'The workflow lease was lost; the provider outcome remains pending investigation.', 'conflict');
+			}
 			const raced = await this.repository.findModelRunByIdempotencyKey(key);
 			if (raced?.operation === 'GENERATE_CANDIDATES' && raced.normalizedEventVersionId === versionId && raced.status === 'SUCCEEDED') return raced.id;
 			const completedAt = this.now();
@@ -421,12 +435,14 @@ export class GenerationService {
 	private async finishFailedReservation(key: string, error: unknown, completedAt: string): Promise<void> {
 		const cause = error instanceof ModelExecutionError ? error.cause : error;
 		const malformed = cause instanceof ModelOutputError;
-		const diagnostics = malformed ? cause.diagnostics : undefined;
+		const outputDiagnostics = malformed ? cause.diagnostics : undefined;
+		const responseDiagnostics = cause instanceof ModelProviderError ? cause.responseDiagnostics : undefined;
 		await this.repository.finishModelRequest({ idempotencyKey: key, owner: this.requestOwner,
-			status: malformed ? 'FAILED' : 'AMBIGUOUS', completedAt,
+			status: reservationFailureStatus(error), completedAt,
 			failureReason: malformed ? cause.reason : sanitizedFailure(error), failureField: malformed ? cause.failedField : null,
-			providerRequestId: diagnostics?.requestId ?? null, envelopeStatus: diagnostics?.envelopeStatus ?? null,
-			outputCharacters: diagnostics?.outputCharacters ?? null, outputHash: diagnostics?.outputHash ?? null });
+			providerRequestId: outputDiagnostics?.requestId ?? responseDiagnostics?.requestId ?? null,
+			envelopeStatus: outputDiagnostics?.envelopeStatus ?? null,
+			outputCharacters: outputDiagnostics?.outputCharacters ?? null, outputHash: outputDiagnostics?.outputHash ?? null });
 	}
 
 	async generateArticleBody(identity: EditorialIdentity, input: Record<string, unknown>): Promise<string> {
