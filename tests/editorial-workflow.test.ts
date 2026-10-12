@@ -24,6 +24,7 @@ function setup(initial = workflowItem()) {
 	const events: string[] = [];
 	const repository: EditorialWorkflowRepository = {
 		listBatches: vi.fn(), findBatch: vi.fn(), findItem: vi.fn(async () => ({ ...item })),
+		findCandidateSelection: vi.fn(async () => null), findCandidateSelectionContext: vi.fn(async () => null), selectCandidate: vi.fn(),
 		claimProcessable: vi.fn(async ({ owner, at, leaseExpiresAt }) => {
 			if (!['SELECTED', 'GENERATING'].includes(item.state)) return [];
 			item = { ...item, state: 'GENERATING', leaseOwner: owner, leaseAcquiredAt: at, leaseExpiresAt, attemptCount: item.attemptCount + 1 };
@@ -66,6 +67,7 @@ describe('two-gate editorial workflow', () => {
 		const events: string[] = [];
 		const repository: EditorialWorkflowRepository = {
 			listBatches: vi.fn(), findBatch: vi.fn(),
+			findCandidateSelection: vi.fn(async () => null), findCandidateSelectionContext: vi.fn(async () => null), selectCandidate: vi.fn(),
 			findItem: vi.fn(async (_batchId, intakeId) => ({ ...items.get(intakeId)! })),
 			claimProcessable: vi.fn(async ({ owner, at, leaseExpiresAt, limit, target }) => [...items.values()]
 				.filter((item) => ['SELECTED', 'GENERATING'].includes(item.state)
@@ -190,10 +192,11 @@ describe('two-gate editorial workflow', () => {
 		expect(readFileSync(join(process.cwd(), 'src/pages/editorial/stories/[id].astro'), 'utf8')).toContain('Audit history');
 	});
 
-	it('uses the audited retry attempt in every automatic model idempotency key and disables model-level retries', () => {
+	it('requires an audited candidate selection before automatic body generation and disables model-level retries', () => {
 		const runtime = readFileSync(join(process.cwd(), 'src/services/runtime-editorial-workflow.ts'), 'utf8');
 		expect(runtime).toContain("throw new Error('NORMALIZATION_REVIEW_REQUIRED')");
-		expect(runtime).toContain('workflow:candidate:v2:${item.batchId}:${item.intakeId}:attempt:${item.retryAttempt}');
+		expect(runtime).toContain("throw new Error('CANDIDATE_SELECTION_REQUIRED')");
+		expect(runtime).not.toContain('generation.generateCandidates');
 		expect(runtime).toContain('workflow:body:v2:${item.batchId}:${item.intakeId}:attempt:${item.retryAttempt}');
 		expect(runtime).toContain('maxAttempts: 1');
 	});

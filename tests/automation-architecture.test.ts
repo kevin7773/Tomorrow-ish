@@ -39,7 +39,9 @@ describe('automation architecture boundaries', () => {
 		const workflow = read('src/services/runtime-editorial-workflow.ts');
 		expect(acquisition).not.toContain('GenerationService');
 		expect(workflow).toContain('new GenerationService');
-		expect(workflow).toContain('generation.generateCandidates');
+		expect(workflow).not.toContain('generation.generateCandidates');
+		expect(workflow).toContain('findCandidateSelection');
+		expect(workflow).toContain('generation.generateArticleBody');
 	});
 
 	it('defines additive run and item observability without story status changes', () => {

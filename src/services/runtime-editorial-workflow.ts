@@ -74,6 +74,20 @@ class RuntimePipeline implements WorkflowPipelinePort {
 			}
 		}
 		const generationRepository = new D1GenerationRepository(env.DB);
+		const identity = { email: item.selectedByEmail ?? 'automation@tomorrow-ish.news' };
+		let version = await generationRepository.findAcceptedNormalizedVersion(item.intakeId);
+		if (!version) throw new Error('NORMALIZATION_REVIEW_REQUIRED');
+		if (version.proposedSuitability === 'UNSUITABLE') throw new Error('NORMALIZATION_INELIGIBLE');
+
+		const activeSelection = await workflow.findCandidateSelection(item.batchId, item.intakeId);
+		if (!activeSelection || activeSelection.intakeId !== item.intakeId
+			|| activeSelection.normalizedEventVersionId !== version.id) throw new Error('CANDIDATE_SELECTION_REQUIRED');
+		const candidateId = activeSelection.candidateId;
+		if (item.candidateId && item.candidateId !== candidateId) throw new Error('CANDIDATE_SELECTION_CONFLICT');
+		if (!item.candidateId && (!item.leaseOwner
+			|| !(await workflow.attachCandidate(item.batchId, item.intakeId, candidateId, item.leaseOwner, new Date().toISOString())))) {
+			throw new Error('WORKFLOW_LEASE_LOST');
+		}
 		const model = getRuntimeModelConfiguration();
 		const generation = new GenerationService(generationRepository, model.provider, {
 			dailyBudgetMicrousd: model.dailyBudgetMicrousd,
@@ -85,25 +99,6 @@ class RuntimePipeline implements WorkflowPipelinePort {
 			beforePersistResult: async () => guard?.renew(),
 			smokeTarget: target,
 		});
-		const identity = { email: item.selectedByEmail ?? 'automation@tomorrow-ish.news' };
-		let version = await generationRepository.findAcceptedNormalizedVersion(item.intakeId);
-		if (!version) throw new Error('NORMALIZATION_REVIEW_REQUIRED');
-		if (version.proposedSuitability === 'UNSUITABLE') throw new Error('NORMALIZATION_INELIGIBLE');
-
-		let candidateId = item.candidateId;
-		if (!candidateId) {
-			const runId = await generation.generateCandidates(identity, {
-				intakeId: item.intakeId, normalizedEventVersionId: version.id, categoryId: item.categoryId,
-				idempotencyKey: `workflow:candidate:v2:${item.batchId}:${item.intakeId}:attempt:${item.retryAttempt}`,
-				cautionAcknowledgement: version.proposedSuitability === 'SENSITIVE' ? 'ACKNOWLEDGE CAUTION' : undefined,
-				editorialReason: version.proposedSuitability === 'SENSITIVE' ? 'Explicitly selected during intake triage.' : undefined,
-			});
-			candidateId = await workflow.findGeneratedCandidateId(item.intakeId, runId);
-			if (!candidateId) throw new Error('CANDIDATE_MISSING');
-			if (!item.leaseOwner || !(await workflow.attachCandidate(item.batchId, item.intakeId, candidateId, item.leaseOwner, new Date().toISOString()))) {
-				throw new Error('WORKFLOW_LEASE_LOST');
-			}
-		}
 
 		let storyId = item.storyId;
 		if (!storyId) {

@@ -1,4 +1,4 @@
-import type { EditorialWorkflowRepository } from './editorial-workflow-repository';
+import type { CandidateSelection, CandidateSelectionContext, EditorialWorkflowRepository } from './editorial-workflow-repository';
 import type { EditorialBatch, EditorialBatchItem, EditorialWorkflowState } from '../domain/editorial-workflow';
 
 interface ItemRow {
@@ -8,6 +8,17 @@ interface ItemRow {
 	failure_classification: string | null; lease_owner: string | null; lease_acquired_at: string | null;
 	lease_expires_at: string | null; attempt_count: number; retry_attempt: number;
 	created_at: string; updated_at: string;
+}
+
+interface CandidateSelectionRow {
+	batch_id: string; source_intake_id: string; normalized_event_version_id: string;
+	candidate_id: string; selected_by_email: string; selected_at: string; revision: number;
+}
+
+function selection(row: CandidateSelectionRow): CandidateSelection {
+	return { batchId: row.batch_id, intakeId: row.source_intake_id,
+		normalizedEventVersionId: row.normalized_event_version_id, candidateId: row.candidate_id,
+		selectedByEmail: row.selected_by_email, selectedAt: row.selected_at, revision: row.revision };
 }
 
 function item(row: ItemRow): EditorialBatchItem {
@@ -61,6 +72,91 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 		const row = await this.db.prepare('SELECT * FROM editorial_batch_items WHERE batch_id = ? AND source_intake_id = ?')
 			.bind(batchId, intakeId).first<ItemRow>();
 		return row ? item(row) : null;
+	}
+
+	async findCandidateSelection(batchId: string, intakeId: string): Promise<CandidateSelection | null> {
+		const row = await this.db.prepare('SELECT * FROM editorial_candidate_selections WHERE batch_id = ? AND source_intake_id = ?')
+			.bind(batchId, intakeId).first<CandidateSelectionRow>();
+		return row ? selection(row) : null;
+	}
+
+	async findCandidateSelectionContext(candidateId: string): Promise<CandidateSelectionContext | null> {
+		const row = await this.db.prepare(`SELECT item.batch_id, item.source_intake_id,
+			candidate.normalized_event_version_id, selection.candidate_id AS selected_candidate_id,
+			selection.selected_by_email, selection.selected_at
+			FROM satire_candidates AS candidate
+			JOIN editorial_batch_items AS item ON item.source_intake_id = candidate.source_intake_id
+			LEFT JOIN editorial_candidate_selections AS selection ON selection.batch_id = item.batch_id
+			WHERE candidate.id = ? AND candidate.normalized_event_version_id IS NOT NULL`).bind(candidateId).first<{
+			batch_id: string; source_intake_id: string; normalized_event_version_id: string;
+			selected_candidate_id: string | null; selected_by_email: string | null; selected_at: string | null;
+		}>();
+		return row ? { batchId: row.batch_id, intakeId: row.source_intake_id,
+			normalizedEventVersionId: row.normalized_event_version_id,
+			selectedCandidateId: row.selected_candidate_id, selectedByEmail: row.selected_by_email,
+			selectedAt: row.selected_at } : null;
+	}
+
+	async selectCandidate(record: { id: string; batchId: string; intakeId: string; normalizedEventVersionId: string; candidateId: string; actorEmail: string; at: string; reason: string | null }): Promise<CandidateSelection | null> {
+		await this.db.batch([
+			this.db.prepare(`INSERT OR IGNORE INTO editorial_candidate_selections (
+				batch_id, source_intake_id, normalized_event_version_id, candidate_id,
+				previous_candidate_id, selected_by_email, selected_at, revision
+			) SELECT ?, ?, ?, ?, NULL, ?, ?, 1
+			WHERE EXISTS (SELECT 1 FROM editorial_batch_items AS item
+				WHERE item.batch_id = ? AND item.source_intake_id = ?
+				AND item.workflow_state IN ('SELECTED', 'GENERATING') AND item.story_id IS NULL)
+			AND EXISTS (SELECT 1 FROM normalized_event_versions AS version
+				WHERE version.id = ? AND version.source_intake_id = ? AND version.review_state = 'ACCEPTED')
+			AND EXISTS (SELECT 1 FROM satire_candidates AS candidate
+				WHERE candidate.id = ? AND candidate.source_intake_id = ?
+				AND candidate.normalized_event_version_id = ? AND candidate.status = 'DRAFT'
+				AND candidate.archived_at IS NULL AND candidate.body_generation_state = 'NOT_REQUESTED'
+				AND trim(candidate.draft_body_markdown) = ''
+				AND NOT EXISTS (SELECT 1 FROM candidate_body_generation_runs AS run WHERE run.candidate_id = candidate.id))`)
+				.bind(record.batchId, record.intakeId, record.normalizedEventVersionId, record.candidateId,
+					record.actorEmail, record.at, record.batchId, record.intakeId,
+					record.normalizedEventVersionId, record.intakeId, record.candidateId, record.intakeId,
+					record.normalizedEventVersionId),
+			this.db.prepare(`UPDATE editorial_candidate_selections
+				SET previous_candidate_id = candidate_id, candidate_id = ?, normalized_event_version_id = ?,
+					source_intake_id = ?, selected_by_email = ?, selected_at = ?, revision = revision + 1
+				WHERE batch_id = ? AND source_intake_id = ? AND candidate_id <> ? AND ? IS NOT NULL
+				AND EXISTS (SELECT 1 FROM editorial_batch_items AS item
+					WHERE item.batch_id = ? AND item.source_intake_id = ?
+					AND item.workflow_state IN ('SELECTED', 'GENERATING') AND item.story_id IS NULL)
+				AND EXISTS (SELECT 1 FROM normalized_event_versions AS version
+					WHERE version.id = ? AND version.source_intake_id = ? AND version.review_state = 'ACCEPTED')
+				AND EXISTS (SELECT 1 FROM satire_candidates AS candidate
+					WHERE candidate.id = ? AND candidate.source_intake_id = ?
+					AND candidate.normalized_event_version_id = ? AND candidate.status = 'DRAFT'
+					AND candidate.archived_at IS NULL AND candidate.body_generation_state = 'NOT_REQUESTED'
+					AND trim(candidate.draft_body_markdown) = ''
+					AND NOT EXISTS (SELECT 1 FROM candidate_body_generation_runs AS run WHERE run.candidate_id = candidate.id))
+				AND EXISTS (SELECT 1 FROM satire_candidates AS current
+					WHERE current.id = editorial_candidate_selections.candidate_id
+					AND current.body_generation_state = 'NOT_REQUESTED' AND trim(current.draft_body_markdown) = ''
+					AND NOT EXISTS (SELECT 1 FROM candidate_body_generation_runs AS run WHERE run.candidate_id = current.id))`)
+				.bind(record.candidateId, record.normalizedEventVersionId, record.intakeId, record.actorEmail,
+					record.at, record.batchId, record.intakeId, record.candidateId, record.reason, record.batchId, record.intakeId,
+					record.normalizedEventVersionId, record.intakeId, record.candidateId, record.intakeId,
+					record.normalizedEventVersionId),
+			this.db.prepare(`INSERT OR IGNORE INTO editorial_candidate_selection_events (
+				id, batch_id, source_intake_id, normalized_event_version_id, candidate_id,
+				previous_candidate_id, selected_by_email, selected_at, revision, reason, event_kind
+			) SELECT ?, batch_id, source_intake_id, normalized_event_version_id, candidate_id,
+				previous_candidate_id, selected_by_email, selected_at, revision, ?,
+				CASE WHEN previous_candidate_id IS NULL THEN 'SELECTED' ELSE 'SELECTION_CHANGED' END
+				FROM editorial_candidate_selections WHERE batch_id = ? AND candidate_id = ?
+				AND normalized_event_version_id = ? AND source_intake_id = ?
+				AND selected_by_email = ? AND selected_at = ?`)
+				.bind(record.id, record.reason, record.batchId, record.candidateId,
+					record.normalizedEventVersionId, record.intakeId, record.actorEmail, record.at),
+		]);
+		const found = await this.findCandidateSelection(record.batchId, record.intakeId);
+		return found?.candidateId === record.candidateId
+			&& found.intakeId === record.intakeId
+			&& found.normalizedEventVersionId === record.normalizedEventVersionId ? found : null;
 	}
 
 	async claimProcessable(record: { limit: number; owner: string; at: string; leaseExpiresAt: string; createEventId: () => string; target?: { batchId: string; intakeId: string } }): Promise<EditorialBatchItem[]> {

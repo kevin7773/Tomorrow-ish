@@ -1,9 +1,31 @@
 import type { EditorialBatch, EditorialBatchItem } from '../domain/editorial-workflow';
 
+export interface CandidateSelection {
+	batchId: string;
+	intakeId: string;
+	normalizedEventVersionId: string;
+	candidateId: string;
+	selectedByEmail: string;
+	selectedAt: string;
+	revision: number;
+}
+
+export interface CandidateSelectionContext {
+	batchId: string;
+	intakeId: string;
+	normalizedEventVersionId: string;
+	selectedCandidateId: string | null;
+	selectedByEmail: string | null;
+	selectedAt: string | null;
+}
+
 export interface EditorialWorkflowRepository {
 	listBatches(limit?: number): Promise<EditorialBatch[]>;
 	findBatch(id: string): Promise<EditorialBatch | null>;
 	findItem(batchId: string, intakeId: string): Promise<EditorialBatchItem | null>;
+	findCandidateSelection(batchId: string, intakeId: string): Promise<CandidateSelection | null>;
+	findCandidateSelectionContext(candidateId: string): Promise<CandidateSelectionContext | null>;
+	selectCandidate(record: { id: string; batchId: string; intakeId: string; normalizedEventVersionId: string; candidateId: string; actorEmail: string; at: string; reason: string | null }): Promise<CandidateSelection | null>;
 	claimProcessable(record: { limit: number; owner: string; at: string; leaseExpiresAt: string; createEventId: () => string; target?: { batchId: string; intakeId: string } }): Promise<EditorialBatchItem[]>;
 	renewLease?(batchId: string, intakeId: string, owner: string, at: string, leaseExpiresAt: string): Promise<boolean>;
 	reconcilePublished(record: { limit: number; actorEmail: string; at: string; createEventId: () => string; createAuditId: () => string }): Promise<number>;

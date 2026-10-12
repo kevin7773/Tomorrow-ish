@@ -6,6 +6,7 @@ import { getGenerationRepository } from '../../../data/runtime-generation-reposi
 import { isRuntimeModelGenerationAvailable } from '../../../ai/runtime-model-provider';
 import { hasAuthoritativeFactSupport } from '../../../domain/generation';
 import EditorialLayout from '../../../layouts/EditorialLayout.astro';
+import { getEditorialWorkflowRepository } from '../../../data/runtime-editorial-workflow-repository';
 
 const id = Astro.params.id ?? '';
 const repository = getEditorialRepository();
@@ -15,6 +16,7 @@ const [candidate, categories] = await Promise.all([
 ]);
 if (!candidate) return Astro.redirect('/editorial/candidates?error=not-found');
 const bodyGenerationContext = await getGenerationRepository().findCandidateForBodyGeneration(candidate.id);
+const selectionContext = await getEditorialWorkflowRepository().findCandidateSelectionContext(candidate.id);
 const auditEntries = await repository.listAuditEntries('SATIRE_CANDIDATE', candidate.id);
 const csrfToken = Astro.locals.csrfToken;
 const returnPath = `/editorial/candidates/${candidate.id}`;
@@ -66,6 +68,28 @@ const bodyGenerationSourceEligible = Boolean(
 		{candidate.normalizedEventVersionId && <p>Normalized-event version: <code>{candidate.normalizedEventVersionId}</code></p>}
 		{candidate.bodyGenerationRunId && candidate.bodyGenerationState !== 'PENDING' && <p><a href={`/editorial/model-runs/${candidate.bodyGenerationRunId}`}>Open article-body generation provenance</a></p>}
 	</section>
+
+	{selectionContext && (
+		<section class="editorial-panel" aria-labelledby="workflow-selection-heading">
+			<h2 id="workflow-selection-heading">Workflow candidate selection</h2>
+			{selectionContext.selectedCandidateId === candidate.id ? (
+				<p class="editorial-alert editorial-alert--success"><strong>Selected for this workflow batch.</strong> Selected by {selectionContext.selectedByEmail} at {selectionContext.selectedAt ? new Date(selectionContext.selectedAt).toLocaleString('en-US') : '—'}.</p>
+			) : (
+				<form class="editorial-form" method="post" action="/editorial/actions/candidate-selection">
+					<input type="hidden" name="csrf_token" value={csrfToken} />
+					<input type="hidden" name="batchId" value={selectionContext.batchId} />
+					<input type="hidden" name="intakeId" value={selectionContext.intakeId} />
+					<input type="hidden" name="normalizedEventVersionId" value={selectionContext.normalizedEventVersionId} />
+					<input type="hidden" name="candidateId" value={candidate.id} />
+					<input type="hidden" name="returnPath" value={returnPath} />
+					{selectionContext.selectedCandidateId && <p>Current selection: <a href={`/editorial/candidates/${selectionContext.selectedCandidateId}`}><code>{selectionContext.selectedCandidateId}</code></a></p>}
+					{selectionContext.selectedCandidateId && <label><span>Reason for changing the current selection</span><textarea name="reason" maxlength="2000" required></textarea></label>}
+					<p>This records an editorial decision only. It does not generate a body, change candidate status, approve, or publish.</p>
+					<button class="editorial-button" type="submit">{selectionContext.selectedCandidateId ? 'Change workflow selection to this candidate' : 'Select for workflow body generation'}</button>
+				</form>
+			)}
+		</section>
+	)}
 
 	{candidate.archivedAt ? (
 		<section class="editorial-panel" aria-labelledby="archived-heading">
