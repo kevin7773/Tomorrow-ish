@@ -94,7 +94,7 @@ export function produceArticleImagePrompt(
 			'Omit real-person likenesses and any depiction of the reported event or law-enforcement activity; source facts are background context only and must not determine the focal subject.',
 		] : []),
 		'Treat the scene as clearly illustrative rather than documentary photographic evidence of a real event.',
-		'Landscape composition, 16:9, with a clear focal subject and room for responsive crops.',
+		'Landscape composition, 3:2, with a clear focal subject and room for responsive crops.',
 	].join(' ');
 
 	return {

@@ -15,6 +15,7 @@ import { ArticleImageService } from '../../../services/article-image-service';
 import { getAsyncArticleImageService, getImageWebhookUrl } from '../../../services/runtime-async-article-image-service';
 import { smokeTarget } from '../../../services/editorial-smoke-target';
 import { EditorialValidationError } from '../../../services/validation';
+import { authorizeImageSmokeTarget } from '../../../services/image-smoke-authorization';
 
 export const POST: APIRoute = async (context) => {
 	const form = await context.request.formData();
@@ -33,7 +34,13 @@ export const POST: APIRoute = async (context) => {
 			const targetItem = configuredTarget
 				? await getEditorialWorkflowRepository().findItem(configuredTarget.batchId, configuredTarget.intakeId)
 				: null;
-			if (!candidate || candidate.sourceIntakeId !== configuredTarget?.intakeId || targetItem?.storyId !== storyId) {
+			if (!configuredTarget || !candidate
+				|| storyId !== configuredTarget.storyId
+				|| story?.originCandidateId !== configuredTarget.candidateId
+				|| candidate.id !== configuredTarget.candidateId
+				|| candidate.sourceIntakeId !== configuredTarget.intakeId
+				|| targetItem?.storyId !== storyId
+				|| !await authorizeImageSmokeTarget(getEditorialWorkflowRepository(), configuredTarget)) {
 				throw new EditorialValidationError('Image generation is outside the configured smoke target.', 'conflict');
 			}
 			if (!isImageGenerationEnabled(env)) {
@@ -54,6 +61,8 @@ export const POST: APIRoute = async (context) => {
 				createWebhookUrl: getImageWebhookUrl,
 				processStoredWebhook: (imageId) => asyncService.processStoredWebhook(imageId).then(() => undefined),
 				smokeTarget: configuredTarget,
+				attemptKey: env.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY,
+				authorizeSmokeTarget: (configured) => authorizeImageSmokeTarget(getEditorialWorkflowRepository(), configured),
 			},
 		);
 		const identity = requireEditor(context);

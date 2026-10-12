@@ -16,6 +16,7 @@ import { GenerationService } from './generation-service';
 import { EditorialWorkflowService, type FinalReviewImagePort, type WorkflowPipelinePort } from './editorial-workflow-service';
 import { smokeTarget, type EditorialSmokeTarget } from './editorial-smoke-target';
 import { generateWorkflowImageIfEnabled } from './workflow-image-generation';
+import { authorizeImageSmokeTarget } from './image-smoke-authorization';
 
 function slug(headline: string, id: string): string {
 	const base = headline.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 70) || 'story';
@@ -30,6 +31,8 @@ function imageService(target: EditorialSmokeTarget | null): ArticleImageService 
 		createWebhookUrl: getImageWebhookUrl,
 		processStoredWebhook: (imageId) => asyncService.processStoredWebhook(imageId).then(() => undefined),
 		smokeTarget: target,
+		attemptKey: env.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY,
+		authorizeSmokeTarget: (configured) => authorizeImageSmokeTarget(getEditorialWorkflowRepository(), configured),
 	});
 }
 

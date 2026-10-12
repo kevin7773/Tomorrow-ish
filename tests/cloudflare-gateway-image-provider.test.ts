@@ -15,7 +15,7 @@ describe('Cloudflare AI Gateway asynchronous image provider', () => {
 
 		await expect(provider.submit({
 			prompt: 'An office plant portrayed as a middle manager.',
-			aspectRatio: '16:9',
+			aspectRatio: '3:2',
 			webhookUrl: 'https://tomorrow-ish.news/api/image-generation/webhook/image-1?signature=test',
 		})).resolves.toMatchObject({
 			provider: 'cloudflare-ai-gateway',
@@ -62,7 +62,7 @@ describe('Cloudflare AI Gateway asynchronous image provider', () => {
 		);
 
 		await expect(provider.submit({
-			prompt: 'Safe prompt', aspectRatio: '16:9', webhookUrl: 'https://tomorrow-ish.news/callback',
+			prompt: 'Safe prompt', aspectRatio: '3:2', webhookUrl: 'https://tomorrow-ish.news/callback',
 		})).resolves.toMatchObject({ providerRequestId: 'run-detached' });
 	});
 
@@ -75,7 +75,7 @@ describe('Cloudflare AI Gateway asynchronous image provider', () => {
 		);
 
 		await expect(provider.submit({
-			prompt: 'Safe prompt', aspectRatio: '16:9', webhookUrl: 'https://tomorrow-ish.news/callback',
+			prompt: 'Safe prompt', aspectRatio: '3:2', webhookUrl: 'https://tomorrow-ish.news/callback',
 		})).rejects.toMatchObject({
 			failureClassification: 'PROVIDER_REQUEST',
 			metadata: {
@@ -92,7 +92,7 @@ describe('Cloudflare AI Gateway asynchronous image provider', () => {
 			ACCOUNT_ID, 'cloudflare-token', 'tomorrow-ish', 'openai/gpt-image-2', fetcher,
 		);
 		await expect(provider.submit({
-			prompt: 'Safe prompt', aspectRatio: '16:9', webhookUrl: 'https://tomorrow-ish.news/callback',
+			prompt: 'Safe prompt', aspectRatio: '3:2', webhookUrl: 'https://tomorrow-ish.news/callback',
 		})).rejects.toMatchObject({
 			failureClassification: 'PROVIDER_AUTHENTICATION',
 			metadata: { httpStatus: 401, cloudflareRequestId: 'ray-safe', errorCode: '10000' },
@@ -106,7 +106,7 @@ describe('Cloudflare AI Gateway asynchronous image provider', () => {
 			vi.fn().mockResolvedValue(Response.json({ success: true, result: { state: 'Pending' } })),
 		);
 		await expect(provider.submit({
-			prompt: 'Safe prompt', aspectRatio: '16:9', webhookUrl: 'https://tomorrow-ish.news/callback',
+			prompt: 'Safe prompt', aspectRatio: '3:2', webhookUrl: 'https://tomorrow-ish.news/callback',
 		})).resolves.toMatchObject({
 			providerRequestId: null,
 			metadata: { submissionState: 'Pending', submissionAccepted: true, responseEnvelopeParsed: true },
@@ -119,7 +119,7 @@ describe('Cloudflare AI Gateway asynchronous image provider', () => {
 			vi.fn().mockResolvedValue(new Response('not-json', { status: 202 })),
 		);
 		await expect(provider.submit({
-			prompt: 'Safe prompt', aspectRatio: '16:9', webhookUrl: 'https://tomorrow-ish.news/callback',
+			prompt: 'Safe prompt', aspectRatio: '3:2', webhookUrl: 'https://tomorrow-ish.news/callback',
 		})).resolves.toMatchObject({
 			providerRequestId: null,
 			metadata: { submissionAccepted: true, responseEnvelopeParsed: false },
@@ -136,7 +136,7 @@ describe('Cloudflare AI Gateway asynchronous image provider', () => {
 			}), { status: 200, headers: { 'cf-ray': 'ray-envelope' } })),
 		);
 		await expect(provider.submit({
-			prompt: 'Safe prompt', aspectRatio: '16:9', webhookUrl: 'https://tomorrow-ish.news/callback',
+			prompt: 'Safe prompt', aspectRatio: '3:2', webhookUrl: 'https://tomorrow-ish.news/callback',
 		})).rejects.toMatchObject({
 			failureClassification: 'PROVIDER_REQUEST',
 			metadata: { httpStatus: 200, cloudflareRequestId: 'ray-envelope', errorCode: '7003' },
@@ -149,7 +149,7 @@ describe('Cloudflare AI Gateway asynchronous image provider', () => {
 			vi.fn().mockResolvedValue(Response.json({ success: true, errors: [{ code: 'billing_required' }] })),
 		);
 		await expect(provider.submit({
-			prompt: 'Safe prompt', aspectRatio: '16:9', webhookUrl: 'https://tomorrow-ish.news/callback',
+			prompt: 'Safe prompt', aspectRatio: '3:2', webhookUrl: 'https://tomorrow-ish.news/callback',
 		})).rejects.toMatchObject({
 			failureClassification: 'PROVIDER_REQUEST',
 			metadata: { httpStatus: 200, errorCode: 'billing_required' },

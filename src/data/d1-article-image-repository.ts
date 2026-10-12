@@ -5,6 +5,7 @@ import type {
 	CompletePendingImageGeneration,
 	FailPendingImageGeneration,
 	ImageWebhookInboxRecord,
+	MarkPendingImageAmbiguous,
 	RecordFailedImageGeneration,
 	RecordGeneratedImage,
 	RecordPendingImageGeneration,
@@ -19,6 +20,12 @@ interface ArticleImageRow {
 	prompt: string;
 	aspect_ratio: string;
 	provider_request_id: string | null;
+	attempt_key: string | null;
+	attempt_state: ArticleImage['attemptState'];
+	estimated_cost_microusd: number | null;
+	pricing_basis_json: string;
+	provider_reported_usage_json: string | null;
+	verified_billed_cost_microusd: number | null;
 	asset_key: string | null;
 	content_type: string | null;
 	byte_size: number | null;
@@ -54,6 +61,14 @@ function mapImage(row: ArticleImageRow): ArticleImage {
 		prompt: row.prompt,
 		aspectRatio: row.aspect_ratio,
 		providerRequestId: row.provider_request_id,
+		attemptKey: row.attempt_key,
+		attemptState: row.attempt_state,
+		estimatedCostMicrousd: row.estimated_cost_microusd,
+		pricingBasis: parseMetadata(row.pricing_basis_json),
+		providerReportedUsage: row.provider_reported_usage_json
+			? parseMetadata(row.provider_reported_usage_json) as Record<string, number>
+			: null,
+		verifiedBilledCostMicrousd: row.verified_billed_cost_microusd,
 		assetKey: row.asset_key,
 		contentType: row.content_type,
 		byteSize: row.byte_size,
@@ -68,6 +83,14 @@ function mapImage(row: ArticleImageRow): ArticleImage {
 		reviewedByEmail: row.reviewed_by_email,
 		reviewedAt: row.reviewed_at,
 	};
+}
+
+function reportedUsage(metadata: Record<string, unknown>): string | null {
+	if (!metadata.usage || typeof metadata.usage !== 'object' || Array.isArray(metadata.usage)) return null;
+	const safe = Object.fromEntries(Object.entries(metadata.usage).filter(([key, value]) =>
+		/^[A-Za-z0-9_]{1,50}$/.test(key) && typeof value === 'number'
+		&& Number.isSafeInteger(value) && value >= 0));
+	return Object.keys(safe).length ? JSON.stringify(safe) : null;
 }
 
 export class D1ArticleImageRepository implements ArticleImageRepository {
@@ -153,11 +176,12 @@ export class D1ArticleImageRepository implements ArticleImageRepository {
 	async recordPending(record: RecordPendingImageGeneration): Promise<boolean> {
 		const results = await this.db.batch([
 			this.db.prepare(`
-				INSERT INTO article_images (
+				INSERT OR IGNORE INTO article_images (
 					id, story_id, provider, model, prompt, prompt_version, aspect_ratio,
-					status, alt_text, metadata_json, requested_by_email, requested_at
+					status, alt_text, metadata_json, requested_by_email, requested_at,
+					attempt_key, attempt_state, estimated_cost_microusd, pricing_basis_json
 				)
-				SELECT ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, '{}', ?, ?
+				SELECT ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, '{}', ?, ?, ?, 'RESERVED', ?, ?
 				WHERE EXISTS (SELECT 1 FROM stories WHERE id = ? AND status IN ('REVIEW', 'APPROVED'))
 				  AND NOT EXISTS (
 					SELECT 1 FROM article_images WHERE story_id = ? AND status = 'PENDING'
@@ -165,7 +189,8 @@ export class D1ArticleImageRepository implements ArticleImageRepository {
 			`).bind(
 				record.id, record.storyId, record.provider, record.model, record.prompt,
 				record.promptVersion, record.aspectRatio, record.altText,
-				record.requestedByEmail, record.requestedAt, record.storyId, record.storyId,
+				record.requestedByEmail, record.requestedAt, record.attemptKey,
+				record.estimatedCostMicrousd, JSON.stringify(record.pricingBasis), record.storyId, record.storyId,
 			),
 			this.db.prepare(`
 				INSERT INTO editorial_audit_log (id, actor_email, entity_type, entity_id, action, reason, created_at)
@@ -180,7 +205,8 @@ export class D1ArticleImageRepository implements ArticleImageRepository {
 		const results = await this.db.batch([
 			this.db.prepare(`
 				UPDATE article_images
-				SET provider_request_id = ?, metadata_json = ?
+				SET provider_request_id = ?, metadata_json = ?,
+					attempt_state = CASE WHEN attempt_state = 'AMBIGUOUS' THEN 'AMBIGUOUS' ELSE 'SUBMITTED' END
 				WHERE id = ? AND status = 'PENDING' AND provider_request_id IS NULL
 			`).bind(record.providerRequestId, JSON.stringify(record.metadata), record.imageId),
 			this.db.prepare(`
@@ -193,16 +219,36 @@ export class D1ArticleImageRepository implements ArticleImageRepository {
 		return results[0].meta.changes === 1 && results[1].meta.changes === 1;
 	}
 
+	async markPendingAmbiguous(record: MarkPendingImageAmbiguous): Promise<boolean> {
+		const results = await this.db.batch([
+			this.db.prepare(`
+				UPDATE article_images
+				SET attempt_state = 'AMBIGUOUS', provider_request_id = COALESCE(provider_request_id, ?),
+					metadata_json = ?, uncertainty_classification = ?, uncertainty_message = ?
+				WHERE id = ? AND status = 'PENDING'
+				  AND (? IS NULL OR provider_request_id = ? OR provider_request_id IS NULL)
+			`).bind(record.providerRequestId, JSON.stringify(record.metadata), record.errorClassification,
+				record.errorMessage, record.imageId, record.providerRequestId, record.providerRequestId),
+			this.db.prepare(`
+				INSERT INTO editorial_audit_log (id, actor_email, entity_type, entity_id, action, reason, created_at)
+				SELECT ?, requested_by_email, 'STORY', story_id, 'IMAGE_GENERATION_AMBIGUOUS', ?, ?
+				FROM article_images WHERE id = ? AND status = 'PENDING' AND attempt_state = 'AMBIGUOUS'
+			`).bind(record.auditId, record.errorClassification, record.at, record.imageId),
+		]);
+		return results[0].meta.changes === 1 && results[1].meta.changes === 1;
+	}
+
 	async completePending(record: CompletePendingImageGeneration): Promise<boolean> {
 		const results = await this.db.batch([
 			this.db.prepare(`
 				UPDATE article_images
-				SET status = 'GENERATED', asset_key = ?, content_type = ?, byte_size = ?,
-					metadata_json = ?, generated_at = ?
+				SET status = 'GENERATED', attempt_state = 'RESOLVED', asset_key = ?, content_type = ?, byte_size = ?,
+					metadata_json = ?, provider_reported_usage_json = ?, generated_at = ?,
+					uncertainty_classification = NULL, uncertainty_message = NULL
 				WHERE id = ? AND status = 'PENDING' AND provider_request_id = ?
 			`).bind(
 				record.assetKey, record.contentType, record.byteSize, JSON.stringify(record.metadata),
-				record.generatedAt, record.imageId, record.providerRequestId,
+				reportedUsage(record.metadata), record.generatedAt, record.imageId, record.providerRequestId,
 			),
 			this.db.prepare(`
 				INSERT INTO editorial_audit_log (id, actor_email, entity_type, entity_id, action, reason, created_at)
@@ -218,12 +264,16 @@ export class D1ArticleImageRepository implements ArticleImageRepository {
 		const results = await this.db.batch([
 			this.db.prepare(`
 				UPDATE article_images
-				SET status = 'GENERATION_FAILED', provider_request_id = COALESCE(provider_request_id, ?),
-					metadata_json = ?, error_classification = ?, error_message = ?
+				SET status = 'GENERATION_FAILED', attempt_state = 'RESOLVED',
+					provider_request_id = COALESCE(provider_request_id, ?),
+					metadata_json = ?, provider_reported_usage_json = ?,
+					error_classification = ?, error_message = ?,
+					uncertainty_classification = NULL, uncertainty_message = NULL
 				WHERE id = ? AND status = 'PENDING'
 				  AND (? IS NULL OR provider_request_id = ? OR provider_request_id IS NULL)
 			`).bind(
-				record.providerRequestId, JSON.stringify(record.metadata), record.errorClassification, record.errorMessage,
+				record.providerRequestId, JSON.stringify(record.metadata), reportedUsage(record.metadata),
+				record.errorClassification, record.errorMessage,
 				record.imageId, record.providerRequestId, record.providerRequestId,
 			),
 			this.db.prepare(`

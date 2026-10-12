@@ -25,6 +25,7 @@ export interface EditorialWorkflowRepository {
 	findBatch(id: string): Promise<EditorialBatch | null>;
 	findItem(batchId: string, intakeId: string): Promise<EditorialBatchItem | null>;
 	findCandidateSelection(batchId: string, intakeId: string): Promise<CandidateSelection | null>;
+	isAcceptedNormalization(versionId: string, intakeId: string): Promise<boolean>;
 	findCandidateSelectionContext(candidateId: string): Promise<CandidateSelectionContext | null>;
 	selectCandidate(record: { id: string; batchId: string; intakeId: string; normalizedEventVersionId: string; candidateId: string; actorEmail: string; at: string; reason: string | null }): Promise<CandidateSelection | null>;
 	claimProcessable(record: { limit: number; owner: string; at: string; leaseExpiresAt: string; createEventId: () => string; target?: { batchId: string; intakeId: string } }): Promise<EditorialBatchItem[]>;

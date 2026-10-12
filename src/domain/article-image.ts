@@ -17,6 +17,12 @@ export interface ArticleImage {
 	prompt: string;
 	aspectRatio: string;
 	providerRequestId: string | null;
+	attemptKey: string | null;
+	attemptState: 'LEGACY' | 'RESERVED' | 'SUBMITTED' | 'AMBIGUOUS' | 'RESOLVED';
+	estimatedCostMicrousd: number | null;
+	pricingBasis: Record<string, unknown>;
+	providerReportedUsage: Record<string, number> | null;
+	verifiedBilledCostMicrousd: number | null;
 	assetKey: string | null;
 	contentType: string | null;
 	byteSize: number | null;

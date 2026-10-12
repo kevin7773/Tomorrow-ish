@@ -63,6 +63,9 @@ async function safeErrorMetadata(response: Response): Promise<Record<string, unk
 export class CloudflareGatewayImageProvider implements AsynchronousImageProvider {
 	readonly provider = 'cloudflare-ai-gateway';
 	readonly lifecycle = 'asynchronous' as const;
+	readonly generationProfile = {
+		aspectRatio: '3:2', size: '1536x1024', quality: 'medium', outputFormat: 'webp',
+	} as const;
 
 	constructor(
 		private readonly accountId: string,
@@ -87,7 +90,7 @@ export class CloudflareGatewayImageProvider implements AsynchronousImageProvider
 	}
 
 	async submit(request: ImageGenerationRequest & { webhookUrl: string }): Promise<SubmittedImageGeneration> {
-		if (request.aspectRatio !== '16:9') {
+		if (request.aspectRatio !== this.generationProfile.aspectRatio) {
 			throw new ImageProviderError('The requested image aspect ratio is unsupported.', 'PROVIDER_CONFIGURATION');
 		}
 		let webhook: URL;
@@ -118,10 +121,10 @@ export class CloudflareGatewayImageProvider implements AsynchronousImageProvider
 					model: this.model,
 					input: {
 						prompt: request.prompt,
-						quality: 'medium',
-						size: '1536x1024',
+						quality: this.generationProfile.quality,
+						size: this.generationProfile.size,
 						background: 'opaque',
-						output_format: 'webp',
+						output_format: this.generationProfile.outputFormat,
 					},
 					options: { background: true, webhookUrl: webhook.toString() },
 				}),

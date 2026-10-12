@@ -10,6 +10,8 @@ const now = '2026-09-11T12:30:00.000Z';
 
 function pendingImage(overrides: Partial<ArticleImage> = {}): ArticleImage {
 	return {
+		attemptKey: 'image:attempt:test-1', attemptState: 'SUBMITTED', estimatedCostMicrousd: 42_000,
+		pricingBasis: {}, providerReportedUsage: null, verifiedBilledCostMicrousd: null,
 		id: 'image-1', storyId: 'story-1', provider: 'cloudflare-ai-gateway', model: 'openai/gpt-image-2',
 		prompt: 'A clearly illustrative satirical office scene.', aspectRatio: '16:9', providerRequestId: 'run-1',
 		assetKey: null, contentType: null, byteSize: null, status: 'PENDING',
@@ -86,7 +88,7 @@ function setup(initial = pendingImage()) {
 		completePending: vi.fn(async (record) => {
 			if (!image || image.status !== 'PENDING' || image.providerRequestId !== record.providerRequestId) return false;
 			image = {
-				...image, status: 'GENERATED', assetKey: record.assetKey, contentType: record.contentType,
+				...image, status: 'GENERATED', attemptState: 'RESOLVED', assetKey: record.assetKey, contentType: record.contentType,
 				byteSize: record.byteSize, metadata: record.metadata, generatedAt: record.generatedAt,
 			};
 			return true;
@@ -94,7 +96,7 @@ function setup(initial = pendingImage()) {
 		failPending: vi.fn(async (record) => {
 			if (!image || image.status !== 'PENDING') return false;
 			image = {
-				...image, status: 'GENERATION_FAILED', providerRequestId: record.providerRequestId,
+				...image, status: 'GENERATION_FAILED', attemptState: 'RESOLVED', providerRequestId: record.providerRequestId,
 				metadata: record.metadata, errorClassification: record.errorClassification, errorMessage: record.errorMessage,
 			};
 			return true;
@@ -205,8 +207,8 @@ describe('asynchronous article image completion', () => {
 		expect(mismatch.repository.recordWebhook).not.toHaveBeenCalled();
 	});
 
-	it('attaches a later authenticated webhook run ID and processes the pending image', async () => {
-		const state = setup(pendingImage({ providerRequestId: null }));
+	it('attaches a delayed authenticated webhook to the original ambiguous attempt', async () => {
+		const state = setup(pendingImage({ providerRequestId: null, attemptState: 'AMBIGUOUS' }));
 		await expect(state.service.acceptWebhook('image-1', successCallback())).resolves.toBe('processed');
 		expect(state.repository.attachSubmission).toHaveBeenCalledWith(expect.objectContaining({
 			imageId: 'image-1', providerRequestId: 'run-1',

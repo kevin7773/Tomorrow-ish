@@ -25,6 +25,7 @@ function setup(initial = workflowItem()) {
 	const repository: EditorialWorkflowRepository = {
 		listBatches: vi.fn(), findBatch: vi.fn(), findItem: vi.fn(async () => ({ ...item })),
 		findCandidateSelection: vi.fn(async () => null), findCandidateSelectionContext: vi.fn(async () => null), selectCandidate: vi.fn(),
+		isAcceptedNormalization: vi.fn(async () => true),
 		claimProcessable: vi.fn(async ({ owner, at, leaseExpiresAt }) => {
 			if (!['SELECTED', 'GENERATING'].includes(item.state)) return [];
 			item = { ...item, state: 'GENERATING', leaseOwner: owner, leaseAcquiredAt: at, leaseExpiresAt, attemptCount: item.attemptCount + 1 };
@@ -55,7 +56,9 @@ function setup(initial = workflowItem()) {
 
 describe('two-gate editorial workflow', () => {
 	it('fails closed unless the exact single smoke batch/intake pair is configured', () => {
-		expect(smokeTarget(SMOKE_BATCH_ID, SMOKE_INTAKE_ID)).toEqual({ batchId: SMOKE_BATCH_ID, intakeId: SMOKE_INTAKE_ID });
+		expect(smokeTarget(SMOKE_BATCH_ID, SMOKE_INTAKE_ID)).toEqual(expect.objectContaining({
+			batchId: SMOKE_BATCH_ID, intakeId: SMOKE_INTAKE_ID,
+		}));
 		expect(smokeTarget(undefined, undefined)).toBeNull();
 		expect(smokeTarget(SMOKE_BATCH_ID, undefined)).toBeNull();
 		expect(smokeTarget(`${SMOKE_BATCH_ID}-other`, SMOKE_INTAKE_ID)).toBeNull();
@@ -69,6 +72,7 @@ describe('two-gate editorial workflow', () => {
 		const repository: EditorialWorkflowRepository = {
 			listBatches: vi.fn(), findBatch: vi.fn(),
 			findCandidateSelection: vi.fn(async () => null), findCandidateSelectionContext: vi.fn(async () => null), selectCandidate: vi.fn(),
+			isAcceptedNormalization: vi.fn(async () => true),
 			findItem: vi.fn(async (_batchId, intakeId) => ({ ...items.get(intakeId)! })),
 			claimProcessable: vi.fn(async ({ owner, at, leaseExpiresAt, limit, target }) => [...items.values()]
 				.filter((item) => ['SELECTED', 'GENERATING'].includes(item.state)

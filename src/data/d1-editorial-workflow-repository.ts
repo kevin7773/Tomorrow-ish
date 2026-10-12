@@ -83,6 +83,13 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 		return row ? selection(row) : null;
 	}
 
+	async isAcceptedNormalization(versionId: string, intakeId: string): Promise<boolean> {
+		const row = await this.db.prepare(`SELECT 1 AS present FROM normalized_event_versions
+			WHERE id = ? AND source_intake_id = ? AND review_state = 'ACCEPTED' LIMIT 1`)
+			.bind(versionId, intakeId).first<{ present: number }>();
+		return row?.present === 1;
+	}
+
 	async findCandidateSelectionContext(candidateId: string): Promise<CandidateSelectionContext | null> {
 		const row = await this.db.prepare(`SELECT item.batch_id, item.source_intake_id,
 			candidate.normalized_event_version_id, selection.candidate_id AS selected_candidate_id,

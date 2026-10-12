@@ -108,6 +108,10 @@ const imageGenerationEnabled = isImageGenerationEnabled(env);
 							<dl>
 								<dt>Provider / model</dt><dd>{image.provider} / {image.model}</dd>
 								<dt>Provider request</dt><dd>{image.providerRequestId ?? 'Not supplied'}</dd>
+								<dt>Attempt state</dt><dd>{image.attemptState}</dd>
+								<dt>Application estimate</dt><dd>{image.estimatedCostMicrousd === null ? 'Unavailable' : `${image.estimatedCostMicrousd} microusd (not verified billing)`}</dd>
+								{image.providerReportedUsage && <><dt>Provider-reported usage</dt><dd>{JSON.stringify(image.providerReportedUsage)}</dd></>}
+								{image.verifiedBilledCostMicrousd !== null && <><dt>Verified billed cost</dt><dd>{image.verifiedBilledCostMicrousd} microusd</dd></>}
 								<dt>Aspect ratio</dt><dd>{image.aspectRatio}</dd>
 								<dt>Prompt</dt><dd>{image.prompt}</dd>
 								{image.errorClassification && <><dt>Failure</dt><dd>{image.errorClassification}: {image.errorMessage}</dd></>}
@@ -152,7 +156,7 @@ const imageGenerationEnabled = isImageGenerationEnabled(env);
 								<input type="hidden" name="imageId" value={image.id} />
 								<input type="hidden" name="returnPath" value={returnPath} />
 								<button class="editorial-button editorial-button--quiet" type="submit">Resolve stale request</button>
-								<p>Available after one hour. This processes an already-delivered callback or closes the request as failed; it never submits another provider request.</p>
+								<p>Available after one hour. This processes definitive callback evidence; otherwise the request remains protected for investigation. It never submits another provider request.</p>
 							</form>
 						)}
 					</article>

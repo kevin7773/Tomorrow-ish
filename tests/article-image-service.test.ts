@@ -8,6 +8,18 @@ import { ImageProviderError, type ImageProvider } from '../src/images/image-prov
 import { ArticleImageService } from '../src/services/article-image-service';
 
 const identity = { email: 'Editor@Tomorrow-ish.news' };
+const attemptDependencies = {
+	attemptKey: 'image:attempt:test-0001',
+	estimateCost: () => ({
+		estimatedCostMicrousd: 42_000,
+		basis: {
+			provider: 'test', model: 'test', aspectRatio: '3:2' as const, size: '1536x1024' as const,
+			quality: 'medium' as const, outputFormat: 'webp' as const, textInputTokensConservative: 1,
+			textInputPriceMicrousdPerToken: 5 as const, outputCostMicrousd: 41_000 as const,
+			pricingVersion: 'openai-gpt-image-2-2026-10-12' as const,
+		},
+	}),
+};
 
 function story(status: EditorialStory['status'] = 'APPROVED'): EditorialStory {
 	return {
@@ -25,6 +37,8 @@ function image(status: ArticleImage['status'] = 'GENERATED'): ArticleImage {
 	return {
 		id: 'image-1', storyId: 'story-1', provider: 'fake', model: 'fake-v1', prompt: 'Prompt',
 		aspectRatio: '16:9', providerRequestId: 'request-1', assetKey: 'article-images/story-1/image-1.webp',
+		attemptKey: 'image:attempt:test-1', attemptState: 'RESOLVED', estimatedCostMicrousd: 42_000,
+		pricingBasis: {}, providerReportedUsage: null, verifiedBilledCostMicrousd: null,
 		contentType: 'image/webp', byteSize: 3, status, altText: 'Editorial illustration of officials at a table.',
 		metadata: {}, errorClassification: null, errorMessage: null, requestedByEmail: identity.email,
 		requestedAt: '2026-09-11T12:00:00.000Z', generatedAt: '2026-09-11T12:00:01.000Z',
@@ -72,12 +86,71 @@ function setup(options: { status?: EditorialStory['status']; providerError?: Ima
 	};
 	let id = 0;
 	const service = new ArticleImageService(editorialRepository, imageRepository, provider, assetStore, {
+		...attemptDependencies,
 		now: () => '2026-09-11T12:00:00.000Z', createId: () => `id-${++id}`,
 	});
 	return { service, editorialRepository, imageRepository, provider, assetStore };
 }
 
 describe('governed article image service', () => {
+	it('permits only the exact story, candidate, batch, intake, and accepted normalization', async () => {
+		const test = setup({ status: 'APPROVED' });
+		vi.mocked(test.editorialRepository.findEditorialStoryById).mockResolvedValue({
+			...story('APPROVED'), originCandidateId: 'candidate-target',
+		});
+		vi.mocked(test.editorialRepository.findCandidateById).mockResolvedValue({
+			id: 'candidate-target', sourceIntakeId: 'intake-target', editorialNotes: '', satiricalMechanism: '',
+		} as never);
+		vi.mocked(test.editorialRepository.findIntakeById).mockResolvedValue({
+			id: 'intake-target', satireSuitability: 'SUITABLE', guardrailFlags: [],
+		} as never);
+		const target = {
+			batchId: 'batch-target', intakeId: 'intake-target', storyId: 'story-1',
+			candidateId: 'candidate-target', normalizedEventVersionId: 'normalization-target',
+		};
+		const authorizeSmokeTarget = vi.fn().mockResolvedValue(true);
+		const guarded = new ArticleImageService(
+			test.editorialRepository, test.imageRepository, test.provider, test.assetStore,
+			{ ...attemptDependencies, smokeTarget: target, authorizeSmokeTarget },
+		);
+
+		await expect(guarded.generate(identity, { storyId: 'story-1' })).resolves.toMatchObject({ status: 'GENERATED' });
+		expect(authorizeSmokeTarget).toHaveBeenCalledWith(target);
+		expect(test.provider.generate).toHaveBeenCalledOnce();
+	});
+
+	it.each(['story', 'candidate', 'batch', 'intake', 'normalization'] as const)(
+		'fails closed for incorrect %s identity before provider work', async (field) => {
+			const test = setup({ status: 'APPROVED' });
+			const target = {
+				batchId: 'batch-target', intakeId: 'intake-target', storyId: 'story-1',
+				candidateId: 'candidate-target', normalizedEventVersionId: 'normalization-target',
+			};
+			vi.mocked(test.editorialRepository.findEditorialStoryById).mockResolvedValue({
+				...story('APPROVED'), originCandidateId: field === 'candidate' ? 'candidate-other' : 'candidate-target',
+			});
+			vi.mocked(test.editorialRepository.findCandidateById).mockResolvedValue({
+				id: field === 'candidate' ? 'candidate-other' : 'candidate-target',
+				sourceIntakeId: field === 'intake' ? 'intake-other' : 'intake-target',
+			} as never);
+			const configured = {
+				...target,
+				...(field === 'story' ? { storyId: 'story-other' } : {}),
+				...(field === 'batch' ? { batchId: 'batch-other' } : {}),
+				...(field === 'normalization' ? { normalizedEventVersionId: 'normalization-other' } : {}),
+			};
+			const guarded = new ArticleImageService(
+				test.editorialRepository, test.imageRepository, test.provider, test.assetStore,
+				{ ...attemptDependencies, smokeTarget: configured, authorizeSmokeTarget: vi.fn().mockResolvedValue(false) },
+			);
+
+			await expect(guarded.generate(identity, { storyId: 'story-1' })).rejects.toThrow(/outside the configured smoke target/i);
+			expect(test.provider.generate).not.toHaveBeenCalled();
+			expect(test.imageRepository.recordPending).not.toHaveBeenCalled();
+			expect(test.imageRepository.recordGenerated).not.toHaveBeenCalled();
+		},
+	);
+
 	it('rejects a non-target manual image request before provider submission', async () => {
 		const test = setup({ status: 'REVIEW' });
 		vi.mocked(test.editorialRepository.findEditorialStoryById).mockResolvedValueOnce({
@@ -241,6 +314,7 @@ describe('governed article image service', () => {
 		let id = 0;
 		const processStoredWebhook = vi.fn().mockResolvedValue(undefined);
 		const service = new ArticleImageService(editorialRepository, imageRepository, provider, assetStore, {
+			...attemptDependencies,
 			now: () => '2026-09-11T12:00:00.000Z', createId: () => `id-${++id}`,
 			createWebhookUrl: vi.fn().mockResolvedValue('https://tomorrow-ish.news/api/image-generation/webhook/id-1?signature=safe'),
 			processStoredWebhook,
@@ -282,6 +356,7 @@ describe('governed article image service', () => {
 		const service = new ArticleImageService(editorialRepository, imageRepository, provider, {
 			put: vi.fn(), delete: vi.fn(),
 		}, {
+			...attemptDependencies,
 			createId: () => 'image-accepted',
 			createWebhookUrl: vi.fn().mockResolvedValue('https://tomorrow-ish.news/callback?signature=safe'),
 			processStoredWebhook,
@@ -304,7 +379,7 @@ describe('governed article image service', () => {
 		expect(state.imageRepository.recordPending).not.toHaveBeenCalled();
 	});
 
-	it('marks a pre-acceptance asynchronous submission failure without retrying', async () => {
+	it('keeps a network-loss submission ambiguous without retrying', async () => {
 		const editorialRepository = {
 			findEditorialStoryById: vi.fn().mockResolvedValue(story()),
 		} as unknown as EditorialRepository;
@@ -312,6 +387,7 @@ describe('governed article image service', () => {
 			hasPendingForStory: vi.fn().mockResolvedValue(false),
 			recordPending: vi.fn().mockResolvedValue(true),
 			failPending: vi.fn().mockResolvedValue(true),
+			markPendingAmbiguous: vi.fn().mockResolvedValue(true),
 		} as unknown as ArticleImageRepository;
 		const failure = new ImageProviderError('Gateway unavailable.', 'PROVIDER_REQUEST', null, { stage: 'submission' });
 		const provider: ImageProvider = {
@@ -321,15 +397,46 @@ describe('governed article image service', () => {
 		const service = new ArticleImageService(editorialRepository, imageRepository, provider, {
 			put: vi.fn(), delete: vi.fn(),
 		}, {
+			...attemptDependencies,
 			createId: (() => { let id = 0; return () => `id-${++id}`; })(),
 			createWebhookUrl: vi.fn().mockResolvedValue('https://tomorrow-ish.news/callback?signature=safe'),
 		});
 
 		await expect(service.generate(identity, { storyId: 'story-1' })).rejects.toBe(failure);
 		expect(provider.submit).toHaveBeenCalledOnce();
-		expect(imageRepository.failPending).toHaveBeenCalledWith(expect.objectContaining({
+		expect(imageRepository.markPendingAmbiguous).toHaveBeenCalledWith(expect.objectContaining({
 			imageId: 'id-1', providerRequestId: null, errorClassification: 'PROVIDER_REQUEST',
 		}));
+		expect(imageRepository.failPending).not.toHaveBeenCalled();
+	});
+
+	it('keeps a provider timeout after possible acceptance pending and ambiguous', async () => {
+		const editorialRepository = {
+			findEditorialStoryById: vi.fn().mockResolvedValue(story()),
+		} as unknown as EditorialRepository;
+		const imageRepository = {
+			hasPendingForStory: vi.fn().mockResolvedValue(false), recordPending: vi.fn().mockResolvedValue(true),
+			markPendingAmbiguous: vi.fn().mockResolvedValue(true), failPending: vi.fn(),
+		} as unknown as ArticleImageRepository;
+		const timeout = new ImageProviderError('Submission timed out.', 'PROVIDER_TIMEOUT', null, {
+			stage: 'submission', exceptionCategory: 'FETCH_ABORT',
+		});
+		const provider: ImageProvider = {
+			provider: 'cloudflare-ai-gateway', model: 'openai/gpt-image-2', lifecycle: 'asynchronous',
+			submit: vi.fn().mockRejectedValue(timeout),
+		};
+		const service = new ArticleImageService(editorialRepository, imageRepository, provider,
+			{ put: vi.fn(), delete: vi.fn() }, {
+				...attemptDependencies, createId: (() => { let id = 0; return () => `id-${++id}`; })(),
+				createWebhookUrl: vi.fn().mockResolvedValue('https://tomorrow-ish.news/callback?signature=safe'),
+			});
+
+		await expect(service.generate(identity, { storyId: 'story-1' })).rejects.toBe(timeout);
+		expect(provider.submit).toHaveBeenCalledOnce();
+		expect(imageRepository.markPendingAmbiguous).toHaveBeenCalledWith(expect.objectContaining({
+			imageId: 'id-1', errorClassification: 'PROVIDER_TIMEOUT',
+		}));
+		expect(imageRepository.failPending).not.toHaveBeenCalled();
 	});
 
 	it('validates webhook configuration before persisting or submitting an asynchronous request', async () => {
@@ -344,7 +451,7 @@ describe('governed article image service', () => {
 		};
 		const service = new ArticleImageService(editorialRepository, imageRepository, provider, {
 			put: vi.fn(), delete: vi.fn(),
-		}, { createId: () => 'image-1', createWebhookUrl: vi.fn().mockRejectedValue(new Error('missing secret')) });
+		}, { ...attemptDependencies, createId: () => 'image-1', createWebhookUrl: vi.fn().mockRejectedValue(new Error('missing secret')) });
 
 		await expect(service.generate(identity, { storyId: 'story-1' }))
 			.rejects.toMatchObject({ failureClassification: 'PROVIDER_CONFIGURATION' });
@@ -352,7 +459,7 @@ describe('governed article image service', () => {
 		expect(provider.submit).not.toHaveBeenCalled();
 	});
 
-	it('closes an accepted request safely when provider request-ID persistence fails', async () => {
+	it('keeps an accepted request ambiguous when provider request-ID persistence fails', async () => {
 		const editorialRepository = {
 			findEditorialStoryById: vi.fn().mockResolvedValue(story()),
 		} as unknown as EditorialRepository;
@@ -361,6 +468,7 @@ describe('governed article image service', () => {
 			recordPending: vi.fn().mockResolvedValue(true),
 			attachSubmission: vi.fn().mockRejectedValue(new Error('D1 unavailable')),
 			failPending: vi.fn().mockResolvedValue(true),
+			markPendingAmbiguous: vi.fn().mockResolvedValue(true),
 		} as unknown as ArticleImageRepository;
 		const provider: ImageProvider = {
 			provider: 'cloudflare-ai-gateway', model: 'openai/gpt-image-2', lifecycle: 'asynchronous',
@@ -370,19 +478,20 @@ describe('governed article image service', () => {
 		};
 		const service = new ArticleImageService(editorialRepository, imageRepository, provider, {
 			put: vi.fn(), delete: vi.fn(),
-		}, { createId: () => 'image-1', createWebhookUrl: vi.fn().mockResolvedValue('https://tomorrow-ish.news/callback') });
+		}, { ...attemptDependencies, createId: () => 'image-1', createWebhookUrl: vi.fn().mockResolvedValue('https://tomorrow-ish.news/callback') });
 
 		await expect(service.generate(identity, { storyId: 'story-1' })).rejects.toMatchObject({
 			failureClassification: 'PROVIDER_REQUEST', providerRequestId: 'run-accepted',
 		});
 		expect(provider.submit).toHaveBeenCalledOnce();
-		expect(imageRepository.failPending).toHaveBeenCalledWith(expect.objectContaining({
+		expect(imageRepository.markPendingAmbiguous).toHaveBeenCalledWith(expect.objectContaining({
 			imageId: 'image-1', providerRequestId: 'run-accepted',
-			metadata: { stage: 'submission-persistence' },
+			metadata: expect.objectContaining({ stage: 'submission-persistence', submissionAccepted: true }),
 		}));
+		expect(imageRepository.failPending).not.toHaveBeenCalled();
 	});
 
-	it('manually closes a stale pending request without deleting provenance or calling a provider', async () => {
+	it('keeps a stale pending request protected without definitive provider evidence', async () => {
 		const pending = {
 			...image('PENDING'), assetKey: null, contentType: null, byteSize: null, generatedAt: null,
 			providerRequestId: 'run-stale', requestedAt: '2026-09-11T10:00:00.000Z',
@@ -403,11 +512,8 @@ describe('governed article image service', () => {
 		}, { now: () => '2026-09-11T12:00:00.000Z', createId: () => 'audit-1' });
 
 		await expect(service.resolveStalePending(identity, { storyId: 'story-1', imageId: 'image-1' }))
-			.resolves.toBe('GENERATION_FAILED');
-		expect(imageRepository.failPending).toHaveBeenCalledWith(expect.objectContaining({
-			imageId: 'image-1', providerRequestId: 'run-stale', actorEmail: 'editor@tomorrow-ish.news',
-			errorClassification: 'STALE_PENDING', metadata: expect.objectContaining({ manualRecovery: true }),
-		}));
+			.rejects.toThrow(/remains protected/i);
+		expect(imageRepository.failPending).not.toHaveBeenCalled();
 		expect(provider.generate).not.toHaveBeenCalled();
 	});
 
@@ -447,7 +553,7 @@ describe('governed article image service', () => {
 		expect(provider.generate).not.toHaveBeenCalled();
 	});
 
-	it('closes a stale claimed callback without racing a second completion worker', async () => {
+	it('keeps a stale claimed callback protected without racing a second completion worker', async () => {
 		const pending = {
 			...image('PENDING'), assetKey: null, contentType: null, byteSize: null, generatedAt: null,
 			providerRequestId: 'run-processing', requestedAt: '2026-09-11T10:00:00.000Z',
@@ -474,12 +580,10 @@ describe('governed article image service', () => {
 		}, { now: () => '2026-09-11T12:00:00.000Z', createId: () => 'audit-1', processStoredWebhook });
 
 		await expect(service.resolveStalePending(identity, { storyId: 'story-1', imageId: 'image-1' }))
-			.resolves.toBe('GENERATION_FAILED');
+			.rejects.toThrow(/remains protected/i);
 		expect(processStoredWebhook).not.toHaveBeenCalled();
-		expect(imageRepository.failPending).toHaveBeenCalledWith(expect.objectContaining({
-			providerRequestId: 'run-processing', errorClassification: 'STALE_PENDING',
-		}));
-		expect(imageRepository.markWebhookProcessed).toHaveBeenCalledWith('image-1', 'run-processing');
+		expect(imageRepository.failPending).not.toHaveBeenCalled();
+		expect(imageRepository.markWebhookProcessed).not.toHaveBeenCalled();
 	});
 
 	it('does not allow manual pending recovery before the one-hour threshold', async () => {

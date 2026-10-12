@@ -45,9 +45,22 @@ export interface RecordPendingImageGeneration {
 	prompt: string;
 	promptVersion: string;
 	aspectRatio: string;
+	attemptKey: string;
+	estimatedCostMicrousd: number;
+	pricingBasis: Record<string, unknown>;
 	altText: string;
 	requestedByEmail: string;
 	requestedAt: string;
+	auditId: string;
+}
+
+export interface MarkPendingImageAmbiguous {
+	imageId: string;
+	providerRequestId: string | null;
+	metadata: Record<string, unknown>;
+	errorClassification: string;
+	errorMessage: string;
+	at: string;
 	auditId: string;
 }
 
@@ -111,6 +124,7 @@ export interface ArticleImageRepository {
 	recordFailure(record: RecordFailedImageGeneration): Promise<boolean>;
 	recordPending(record: RecordPendingImageGeneration): Promise<boolean>;
 	attachSubmission(record: AttachImageSubmission): Promise<boolean>;
+	markPendingAmbiguous(record: MarkPendingImageAmbiguous): Promise<boolean>;
 	completePending(record: CompletePendingImageGeneration): Promise<boolean>;
 	failPending(record: FailPendingImageGeneration): Promise<boolean>;
 	recordWebhook(record: Omit<ImageWebhookInboxRecord, 'processingState'>): Promise<'created' | 'duplicate' | 'conflict'>;

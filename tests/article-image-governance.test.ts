@@ -8,6 +8,7 @@ describe('article image persistence governance', () => {
 	const migration = readFileSync(join(process.cwd(), 'migrations/0005_governed_article_images.sql'), 'utf8');
 	const asyncMigration = readFileSync(join(process.cwd(), 'migrations/0007_async_article_images.sql'), 'utf8');
 	const webhookRetentionMigration = readFileSync(join(process.cwd(), 'migrations/0008_scrub_image_webhook_result_urls.sql'), 'utf8');
+	const reservationMigration = readFileSync(join(process.cwd(), 'migrations/0019_image_request_reservations.sql'), 'utf8');
 	const repository = readFileSync(join(process.cwd(), 'src/data/d1-article-image-repository.ts'), 'utf8');
 
 	it('preserves immutable generation history and requires alt text on approval', () => {
@@ -24,6 +25,16 @@ describe('article image persistence governance', () => {
 		expect(asyncMigration).toContain('CREATE TABLE article_image_webhook_inbox');
 		expect(webhookRetentionMigration).toContain("CASE WHEN processing_state = 'PROCESSED' THEN NULL ELSE result_url END");
 		expect(webhookRetentionMigration).toContain("processing_state = 'PROCESSED' AND result_url IS NULL");
+	});
+
+	it('persists immutable attempt identity, ambiguity, and separate cost evidence', () => {
+		expect(reservationMigration).toContain('attempt_key TEXT');
+		expect(reservationMigration).toContain("'AMBIGUOUS'");
+		expect(reservationMigration).toContain('CREATE UNIQUE INDEX idx_article_images_attempt_key');
+		expect(reservationMigration).toContain('estimated_cost_microusd');
+		expect(reservationMigration).toContain('provider_reported_usage_json');
+		expect(reservationMigration).toContain('verified_billed_cost_microusd');
+		expect(reservationMigration).toContain('article_images_attempt_identity_immutable');
 	});
 
 	it('creates generated records unapproved and associates only explicit approvals to the story', () => {

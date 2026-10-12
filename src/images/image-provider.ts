@@ -47,6 +47,12 @@ export class ImageProviderError extends Error {
 interface ImageProviderBase {
 	readonly provider: string;
 	readonly model: string;
+	readonly generationProfile?: {
+		aspectRatio: string;
+		size: string;
+		quality: string;
+		outputFormat: string;
+	};
 }
 
 export interface SynchronousImageProvider extends ImageProviderBase {
