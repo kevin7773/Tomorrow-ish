@@ -87,6 +87,23 @@ export interface ModelProvider {
 	estimateMaximumCostMicrousd(operation: ModelOperation, inputCharacters: number): number;
 }
 
+export interface ModelProviderAccess {
+	readonly providerId: string;
+	readonly modelId: string;
+	estimateMaximumCostMicrousd(operation: ModelOperation, inputCharacters: number): number;
+	createProvider(): ModelProvider;
+}
+
+export function existingModelProvider(provider: ModelProvider): ModelProviderAccess {
+	return {
+		providerId: provider.providerId,
+		modelId: provider.modelId,
+		estimateMaximumCostMicrousd: (operation, inputCharacters) =>
+			provider.estimateMaximumCostMicrousd(operation, inputCharacters),
+		createProvider: () => provider,
+	};
+}
+
 export interface ProviderResponseDiagnostics {
 	httpStatus: number;
 	errorType: string | null;

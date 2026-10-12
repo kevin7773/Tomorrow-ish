@@ -1,5 +1,5 @@
-import type { ModelProvider } from '../ai/model-provider';
-import { ModelOutputError, ModelProviderError } from '../ai/model-provider';
+import type { ModelProvider, ModelProviderAccess } from '../ai/model-provider';
+import { existingModelProvider, ModelOutputError, ModelProviderError } from '../ai/model-provider';
 import { parseArticleBodyProposal, parseCandidateBatch, parseNormalizationProposal } from '../ai/validation';
 import {
 	CANDIDATE_PROMPT_VERSION,
@@ -14,7 +14,7 @@ import {
 	sha256,
 	type ModelLimits,
 } from '../ai/model-runner';
-import type { GenerationRepository, ModelRunRecord } from '../data/generation-repository';
+import type { GenerationRepository, ModelBudgetLimits, ModelRunRecord } from '../data/generation-repository';
 import type { EditorialIdentity } from '../domain/editorial';
 import {
 	deterministicGuardrailFlags,
@@ -35,7 +35,7 @@ interface GenerationDependencies {
 	now?: () => string;
 	createId?: () => string;
 	limits?: Readonly<ModelLimits>;
-	dailyBudgetMicrousd?: number;
+	budgetLimits?: ModelBudgetLimits;
 	generationEnabled?: boolean;
 	requestOwner?: string;
 	workflowFence?: { batchId: string; intakeId: string; leaseOwner: string };
@@ -122,7 +122,7 @@ function editorialModelFailure(error: unknown): EditorialValidationError {
 }
 
 function isOwnershipFenceLoss(error: unknown): boolean {
-	return error instanceof Error && ['WORKFLOW_LEASE_LOST', 'MODEL_REQUEST_FENCE_LOST'].includes(error.message);
+	return error instanceof Error && ['WORKFLOW_LEASE_LOST', 'MODEL_REQUEST_FENCE_LOST', 'MODEL_BUDGET_FENCE_LOST'].includes(error.message);
 }
 
 function bodyOutcomeRequiresInvestigation(error: unknown): boolean {
@@ -137,6 +137,13 @@ function reservationFailureStatus(error: unknown): 'FAILED' | 'AMBIGUOUS' {
 	if (cause instanceof ModelOutputError) return 'FAILED';
 	if (cause instanceof ModelProviderError && !cause.retryable
 		&& cause.responseDiagnostics?.httpStatus === 400) return 'FAILED';
+	return 'AMBIGUOUS';
+}
+
+function budgetFailureStatus(error: unknown): 'FINALIZED' | 'RELEASED' | 'AMBIGUOUS' {
+	const cause = error instanceof ModelExecutionError ? error.cause : error;
+	if (cause instanceof ModelOutputError) return 'FINALIZED';
+	if (cause instanceof ModelProviderError && !cause.retryable) return 'RELEASED';
 	return 'AMBIGUOUS';
 }
 
@@ -157,32 +164,51 @@ export class GenerationService {
 	private readonly now: () => string;
 	private readonly createId: () => string;
 	private readonly limits: Readonly<ModelLimits>;
-	private readonly dailyBudgetMicrousd: number;
+	private readonly budgetLimits: ModelBudgetLimits;
 	private readonly generationEnabled: boolean;
 	private readonly requestOwner: string;
 	private readonly workflowFence?: { batchId: string; intakeId: string; leaseOwner: string };
 	private readonly beforeProviderCall: () => Promise<void>;
 	private readonly beforePersistResult: () => Promise<void>;
 	private readonly smokeTarget: EditorialSmokeTarget | null | undefined;
+	private provider: ModelProvider | null = null;
+	private readonly providerAccess: ModelProviderAccess;
 
 	constructor(
 		private readonly repository: GenerationRepository,
-		private readonly provider: ModelProvider,
+		providerAccess: ModelProviderAccess | ModelProvider,
 		dependencies: GenerationDependencies = {},
 	) {
 		this.now = dependencies.now ?? (() => new Date().toISOString());
 		this.createId = dependencies.createId ?? (() => crypto.randomUUID());
 		this.limits = dependencies.limits ?? DEFAULT_MODEL_LIMITS;
-		this.dailyBudgetMicrousd = dependencies.dailyBudgetMicrousd ?? 1_000_000;
+		this.budgetLimits = dependencies.budgetLimits ?? (import.meta.env.DEV ? {
+			enabled: true,
+			operationMaxMicrousd: {
+				NORMALIZE: this.limits.maxEstimatedCostMicrousd,
+				GENERATE_CANDIDATES: this.limits.maxEstimatedCostMicrousd,
+				GENERATE_ARTICLE_BODY: this.limits.maxEstimatedCostMicrousd,
+			},
+			itemMaxMicrousd: 1_000_000,
+			dailyMaxMicrousd: 1_000_000,
+		} : {
+			enabled: false,
+			operationMaxMicrousd: { NORMALIZE: 0, GENERATE_CANDIDATES: 0, GENERATE_ARTICLE_BODY: 0 },
+			itemMaxMicrousd: 0,
+			dailyMaxMicrousd: 0,
+		});
 		this.generationEnabled = dependencies.generationEnabled ?? true;
 		this.requestOwner = dependencies.requestOwner ?? `model:${crypto.randomUUID()}`;
 		this.workflowFence = dependencies.workflowFence;
 		this.beforeProviderCall = dependencies.beforeProviderCall ?? (async () => undefined);
 		this.beforePersistResult = dependencies.beforePersistResult ?? (async () => undefined);
 		this.smokeTarget = dependencies.smokeTarget;
-		if (!Number.isSafeInteger(this.dailyBudgetMicrousd) || this.dailyBudgetMicrousd <= 0) {
-			throw new EditorialValidationError('The daily model budget is invalid.');
-		}
+		this.providerAccess = 'normalizeEvent' in providerAccess ? existingModelProvider(providerAccess) : providerAccess;
+	}
+
+	private getProvider(): ModelProvider {
+		this.provider ??= this.providerAccess.createProvider();
+		return this.provider;
 	}
 
 	async proposeNormalization(identity: EditorialIdentity, intakeIdValue: unknown, keyValue: unknown): Promise<string> {
@@ -206,14 +232,25 @@ export class GenerationService {
 		const input = { title: intake.title, neutralBrief: intake.neutralBrief, references: intake.references };
 		const inputText = JSON.stringify(input);
 		const createdAt = this.now();
-		const reservedCostMicrousd = await this.requireBudget('NORMALIZE', inputText.length, createdAt);
+		const budget = await this.admitBudget('NORMALIZE', key, intakeId, null, null, inputText.length, createdAt);
+		const reservedCostMicrousd = budget.estimatedCostMicrousd;
 		const runId = this.createId();
-		await this.reserveModelRequest('NORMALIZE', key, intakeId, null, createdAt);
+		try {
+			await this.reserveModelRequest('NORMALIZE', key, intakeId, null, createdAt, reservedCostMicrousd);
+		} catch (error) {
+			if (budget.newlyAdmitted) await this.releaseUnstartedBudget(key, this.now(), 'PROVIDER_RESERVATION_NOT_CREATED');
+			throw error;
+		}
 		let executed: { result: ModelResult<unknown>; retryCount: number; latencyMs: number } | null = null;
+		let budgetSettled = false;
+		let providerSubmissionAdmitted = false;
 		try {
 			await this.beforeProviderCall();
 			if (!(await this.repository.markModelRequestStarted(key, this.requestOwner, this.now()))) throw new Error('MODEL_REQUEST_FENCE_LOST');
-			executed = await runWithLimits((signal) => this.provider.normalizeEvent(input, signal), inputText.length,
+			if (!(await this.repository.markModelBudgetStarted(key, this.requestOwner, this.now()))) throw new Error('MODEL_BUDGET_FENCE_LOST');
+			providerSubmissionAdmitted = true;
+			const provider = this.getProvider();
+			executed = await runWithLimits((signal) => provider.normalizeEvent(input, signal), inputText.length,
 				modelLimitsForOperation('NORMALIZE', this.limits));
 			const parsed = parseNormalizationProposal(executed.result.output);
 			const referenceIds = new Set(intake.references.map((reference) => reference.id));
@@ -229,6 +266,8 @@ export class GenerationService {
 			const versionId = this.createId();
 			const completedAt = this.now();
 			await this.beforePersistResult();
+			await this.finalizeBudget(key, completedAt, executed.result);
+			budgetSettled = true;
 			await this.repository.createNormalization({
 				run: await this.runRecord({ id: runId, operation: 'NORMALIZE', sourceIntakeId: intakeId,
 					normalizedEventVersionId: versionId, key, requestedByEmail, createdAt, completedAt,
@@ -242,6 +281,7 @@ export class GenerationService {
 			await this.repository.finishModelRequest({ idempotencyKey: key, owner: this.requestOwner, status: 'SUCCEEDED', completedAt });
 			return versionId;
 		} catch (error) {
+			if (!budgetSettled) await this.settleFailedBudget(key, error, this.now(), executed?.result ?? null, providerSubmissionAdmitted);
 			const raced = await this.repository.findModelRunByIdempotencyKey(key);
 			if (raced?.operation === 'NORMALIZE' && raced.sourceIntakeId === intakeId && raced.normalizedEventVersionId) {
 				return raced.normalizedEventVersionId;
@@ -254,7 +294,7 @@ export class GenerationService {
 			const completedAt = this.now();
 			const failed: ModelRunRecord = {
 				id: runId, operation: 'NORMALIZE', status: 'FAILED', sourceIntakeId: intakeId,
-				normalizedEventVersionId: null, provider: this.provider.providerId, model: this.provider.modelId,
+				normalizedEventVersionId: null, provider: this.providerAccess.providerId, model: this.providerAccess.modelId,
 				providerRevision: null, promptVersion: NORMALIZATION_PROMPT_VERSION,
 				inputHash: await sha256(`${NORMALIZATION_PROMPT_VERSION}\n${inputText}`), outputHash: null,
 				inputTokens: executed?.result.usage.inputTokens ?? null, outputTokens: executed?.result.usage.outputTokens ?? null,
@@ -372,18 +412,32 @@ export class GenerationService {
 		const inputText = `${HOUSE_VOICE_CONTRACT}\n${JSON.stringify(modelInput)}`;
 		const runId = this.createId();
 		const createdAt = this.now();
-		const reservedCostMicrousd = await this.requireBudget('GENERATE_CANDIDATES', inputText.length, createdAt);
-		await this.reserveModelRequest('GENERATE_CANDIDATES', key, intakeId, versionId, createdAt);
+		const budget = await this.admitBudget('GENERATE_CANDIDATES', key, intakeId, versionId, null,
+			inputText.length, createdAt);
+		const reservedCostMicrousd = budget.estimatedCostMicrousd;
+		try {
+			await this.reserveModelRequest('GENERATE_CANDIDATES', key, intakeId, versionId, createdAt, reservedCostMicrousd);
+		} catch (error) {
+			if (budget.newlyAdmitted) await this.releaseUnstartedBudget(key, this.now(), 'PROVIDER_RESERVATION_NOT_CREATED');
+			throw error;
+		}
 		let executed: { result: ModelResult<unknown>; retryCount: number; latencyMs: number } | null = null;
+		let budgetSettled = false;
+		let providerSubmissionAdmitted = false;
 		try {
 			await this.beforeProviderCall();
 			if (!(await this.repository.markModelRequestStarted(key, this.requestOwner, this.now()))) throw new Error('MODEL_REQUEST_FENCE_LOST');
-			executed = await runWithLimits((signal) => this.provider.generateCandidates(modelInput, signal), inputText.length,
+			if (!(await this.repository.markModelBudgetStarted(key, this.requestOwner, this.now()))) throw new Error('MODEL_BUDGET_FENCE_LOST');
+			providerSubmissionAdmitted = true;
+			const provider = this.getProvider();
+			executed = await runWithLimits((signal) => provider.generateCandidates(modelInput, signal), inputText.length,
 				modelLimitsForOperation('GENERATE_CANDIDATES', this.limits));
 			const candidates = parseCandidateBatch(executed.result.output, this.limits.defaultCandidateCount);
 			const outputText = JSON.stringify(candidates);
 			const completedAt = this.now();
 			await this.beforePersistResult();
+			await this.finalizeBudget(key, completedAt, executed.result);
+			budgetSettled = true;
 			const created = await this.repository.createGeneratedCandidates({
 				run: await this.runRecord({ id: runId, operation: 'GENERATE_CANDIDATES', sourceIntakeId: intakeId,
 					normalizedEventVersionId: versionId, key, requestedByEmail, createdAt, completedAt,
@@ -395,6 +449,7 @@ export class GenerationService {
 			await this.repository.finishModelRequest({ idempotencyKey: key, owner: this.requestOwner, status: 'SUCCEEDED', completedAt });
 			return runId;
 		} catch (error) {
+			if (!budgetSettled) await this.settleFailedBudget(key, error, this.now(), executed?.result ?? null, providerSubmissionAdmitted);
 			if (error instanceof EditorialValidationError) throw error;
 			if (isOwnershipFenceLoss(error)) {
 				await this.finishFailedReservation(key, error, this.now());
@@ -405,8 +460,8 @@ export class GenerationService {
 			if (raced?.operation === 'GENERATE_CANDIDATES' && raced.normalizedEventVersionId === versionId && raced.status === 'SUCCEEDED') return raced.id;
 			const completedAt = this.now();
 			await this.repository.createModelRun({ id: runId, operation: 'GENERATE_CANDIDATES', status: 'FAILED',
-				sourceIntakeId: intakeId, normalizedEventVersionId: versionId, provider: this.provider.providerId,
-				model: this.provider.modelId, providerRevision: null, promptVersion: CANDIDATE_PROMPT_VERSION,
+				sourceIntakeId: intakeId, normalizedEventVersionId: versionId, provider: this.providerAccess.providerId,
+				model: this.providerAccess.modelId, providerRevision: null, promptVersion: CANDIDATE_PROMPT_VERSION,
 				inputHash: await sha256(`${CANDIDATE_PROMPT_VERSION}\n${inputText}`), outputHash: null,
 				inputTokens: executed?.result.usage.inputTokens ?? null, outputTokens: executed?.result.usage.outputTokens ?? null, inputCharacters: inputText.length,
 				outputCharacters: executed?.result.usage.outputCharacters ?? 0, latencyMs: error instanceof ModelExecutionError ? error.latencyMs : executed?.latencyMs ?? 0,
@@ -420,10 +475,11 @@ export class GenerationService {
 	}
 
 	private async reserveModelRequest(operation: 'NORMALIZE' | 'GENERATE_CANDIDATES', key: string,
-		sourceIntakeId: string, normalizedEventVersionId: string | null, createdAt: string): Promise<void> {
+		sourceIntakeId: string, normalizedEventVersionId: string | null, createdAt: string,
+		estimatedCostMicrousd: number): Promise<void> {
 		const claimed = await this.repository.claimModelRequest({ idempotencyKey: key, operation,
 			attemptKey: key, sourceIntakeId, normalizedEventVersionId, owner: this.requestOwner,
-			createdAt, workflowFence: this.workflowFence });
+			createdAt, estimatedCostMicrousd, workflowFence: this.workflowFence });
 		if (claimed === 'CLAIMED') return;
 		if (claimed === 'PENDING') throw new EditorialValidationError(
 			'The provider outcome is pending investigation; an automatic retry is prohibited.', 'conflict');
@@ -532,27 +588,36 @@ export class GenerationService {
 		};
 		const inputText = JSON.stringify(modelInput);
 		const createdAt = this.now();
-		const reservedCostMicrousd = await this.requireBudget('GENERATE_ARTICLE_BODY', inputText.length, createdAt);
+		const budget = await this.admitBudget('GENERATE_ARTICLE_BODY', key, intake.id, version.id,
+			candidateId, inputText.length, createdAt);
+		const reservedCostMicrousd = budget.estimatedCostMicrousd;
 		const runId = this.createId();
 		const claimed = await this.repository.claimArticleBodyGeneration({
 			id: runId, candidateId, sourceIntakeId: intake.id, normalizedEventVersionId: version.id,
-			provider: this.provider.providerId, model: this.provider.modelId,
+			provider: this.providerAccess.providerId, model: this.providerAccess.modelId,
 			promptVersion: ARTICLE_BODY_PROMPT_VERSION,
 			inputHash: await sha256(`${ARTICLE_BODY_PROMPT_VERSION}\n${inputText}`),
 			inputCharacters: inputText.length, estimatedCostMicrousd: reservedCostMicrousd,
+			owner: this.requestOwner,
 			idempotencyKey: key, requestedByEmail, sourceWasSensitive: sensitive,
 			cautionReason, createdAt, auditId: this.createId(),
 			smokeTarget: this.smokeTarget ?? null,
 		});
 		if (!claimed) {
+			if (budget.newlyAdmitted) await this.releaseUnstartedBudget(key, this.now(), 'BODY_RESERVATION_NOT_CREATED');
 			throw new EditorialValidationError('The candidate changed or body generation is already in progress.', 'conflict');
 		}
 
 		let executed: { result: ModelResult<unknown>; retryCount: number; latencyMs: number } | null = null;
+		let budgetSettled = false;
+		let providerSubmissionAdmitted = false;
 		try {
 			await this.beforeProviderCall();
+			if (!(await this.repository.markModelBudgetStarted(key, this.requestOwner, this.now()))) throw new Error('MODEL_BUDGET_FENCE_LOST');
+			providerSubmissionAdmitted = true;
+			const provider = this.getProvider();
 			executed = await runWithLimits(
-				(signal) => this.provider.generateArticleBody(modelInput, signal),
+				(signal) => provider.generateArticleBody(modelInput, signal),
 				inputText.length,
 				modelLimitsForOperation('GENERATE_ARTICLE_BODY', this.limits),
 			);
@@ -570,6 +635,8 @@ export class GenerationService {
 			const outputText = JSON.stringify(proposal);
 			const completedAt = this.now();
 			await this.beforePersistResult();
+			await this.finalizeBudget(key, completedAt, executed.result);
+			budgetSettled = true;
 			const run = await this.runRecord({
 				id: runId, operation: 'GENERATE_ARTICLE_BODY', sourceIntakeId: intake.id,
 				normalizedEventVersionId: version.id, key, requestedByEmail, createdAt, completedAt,
@@ -594,6 +661,7 @@ export class GenerationService {
 			}
 			return runId;
 		} catch (error) {
+			if (!budgetSettled) await this.settleFailedBudget(key, error, this.now(), executed?.result ?? null, providerSubmissionAdmitted);
 			if (error instanceof EditorialValidationError && error.code === 'conflict') throw error;
 			if (bodyOutcomeRequiresInvestigation(error)) throw new EditorialValidationError(
 				'The article-body provider outcome remains pending investigation; do not retry.', 'conflict');
@@ -636,17 +704,67 @@ export class GenerationService {
 		}
 	}
 
-	private async requireBudget(operation: ModelOperation, inputCharacters: number, requestedAt: string): Promise<number> {
-		const reserved = this.provider.estimateMaximumCostMicrousd(operation, inputCharacters);
-		if (!Number.isSafeInteger(reserved) || reserved < 0 || reserved > this.limits.maxEstimatedCostMicrousd) {
+	private async admitBudget(operation: ModelOperation, attemptKey: string, sourceIntakeId: string,
+		normalizedEventVersionId: string | null, candidateId: string | null,
+		inputCharacters: number, requestedAt: string): Promise<{ estimatedCostMicrousd: number; newlyAdmitted: boolean }> {
+		const configured = [this.budgetLimits.operationMaxMicrousd.NORMALIZE,
+			this.budgetLimits.operationMaxMicrousd.GENERATE_CANDIDATES,
+			this.budgetLimits.operationMaxMicrousd.GENERATE_ARTICLE_BODY,
+			this.budgetLimits.itemMaxMicrousd, this.budgetLimits.dailyMaxMicrousd];
+		if (!this.budgetLimits.enabled || configured.some((value) => !Number.isSafeInteger(value) || value <= 0)) {
+			throw new EditorialValidationError('Model budget admission is disabled or invalid.', 'model-budget');
+		}
+		const requestedAtMs = Date.parse(requestedAt);
+		if (!Number.isFinite(requestedAtMs)) throw new EditorialValidationError('The model budget timestamp is invalid.', 'model-budget');
+		const estimatedCostMicrousd = this.providerAccess.estimateMaximumCostMicrousd(operation, inputCharacters);
+		if (!Number.isSafeInteger(estimatedCostMicrousd) || estimatedCostMicrousd <= 0
+			|| estimatedCostMicrousd > this.limits.maxEstimatedCostMicrousd
+			|| estimatedCostMicrousd > this.budgetLimits.operationMaxMicrousd[operation]) {
 			throw new EditorialValidationError('The model request exceeds its configured cost limit.', 'model-budget');
 		}
-		const dayStart = `${requestedAt.slice(0, 10)}T00:00:00.000Z`;
-		const spent = await this.repository.sumModelRunCostSince(dayStart);
-		if (!Number.isSafeInteger(spent) || spent < 0 || spent + reserved > this.dailyBudgetMicrousd) {
-			throw new EditorialValidationError('The daily model budget would be exceeded.', 'model-budget');
+		const result = await this.repository.admitModelBudget({
+			attemptKey, operation, sourceIntakeId, normalizedEventVersionId, candidateId,
+			owner: this.requestOwner, budgetDay: new Date(requestedAtMs).toISOString().slice(0, 10),
+			estimatedCostMicrousd, limits: this.budgetLimits, createdAt: requestedAt,
+			workflowFence: this.workflowFence,
+		});
+		if (result === 'ADMITTED' || result === 'REUSED') {
+			return { estimatedCostMicrousd, newlyAdmitted: result === 'ADMITTED' };
 		}
-		return reserved;
+		if (result === 'INCONSISTENT') throw new EditorialValidationError(
+			'Model budget accounting is inconsistent and requires investigation.', 'conflict');
+		if (result === 'DISABLED') throw new EditorialValidationError('Model budget admission is disabled.', 'model-budget');
+		throw new EditorialValidationError('A model spending ceiling would be exceeded.', 'model-budget');
+	}
+
+	private async releaseUnstartedBudget(attemptKey: string, resolvedAt: string, resolutionReason: string): Promise<void> {
+		const released = await this.repository.settleModelBudget({
+			attemptKey, owner: this.requestOwner, status: 'RELEASED', resolvedAt, resolutionReason,
+		});
+		if (!released) throw new Error('MODEL_BUDGET_FENCE_LOST');
+	}
+
+	private async finalizeBudget(attemptKey: string, resolvedAt: string, result: ModelResult<unknown>): Promise<void> {
+		const settled = await this.repository.settleModelBudget({
+			attemptKey, owner: this.requestOwner, status: 'FINALIZED', resolvedAt,
+			usageRecordedCostMicrousd: result.usage.estimatedCostMicrousd,
+			providerRequestId: result.providerRequestId ?? null,
+			resolutionReason: 'PROVIDER_RESPONSE_VALIDATED',
+		});
+		if (!settled) throw new Error('MODEL_BUDGET_FENCE_LOST');
+	}
+
+	private async settleFailedBudget(attemptKey: string, error: unknown, resolvedAt: string,
+		result: ModelResult<unknown> | null, providerSubmissionAdmitted: boolean): Promise<void> {
+		const diagnostics = persistedProviderDiagnostics(error);
+		const status = providerSubmissionAdmitted ? budgetFailureStatus(error) : 'RELEASED';
+		const settled = await this.repository.settleModelBudget({
+			attemptKey, owner: this.requestOwner, status, resolvedAt,
+			usageRecordedCostMicrousd: status === 'FINALIZED' ? result?.usage.estimatedCostMicrousd ?? null : null,
+			providerRequestId: diagnostics.providerRequestId ?? result?.providerRequestId ?? null,
+			resolutionReason: sanitizedFailure(error),
+		});
+		if (!settled) throw new Error('MODEL_BUDGET_FENCE_LOST');
 	}
 
 	private async runRecord(input: {

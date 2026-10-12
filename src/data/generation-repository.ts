@@ -123,6 +123,7 @@ export interface ClaimArticleBodyGenerationRecord {
 	inputHash: string;
 	inputCharacters: number;
 	estimatedCostMicrousd: number;
+	owner: string;
 	idempotencyKey: string;
 	requestedByEmail: string;
 	sourceWasSensitive: boolean;
@@ -172,6 +173,52 @@ export interface ResolveStaleArticleBodyGenerationRecord {
 }
 
 export type ModelRequestReservationStatus = 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'AMBIGUOUS';
+export type ModelBudgetReservationStatus = 'RESERVED' | 'FINALIZED' | 'RELEASED' | 'AMBIGUOUS';
+
+export interface ModelBudgetLimits {
+	enabled: boolean;
+	operationMaxMicrousd: Record<ModelRun['operation'], number>;
+	itemMaxMicrousd: number;
+	dailyMaxMicrousd: number;
+}
+
+export interface ModelBudgetReservation {
+	attemptKey: string;
+	operation: ModelRun['operation'];
+	sourceIntakeId: string;
+	normalizedEventVersionId: string | null;
+	candidateId: string | null;
+	owner: string;
+	status: ModelBudgetReservationStatus;
+	estimatedCostMicrousd: number;
+	usageRecordedCostMicrousd: number | null;
+	verifiedBilledCostMicrousd: number | null;
+}
+
+export interface AdmitModelBudgetRecord {
+	attemptKey: string;
+	operation: ModelRun['operation'];
+	sourceIntakeId: string;
+	normalizedEventVersionId: string | null;
+	candidateId: string | null;
+	owner: string;
+	budgetDay: string;
+	estimatedCostMicrousd: number;
+	limits: ModelBudgetLimits;
+	createdAt: string;
+	workflowFence?: { batchId: string; intakeId: string; leaseOwner: string };
+}
+
+export interface SettleModelBudgetRecord {
+	attemptKey: string;
+	owner: string;
+	status: Exclude<ModelBudgetReservationStatus, 'RESERVED'>;
+	resolvedAt: string;
+	usageRecordedCostMicrousd?: number | null;
+	verifiedBilledCostMicrousd?: number | null;
+	providerRequestId?: string | null;
+	resolutionReason: string;
+}
 
 export interface ModelRequestReservation {
 	idempotencyKey: string;
@@ -189,6 +236,7 @@ export interface ClaimModelRequestRecord {
 	normalizedEventVersionId: string | null;
 	owner: string;
 	createdAt: string;
+	estimatedCostMicrousd: number;
 	workflowFence?: { batchId: string; intakeId: string; leaseOwner: string };
 }
 
@@ -206,6 +254,10 @@ export interface FinishModelRequestRecord {
 }
 
 export interface GenerationRepository {
+	admitModelBudget(record: AdmitModelBudgetRecord): Promise<'ADMITTED' | 'REUSED' | 'EXHAUSTED' | 'INCONSISTENT' | 'DISABLED'>;
+	markModelBudgetStarted(attemptKey: string, owner: string, at: string): Promise<boolean>;
+	settleModelBudget(record: SettleModelBudgetRecord): Promise<boolean>;
+	findModelBudgetReservation(attemptKey: string): Promise<ModelBudgetReservation | null>;
 	claimModelRequest(record: ClaimModelRequestRecord): Promise<'CLAIMED' | 'PENDING' | 'TERMINAL' | 'FENCE_REJECTED'>;
 	markModelRequestStarted(idempotencyKey: string, owner: string, at: string): Promise<boolean>;
 	finishModelRequest(record: FinishModelRequestRecord): Promise<boolean>;

@@ -20,6 +20,14 @@ const CANDIDATE_MAX_OUTPUT_TOKENS = 2_500;
 const ARTICLE_BODY_MAX_OUTPUT_TOKENS = 3_000;
 const PROMPT_OVERHEAD_CHARACTERS = 6_000;
 
+export function estimateOpenAIMaximumCostMicrousd(operation: ModelOperation, inputCharacters: number): number {
+	const conservativeInputTokens = Math.max(0, inputCharacters) + PROMPT_OVERHEAD_CHARACTERS;
+	const outputTokens = operation === 'NORMALIZE'
+		? NORMALIZATION_MAX_OUTPUT_TOKENS
+		: operation === 'GENERATE_ARTICLE_BODY' ? ARTICLE_BODY_MAX_OUTPUT_TOKENS : CANDIDATE_MAX_OUTPUT_TOKENS;
+	return conservativeInputTokens * INPUT_MICRO_USD_PER_TOKEN + outputTokens * OUTPUT_MICRO_USD_PER_TOKEN;
+}
+
 export type OpenAITransport = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 export const defaultOpenAITransport: OpenAITransport = (input, init) => fetch(input, init);
@@ -252,11 +260,7 @@ export class OpenAIModelProvider implements ModelProvider {
 	}
 
 	estimateMaximumCostMicrousd(operation: ModelOperation, inputCharacters: number): number {
-		const conservativeInputTokens = Math.max(0, inputCharacters) + PROMPT_OVERHEAD_CHARACTERS;
-		const outputTokens = operation === 'NORMALIZE'
-			? NORMALIZATION_MAX_OUTPUT_TOKENS
-			: operation === 'GENERATE_ARTICLE_BODY' ? ARTICLE_BODY_MAX_OUTPUT_TOKENS : CANDIDATE_MAX_OUTPUT_TOKENS;
-		return conservativeInputTokens * INPUT_MICRO_USD_PER_TOKEN + outputTokens * OUTPUT_MICRO_USD_PER_TOKEN;
+		return estimateOpenAIMaximumCostMicrousd(operation, inputCharacters);
 	}
 
 	async normalizeEvent(input: NormalizeEventInput, signal: AbortSignal): Promise<ModelResult<NormalizationProposal>> {

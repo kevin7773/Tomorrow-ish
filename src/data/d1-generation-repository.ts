@@ -16,13 +16,16 @@ import type {
 	CreateGeneratedCandidatesRecord,
 	CreateNormalizationRecord,
 	FailArticleBodyGenerationRecord,
+	AdmitModelBudgetRecord,
 	ClaimModelRequestRecord,
 	FinishModelRequestRecord,
 	ResolveStaleArticleBodyGenerationRecord,
 	GenerationRepository,
+	ModelBudgetReservation,
 	ModelRequestReservation,
 	ModelRunRecord,
 	ReviewNormalizationRecord,
+	SettleModelBudgetRecord,
 } from './generation-repository';
 
 interface IntakeRow {
@@ -159,6 +162,159 @@ function insertRun(db: D1Database, run: ModelRunRecord): D1PreparedStatement {
 export class D1GenerationRepository implements GenerationRepository {
 	constructor(private readonly db: D1Database) {}
 
+	async admitModelBudget(record: AdmitModelBudgetRecord): Promise<'ADMITTED' | 'REUSED' | 'EXHAUSTED' | 'INCONSISTENT' | 'DISABLED'> {
+		if (!record.limits.enabled) return 'DISABLED';
+		const operationLimit = record.limits.operationMaxMicrousd[record.operation];
+		const dayStart = `${record.budgetDay}T00:00:00.000Z`;
+		const dayEnd = new Date(Date.parse(dayStart) + 86_400_000).toISOString();
+		const fence = record.workflowFence;
+		const result = await this.db.prepare(`INSERT INTO model_budget_reservations (
+			attempt_key, operation, source_intake_id, normalized_event_version_id, candidate_id,
+			owner, budget_day, status, estimated_cost_microusd, workflow_batch_id,
+			workflow_intake_id, created_at
+		) SELECT ?, ?, ?, ?, ?, ?, ?, 'RESERVED', ?, ?, ?, ?
+		WHERE ? > 0 AND ? <= ? AND ? <= ? AND ? <= ?
+		AND (? IS NULL OR EXISTS (
+			SELECT 1 FROM editorial_batch_items WHERE batch_id = ? AND source_intake_id = ?
+			AND lease_owner = ? AND lease_expires_at > ? AND workflow_state = 'GENERATING'
+		))
+		AND NOT EXISTS (
+			SELECT 1 FROM model_request_reservations AS legacy
+			WHERE legacy.source_intake_id = ? AND legacy.status IN ('PENDING', 'AMBIGUOUS')
+			AND NOT EXISTS (SELECT 1 FROM model_budget_reservations AS budget
+				WHERE budget.attempt_key = legacy.attempt_key)
+		)
+		AND NOT EXISTS (
+			SELECT 1 FROM candidate_body_generation_runs AS legacy
+			WHERE legacy.source_intake_id = ? AND legacy.status = 'PENDING'
+			AND NOT EXISTS (SELECT 1 FROM model_budget_reservations AS budget
+				WHERE budget.attempt_key = legacy.idempotency_key)
+		)
+		AND ? +
+			(SELECT COALESCE(SUM(CASE budget.status
+				WHEN 'RELEASED' THEN 0
+				WHEN 'FINALIZED' THEN COALESCE(budget.verified_billed_cost_microusd,
+					budget.usage_recorded_cost_microusd, budget.estimated_cost_microusd)
+				ELSE budget.estimated_cost_microusd END), 0)
+			 FROM model_budget_reservations AS budget WHERE budget.source_intake_id = ?)
+			+ (SELECT COALESCE(SUM(run.estimated_cost_microusd), 0) FROM model_runs AS run
+				WHERE run.source_intake_id = ? AND NOT EXISTS (SELECT 1 FROM model_budget_reservations AS budget
+					WHERE budget.attempt_key = run.idempotency_key))
+			+ (SELECT COALESCE(SUM(run.estimated_cost_microusd), 0) FROM candidate_body_generation_runs AS run
+				WHERE run.source_intake_id = ? AND NOT EXISTS (SELECT 1 FROM model_budget_reservations AS budget
+					WHERE budget.attempt_key = run.idempotency_key)) <= ?
+		AND ? +
+			(SELECT COALESCE(SUM(CASE budget.status
+				WHEN 'RELEASED' THEN 0
+				WHEN 'FINALIZED' THEN COALESCE(budget.verified_billed_cost_microusd,
+					budget.usage_recorded_cost_microusd, budget.estimated_cost_microusd)
+				ELSE budget.estimated_cost_microusd END), 0)
+			 FROM model_budget_reservations AS budget WHERE budget.budget_day = ?)
+			+ (SELECT COALESCE(SUM(run.estimated_cost_microusd), 0) FROM model_runs AS run
+				WHERE run.created_at >= ? AND run.created_at < ?
+				AND NOT EXISTS (SELECT 1 FROM model_budget_reservations AS budget
+					WHERE budget.attempt_key = run.idempotency_key))
+			+ (SELECT COALESCE(SUM(run.estimated_cost_microusd), 0) FROM candidate_body_generation_runs AS run
+				WHERE run.created_at >= ? AND run.created_at < ?
+				AND NOT EXISTS (SELECT 1 FROM model_budget_reservations AS budget
+					WHERE budget.attempt_key = run.idempotency_key)) <= ?
+		ON CONFLICT(attempt_key) DO NOTHING`).bind(
+			record.attemptKey, record.operation, record.sourceIntakeId,
+			record.normalizedEventVersionId, record.candidateId, record.owner, record.budgetDay,
+			record.estimatedCostMicrousd, fence?.batchId ?? null, fence?.intakeId ?? null, record.createdAt,
+			operationLimit, record.estimatedCostMicrousd, operationLimit,
+			record.estimatedCostMicrousd, record.limits.itemMaxMicrousd,
+			record.estimatedCostMicrousd, record.limits.dailyMaxMicrousd,
+			fence?.batchId ?? null, fence?.batchId ?? '', fence?.intakeId ?? '', fence?.leaseOwner ?? '', record.createdAt,
+			record.sourceIntakeId, record.sourceIntakeId,
+			record.estimatedCostMicrousd, record.sourceIntakeId, record.sourceIntakeId,
+			record.sourceIntakeId, record.limits.itemMaxMicrousd,
+			record.estimatedCostMicrousd, record.budgetDay, dayStart, dayEnd, dayStart, dayEnd,
+			record.limits.dailyMaxMicrousd,
+		).run();
+		if (result.meta.changes === 1) return 'ADMITTED';
+		const existing = await this.findModelBudgetReservation(record.attemptKey);
+		if (existing) {
+			return existing.operation === record.operation
+				&& existing.sourceIntakeId === record.sourceIntakeId
+				&& existing.normalizedEventVersionId === record.normalizedEventVersionId
+				&& existing.candidateId === record.candidateId
+				&& existing.owner === record.owner
+				&& existing.estimatedCostMicrousd === record.estimatedCostMicrousd
+				&& existing.status === 'RESERVED' ? 'REUSED' : 'INCONSISTENT';
+		}
+		const legacy = await this.db.prepare(`SELECT 1 AS found WHERE EXISTS (
+			SELECT 1 FROM model_request_reservations AS request
+			WHERE request.source_intake_id = ? AND request.status IN ('PENDING', 'AMBIGUOUS')
+			AND NOT EXISTS (SELECT 1 FROM model_budget_reservations AS budget
+				WHERE budget.attempt_key = request.attempt_key)
+		) OR EXISTS (
+			SELECT 1 FROM candidate_body_generation_runs AS run
+			WHERE run.source_intake_id = ? AND run.status = 'PENDING'
+			AND NOT EXISTS (SELECT 1 FROM model_budget_reservations AS budget
+				WHERE budget.attempt_key = run.idempotency_key)
+		)`).bind(record.sourceIntakeId, record.sourceIntakeId).first<{ found: number }>();
+		return legacy ? 'INCONSISTENT' : 'EXHAUSTED';
+	}
+
+	async markModelBudgetStarted(attemptKey: string, owner: string, at: string): Promise<boolean> {
+		const result = await this.db.prepare(`UPDATE model_budget_reservations SET provider_started_at = ?
+			WHERE attempt_key = ? AND owner = ? AND status = 'RESERVED' AND provider_started_at IS NULL
+			AND (workflow_batch_id IS NULL OR EXISTS (
+				SELECT 1 FROM editorial_batch_items AS item
+				WHERE item.batch_id = model_budget_reservations.workflow_batch_id
+				AND item.source_intake_id = model_budget_reservations.workflow_intake_id
+				AND item.lease_owner = model_budget_reservations.owner
+				AND item.lease_expires_at > ? AND item.workflow_state = 'GENERATING'))
+			AND ((operation IN ('NORMALIZE', 'GENERATE_CANDIDATES') AND EXISTS (
+				SELECT 1 FROM model_request_reservations AS request
+				WHERE request.attempt_key = model_budget_reservations.attempt_key
+				AND request.owner = model_budget_reservations.owner AND request.status = 'PENDING'
+				AND request.provider_started_at IS NOT NULL
+			)) OR (operation = 'GENERATE_ARTICLE_BODY' AND EXISTS (
+				SELECT 1 FROM candidate_body_generation_runs AS run
+				WHERE run.idempotency_key = model_budget_reservations.attempt_key AND run.status = 'PENDING'
+			)))`).bind(at, attemptKey, owner, at).run();
+		return result.meta.changes === 1;
+	}
+
+	async settleModelBudget(record: SettleModelBudgetRecord): Promise<boolean> {
+		const result = await this.db.prepare(`UPDATE model_budget_reservations SET status = ?, resolved_at = ?,
+			usage_recorded_cost_microusd = ?, verified_billed_cost_microusd = ?,
+			provider_request_id = ?, resolution_reason = ?
+			WHERE attempt_key = ? AND owner = ? AND status IN ('RESERVED', 'AMBIGUOUS')
+			AND (? = 'AMBIGUOUS' OR (? = 'RELEASED' AND provider_started_at IS NULL)
+				OR workflow_batch_id IS NULL OR EXISTS (
+				SELECT 1 FROM editorial_batch_items AS item
+				WHERE item.batch_id = model_budget_reservations.workflow_batch_id
+				AND item.source_intake_id = model_budget_reservations.workflow_intake_id
+				AND item.lease_owner = model_budget_reservations.owner
+				AND item.lease_expires_at > ? AND item.workflow_state = 'GENERATING'))`)
+			.bind(record.status, record.resolvedAt, record.usageRecordedCostMicrousd ?? null,
+				record.verifiedBilledCostMicrousd ?? null, record.providerRequestId ?? null,
+				record.resolutionReason, record.attemptKey, record.owner, record.status, record.status,
+				record.resolvedAt).run();
+		return result.meta.changes === 1;
+	}
+
+	async findModelBudgetReservation(attemptKey: string): Promise<ModelBudgetReservation | null> {
+		const row = await this.db.prepare(`SELECT attempt_key, operation, source_intake_id,
+			normalized_event_version_id, candidate_id, owner, status, estimated_cost_microusd,
+			usage_recorded_cost_microusd, verified_billed_cost_microusd
+			FROM model_budget_reservations WHERE attempt_key = ? LIMIT 1`).bind(attemptKey).first<{
+			attempt_key: string; operation: ModelBudgetReservation['operation']; source_intake_id: string;
+			normalized_event_version_id: string | null; candidate_id: string | null; owner: string;
+			status: ModelBudgetReservation['status']; estimated_cost_microusd: number;
+			usage_recorded_cost_microusd: number | null; verified_billed_cost_microusd: number | null;
+		}>();
+		return row ? { attemptKey: row.attempt_key, operation: row.operation,
+			sourceIntakeId: row.source_intake_id, normalizedEventVersionId: row.normalized_event_version_id,
+			candidateId: row.candidate_id, owner: row.owner, status: row.status,
+			estimatedCostMicrousd: row.estimated_cost_microusd,
+			usageRecordedCostMicrousd: row.usage_recorded_cost_microusd,
+			verifiedBilledCostMicrousd: row.verified_billed_cost_microusd } : null;
+	}
+
 	async claimModelRequest(record: ClaimModelRequestRecord): Promise<'CLAIMED' | 'PENDING' | 'TERMINAL' | 'FENCE_REJECTED'> {
 		const fence = record.workflowFence;
 		const result = await this.db.prepare(`INSERT INTO model_request_reservations (
@@ -168,10 +324,17 @@ export class D1GenerationRepository implements GenerationRepository {
 		WHERE ? IS NULL OR EXISTS (
 			SELECT 1 FROM editorial_batch_items WHERE batch_id = ? AND source_intake_id = ?
 			AND lease_owner = ? AND lease_expires_at > ? AND workflow_state = 'GENERATING'
-		) ON CONFLICT DO NOTHING`).bind(record.idempotencyKey, record.operation, record.attemptKey,
+		) AND EXISTS (SELECT 1 FROM model_budget_reservations AS budget
+			WHERE budget.attempt_key = ? AND budget.operation = ? AND budget.source_intake_id = ?
+			AND budget.normalized_event_version_id IS ? AND budget.candidate_id IS NULL
+			AND budget.owner = ? AND budget.status = 'RESERVED'
+			AND budget.estimated_cost_microusd = ? AND budget.provider_started_at IS NULL)
+		ON CONFLICT DO NOTHING`).bind(record.idempotencyKey, record.operation, record.attemptKey,
 			record.sourceIntakeId, record.normalizedEventVersionId, record.owner, fence?.batchId ?? null,
 			fence?.intakeId ?? null, record.createdAt, fence?.batchId ?? null, fence?.batchId ?? '',
-			fence?.intakeId ?? '', fence?.leaseOwner ?? '', record.createdAt).run();
+			fence?.intakeId ?? '', fence?.leaseOwner ?? '', record.createdAt,
+			record.attemptKey, record.operation, record.sourceIntakeId,
+			record.normalizedEventVersionId, record.owner, record.estimatedCostMicrousd).run();
 		if (result.meta.changes === 1) return 'CLAIMED';
 		const existing = await this.findModelRequestReservation(record.idempotencyKey);
 		if (!existing) return 'FENCE_REJECTED';
@@ -180,8 +343,18 @@ export class D1GenerationRepository implements GenerationRepository {
 
 	async markModelRequestStarted(idempotencyKey: string, owner: string, at: string): Promise<boolean> {
 		const result = await this.db.prepare(`UPDATE model_request_reservations SET provider_started_at = ?
-			WHERE idempotency_key = ? AND owner = ? AND status = 'PENDING' AND provider_started_at IS NULL`)
-			.bind(at, idempotencyKey, owner).run();
+			WHERE idempotency_key = ? AND owner = ? AND status = 'PENDING' AND provider_started_at IS NULL
+			AND EXISTS (SELECT 1 FROM model_budget_reservations AS budget
+				WHERE budget.attempt_key = model_request_reservations.attempt_key
+				AND budget.owner = model_request_reservations.owner AND budget.status = 'RESERVED'
+				AND budget.provider_started_at IS NULL
+				AND (budget.workflow_batch_id IS NULL OR EXISTS (
+					SELECT 1 FROM editorial_batch_items AS item
+					WHERE item.batch_id = budget.workflow_batch_id
+					AND item.source_intake_id = budget.workflow_intake_id
+					AND item.lease_owner = budget.owner AND item.lease_expires_at > ?
+					AND item.workflow_state = 'GENERATING')))`)
+			.bind(at, idempotencyKey, owner, at).run();
 		return result.meta.changes === 1;
 	}
 
@@ -431,6 +604,13 @@ export class D1GenerationRepository implements GenerationRepository {
 				WHERE version.id = candidate.normalized_event_version_id
 				AND version.source_intake_id = candidate.source_intake_id
 				AND version.review_state = 'ACCEPTED')
+			AND EXISTS (SELECT 1 FROM model_budget_reservations AS budget
+				WHERE budget.attempt_key = ? AND budget.operation = 'GENERATE_ARTICLE_BODY'
+				AND budget.source_intake_id = candidate.source_intake_id
+				AND budget.normalized_event_version_id = candidate.normalized_event_version_id
+				AND budget.candidate_id = candidate.id AND budget.owner = ?
+				AND budget.status = 'RESERVED' AND budget.estimated_cost_microusd = ?
+				AND budget.provider_started_at IS NULL)
 			AND (? IS NULL OR EXISTS (SELECT 1 FROM editorial_candidate_selections AS selection
 				WHERE selection.batch_id = ? AND selection.source_intake_id = ?
 				AND selection.candidate_id = candidate.id
@@ -442,7 +622,8 @@ export class D1GenerationRepository implements GenerationRepository {
 					record.inputCharacters, record.estimatedCostMicrousd, record.idempotencyKey,
 					record.requestedByEmail, record.sourceWasSensitive ? 1 : 0, record.cautionReason,
 					record.createdAt, record.candidateId, record.sourceIntakeId,
-					record.normalizedEventVersionId, record.smokeTarget?.batchId ?? null,
+					record.normalizedEventVersionId, record.idempotencyKey, record.owner,
+					record.estimatedCostMicrousd, record.smokeTarget?.batchId ?? null,
 					record.smokeTarget?.batchId ?? '', record.smokeTarget?.intakeId ?? '', record.cautionReason),
 			this.db.prepare(`UPDATE satire_candidates
 				SET body_generation_state = 'PENDING', body_generation_run_id = ?,

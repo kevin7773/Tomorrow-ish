@@ -118,9 +118,13 @@ describe('editorial workflow recovery primitives', () => {
 			leaseExpiresAt: '2026-10-11T12:10:00.000Z', createEventId: () => 'claim-a' });
 		const record = { idempotencyKey: 'workflow:normalize:v2:batch:intake-1:attempt:0', operation: 'NORMALIZE' as const,
 			attemptKey: 'attempt:0', sourceIntakeId: 'intake-1', normalizedEventVersionId: null, owner: 'worker-a', createdAt: NOW,
+			estimatedCostMicrousd: 1,
 			workflowFence: { batchId: 'batch', intakeId: 'intake-1', leaseOwner: 'worker-a' } };
+		expect(await generation.admitModelBudget({ ...record, candidateId: null, budgetDay: '2026-10-11',
+			limits: { enabled: true, operationMaxMicrousd: { NORMALIZE: 10, GENERATE_CANDIDATES: 10, GENERATE_ARTICLE_BODY: 10 }, itemMaxMicrousd: 10, dailyMaxMicrousd: 10 } })).toBe('ADMITTED');
 		expect(await generation.claimModelRequest(record)).toBe('CLAIMED');
 		expect(await generation.markModelRequestStarted(record.idempotencyKey, 'worker-a', NOW)).toBe(true);
+		expect(await generation.markModelBudgetStarted(record.attemptKey, 'worker-a', NOW)).toBe(true);
 		sqlite.prepare("UPDATE editorial_batch_items SET lease_expires_at='2026-10-11T11:59:00.000Z' WHERE source_intake_id='intake-1'").run();
 		await workflow.claimProcessable({ limit: 1, owner: 'worker-b', at: NOW,
 			leaseExpiresAt: '2026-10-11T12:10:00.000Z', createEventId: () => 'claim-b' });
@@ -128,6 +132,10 @@ describe('editorial workflow recovery primitives', () => {
 			workflowFence: { ...record.workflowFence, leaseOwner: 'worker-b' } })).toBe('PENDING');
 		expect(await generation.finishModelRequest({ idempotencyKey: record.idempotencyKey, owner: 'worker-b',
 			status: 'SUCCEEDED', completedAt: NOW })).toBe(false);
+		expect(await generation.settleModelBudget({ attemptKey: record.attemptKey, owner: 'worker-a',
+			status: 'FINALIZED', resolvedAt: NOW, usageRecordedCostMicrousd: 1, resolutionReason: 'SUCCESS' })).toBe(false);
+		expect(await generation.settleModelBudget({ attemptKey: record.attemptKey, owner: 'worker-a',
+			status: 'AMBIGUOUS', resolvedAt: NOW, resolutionReason: 'WORKFLOW_LEASE_LOST' })).toBe(true);
 		expect(await workflow.renewLease('batch', 'intake-1', 'worker-a', NOW, '2026-10-11T12:20:00.000Z')).toBe(false);
 		sqlite.close();
 	});
@@ -139,8 +147,10 @@ describe('editorial workflow recovery primitives', () => {
 			leaseExpiresAt: '2026-10-11T12:10:00.000Z', createEventId: () => 'claim' });
 		const generation = new D1GenerationRepository(d1(sqlite));
 		const base = { idempotencyKey: 'request-1', operation: 'NORMALIZE' as const, attemptKey: 'attempt-1',
-			sourceIntakeId: 'intake-1', normalizedEventVersionId: null, createdAt: NOW,
+			sourceIntakeId: 'intake-1', normalizedEventVersionId: null, createdAt: NOW, estimatedCostMicrousd: 1,
 			workflowFence: { batchId: 'batch', intakeId: 'intake-1', leaseOwner: 'worker' } };
+		expect(await generation.admitModelBudget({ ...base, candidateId: null, owner: 'worker', budgetDay: '2026-10-11',
+			limits: { enabled: true, operationMaxMicrousd: { NORMALIZE: 10, GENERATE_CANDIDATES: 10, GENERATE_ARTICLE_BODY: 10 }, itemMaxMicrousd: 10, dailyMaxMicrousd: 10 } })).toBe('ADMITTED');
 		const results = await Promise.all([
 			generation.claimModelRequest({ ...base, owner: 'worker' }),
 			generation.claimModelRequest({ ...base, owner: 'worker' }),

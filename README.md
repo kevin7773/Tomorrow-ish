@@ -73,7 +73,7 @@ source intake
   -> existing human review and publication workflow
 ```
 
-Open an intake and choose **Normalize event**. The fake provider is used only in development. The production OpenAI adapter is implemented but remains disabled by `MODEL_GENERATION_ENABLED=false`; builds and fake-provider tests require no API key.
+Open an intake and choose **Normalize event**. The fake provider is used only in development. Production model work requires both `MODEL_GENERATION_ENABLED=true` and atomic D1 budget admission; both remain disabled by default. See [Atomic model-budget admission](docs/model-budget-admission.md). Builds and fake-provider tests require no API key.
 
 ## Validate
 

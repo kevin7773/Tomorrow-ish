@@ -40,6 +40,9 @@ function repository(version = accepted(), previousRuns = 0, validCategoryIds: Re
 		return true;
 	});
 	const repo = {
+		admitModelBudget: vi.fn(async () => 'ADMITTED' as const),
+		markModelBudgetStarted: vi.fn(async () => true), settleModelBudget: vi.fn(async () => true),
+		findModelBudgetReservation: vi.fn(async () => null),
 		claimModelRequest: vi.fn(async () => 'CLAIMED' as const),
 		markModelRequestStarted: vi.fn(async () => true), finishModelRequest: vi.fn(async () => true),
 		findModelRequestReservation: vi.fn(async () => null),
@@ -177,6 +180,9 @@ describe('generation authority', () => {
 		expect(repo.finishModelRequest).toHaveBeenCalledWith(expect.objectContaining({
 			status: 'AMBIGUOUS', failureReason: 'PROVIDER_NETWORK',
 		}));
+		expect(repo.settleModelBudget).toHaveBeenCalledWith(expect.objectContaining({
+			status: 'AMBIGUOUS', resolutionReason: 'PROVIDER_NETWORK',
+		}));
 		const response = actionErrorResponse(caught, `/editorial/intakes/${intake.id}/normalize`);
 		expect(response.headers.get('Location')).toContain('error=provider-unavailable');
 		expect(response.headers.get('Location')).not.toContain('invalid-request');
@@ -212,6 +218,9 @@ describe('generation authority', () => {
 		}));
 		expect(repo.finishModelRequest).toHaveBeenCalledWith(expect.objectContaining({
 			status: 'FAILED', failureReason: 'PROVIDER_REQUEST', providerRequestId: 'req_safe_456',
+		}));
+		expect(repo.settleModelBudget).toHaveBeenCalledWith(expect.objectContaining({
+			status: 'RELEASED', providerRequestId: 'req_safe_456', resolutionReason: 'PROVIDER_REQUEST',
 		}));
 		const persisted = JSON.stringify(vi.mocked(repo.createModelRun).mock.calls[0][0]);
 		expect(persisted).not.toContain(rawBodySecret);
@@ -352,6 +361,9 @@ describe('generation authority', () => {
 		expect(repo.finishModelRequest).toHaveBeenCalledWith(expect.objectContaining({
 			status: 'AMBIGUOUS', failureReason: 'TIMEOUT',
 		}));
+		expect(repo.settleModelBudget).toHaveBeenCalledWith(expect.objectContaining({
+			status: 'AMBIGUOUS', resolutionReason: 'TIMEOUT',
+		}));
 	});
 
 	it.each(['UNSUITABLE', 'UNREVIEWED'] as const)('blocks %s candidate generation', async (suitability) => {
@@ -380,15 +392,68 @@ describe('generation authority', () => {
 
 	it('fails closed before provider invocation when the daily budget would be exceeded', async () => {
 		const { repo, createdCandidates } = repository();
-		vi.mocked(repo.sumModelRunCostSince).mockResolvedValue(999_995);
+		vi.mocked(repo.admitModelBudget).mockResolvedValue('EXHAUSTED');
 		const provider = new FakeModelProvider();
 		const invoke = vi.spyOn(provider, 'generateCandidates');
-		const service = new GenerationService(repo, provider, { dailyBudgetMicrousd: 1_000_000 });
+		const service = new GenerationService(repo, provider);
 		const caught: unknown = await service.generateCandidates(identity, {
 			intakeId: intake.id, normalizedEventVersionId: 'version-1', categoryId: 'cat-civic-life', idempotencyKey: 'budget',
 		}).catch((error: unknown) => error);
 		expect(caught).toMatchObject({ code: 'model-budget' });
 		expect(invoke).not.toHaveBeenCalled();
 		expect(createdCandidates).not.toHaveBeenCalled();
+	});
+
+	it('does not construct a provider until atomic budget admission succeeds', async () => {
+		const { repo } = repository();
+		vi.mocked(repo.admitModelBudget).mockResolvedValue('EXHAUSTED');
+		const createProvider = vi.fn(() => new FakeModelProvider());
+		const service = new GenerationService(repo, {
+			providerId: 'fake', modelId: 'fake-v1', estimateMaximumCostMicrousd: () => 10,
+			createProvider,
+		});
+		await expect(service.proposeNormalization(identity, intake.id, 'budget-before-provider'))
+			.rejects.toMatchObject({ code: 'model-budget' });
+		expect(createProvider).not.toHaveBeenCalled();
+		expect(repo.claimModelRequest).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		['NORMALIZE', async (service: GenerationService) => service.proposeNormalization(identity, intake.id, 'disabled-normalize')],
+		['GENERATE_CANDIDATES', async (service: GenerationService) => service.generateCandidates(identity, {
+			intakeId: intake.id, normalizedEventVersionId: 'version-1', categoryId: 'cat-civic-life',
+			idempotencyKey: 'disabled-candidates',
+		})],
+	] as const)('fails closed for %s when budget admission is disabled even with generation enabled', async (_operation, invoke) => {
+		const { repo } = repository();
+		const createProvider = vi.fn(() => new FakeModelProvider());
+		const service = new GenerationService(repo, {
+			providerId: 'fake', modelId: 'fake-v1', estimateMaximumCostMicrousd: () => 10,
+			createProvider,
+		}, {
+			generationEnabled: true,
+			budgetLimits: {
+				enabled: false,
+				operationMaxMicrousd: { NORMALIZE: 0, GENERATE_CANDIDATES: 0, GENERATE_ARTICLE_BODY: 0 },
+				itemMaxMicrousd: 0, dailyMaxMicrousd: 0,
+			},
+		});
+		await expect(invoke(service)).rejects.toMatchObject({ code: 'model-budget' });
+		expect(repo.admitModelBudget).not.toHaveBeenCalled();
+		expect(repo.claimModelRequest).not.toHaveBeenCalled();
+		expect(createProvider).not.toHaveBeenCalled();
+	});
+
+	it('fails closed on unavailable pricing before reservation or provider construction', async () => {
+		const { repo } = repository();
+		const createProvider = vi.fn(() => new FakeModelProvider());
+		const service = new GenerationService(repo, {
+			providerId: 'fake', modelId: 'fake-v1', estimateMaximumCostMicrousd: () => Number.NaN,
+			createProvider,
+		});
+		await expect(service.proposeNormalization(identity, intake.id, 'missing-pricing'))
+			.rejects.toMatchObject({ code: 'model-budget' });
+		expect(repo.admitModelBudget).not.toHaveBeenCalled();
+		expect(createProvider).not.toHaveBeenCalled();
 	});
 });

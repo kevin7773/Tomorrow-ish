@@ -55,8 +55,8 @@ export const POST: APIRoute = async (context) => {
 				.requireSelectedForBodyGeneration(form.get('candidateId'));
 		}
 		const model = getRuntimeModelConfiguration();
-		const service = new GenerationService(getGenerationRepository(), model.provider, {
-			dailyBudgetMicrousd: model.dailyBudgetMicrousd,
+		const service = new GenerationService(getGenerationRepository(), model.providerAccess, {
+			budgetLimits: model.budgetLimits,
 			generationEnabled: model.generationEnabled,
 			smokeTarget: configuredTarget,
 		});

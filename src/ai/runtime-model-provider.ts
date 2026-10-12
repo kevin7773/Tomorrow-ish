@@ -1,59 +1,62 @@
 import { env } from 'cloudflare:workers';
 import { FakeModelProvider } from './fake-model-provider';
-import type { ModelProvider } from './model-provider';
+import type { ModelProviderAccess } from './model-provider';
 import { ModelProviderError } from './model-provider';
-import { OpenAIModelProvider, OPENAI_MODEL } from './openai-model-provider';
+import { estimateOpenAIMaximumCostMicrousd, OpenAIModelProvider, OPENAI_MODEL } from './openai-model-provider';
+import type { ModelBudgetLimits } from '../data/generation-repository';
+import { parseModelBudgetLimits, strictConfigurationBoolean, type ModelBudgetEnvironment } from './model-budget-config';
 
-export const DEFAULT_DAILY_BUDGET_MICRO_USD = 1_000_000;
-
-export interface ModelEnvironment {
+export interface ModelEnvironment extends ModelBudgetEnvironment {
 	MODEL_PROVIDER?: string;
 	MODEL_NAME?: string;
 	MODEL_GENERATION_ENABLED?: string;
-	MODEL_DAILY_BUDGET_MICRO_USD?: string;
 	OPENAI_API_KEY?: string;
 }
 
 export interface RuntimeModelConfiguration {
-	provider: ModelProvider;
-	dailyBudgetMicrousd: number;
+	providerAccess: ModelProviderAccess;
+	budgetLimits: ModelBudgetLimits;
 	generationEnabled: boolean;
-}
-
-class DisabledModelProvider implements ModelProvider {
-	readonly providerId = 'disabled';
-	readonly modelId = 'not-configured';
-	estimateMaximumCostMicrousd(): number { return 0; }
-	async normalizeEvent(): Promise<never> { throw new ModelProviderError('PROVIDER_DISABLED', false, 'Model generation is disabled.'); }
-	async generateCandidates(): Promise<never> { throw new ModelProviderError('PROVIDER_DISABLED', false, 'Model generation is disabled.'); }
-	async generateArticleBody(): Promise<never> { throw new ModelProviderError('PROVIDER_DISABLED', false, 'Model generation is disabled.'); }
-}
-
-function dailyBudget(value: string | undefined): number {
-	if (!value) return DEFAULT_DAILY_BUDGET_MICRO_USD;
-	const parsed = Number(value);
-	if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new ModelProviderError('PROVIDER_CONFIGURATION', false);
-	return parsed;
 }
 
 export function createRuntimeModelConfiguration(
 	environment: ModelEnvironment,
 	options: { development?: boolean; transport?: typeof fetch } = {},
 ): RuntimeModelConfiguration {
-	const budget = dailyBudget(environment.MODEL_DAILY_BUDGET_MICRO_USD);
+	const generationEnabled = options.development
+		? true
+		: strictConfigurationBoolean(environment.MODEL_GENERATION_ENABLED, 'MODEL_GENERATION_ENABLED');
+	const budgetLimits: ModelBudgetLimits = parseModelBudgetLimits(environment);
 	if (options.development) {
-		return { provider: new FakeModelProvider(), dailyBudgetMicrousd: budget, generationEnabled: true };
+		const provider = new FakeModelProvider();
+		return {
+			providerAccess: {
+				providerId: provider.providerId,
+				modelId: provider.modelId,
+				estimateMaximumCostMicrousd: (operation) => provider.estimateMaximumCostMicrousd(operation),
+				createProvider: () => provider,
+			},
+			budgetLimits,
+			generationEnabled,
+		};
 	}
-	if (environment.MODEL_GENERATION_ENABLED !== 'true') {
-		return { provider: new DisabledModelProvider(), dailyBudgetMicrousd: budget, generationEnabled: false };
-	}
-	if (environment.MODEL_PROVIDER !== 'openai' || environment.MODEL_NAME !== OPENAI_MODEL || !environment.OPENAI_API_KEY) {
-		throw new ModelProviderError('PROVIDER_CONFIGURATION', false);
-	}
+	const providerConfigured = environment.MODEL_PROVIDER === 'openai'
+		&& environment.MODEL_NAME === OPENAI_MODEL && Boolean(environment.OPENAI_API_KEY);
+	if (generationEnabled && !providerConfigured) throw new ModelProviderError('PROVIDER_CONFIGURATION', false);
 	return {
-		provider: new OpenAIModelProvider(environment.OPENAI_API_KEY, environment.MODEL_NAME, options.transport),
-		dailyBudgetMicrousd: budget,
-		generationEnabled: true,
+		providerAccess: {
+			providerId: environment.MODEL_PROVIDER ?? 'disabled',
+			modelId: environment.MODEL_NAME ?? 'not-configured',
+			estimateMaximumCostMicrousd: estimateOpenAIMaximumCostMicrousd,
+			createProvider: () => {
+				if (!generationEnabled || !providerConfigured) {
+					throw new ModelProviderError('PROVIDER_DISABLED', false, 'Model generation is disabled.');
+				}
+				return new OpenAIModelProvider(environment.OPENAI_API_KEY!, environment.MODEL_NAME!, options.transport);
+			},
+		},
+		budgetLimits,
+		generationEnabled,
 	};
 }
 
@@ -64,8 +67,13 @@ export function getRuntimeModelConfiguration(): RuntimeModelConfiguration {
 export function isRuntimeModelGenerationAvailable(): boolean {
 	if (import.meta.env.DEV) return true;
 	const environment = env as ModelEnvironment;
-	return environment.MODEL_GENERATION_ENABLED === 'true'
-		&& environment.MODEL_PROVIDER === 'openai'
-		&& environment.MODEL_NAME === OPENAI_MODEL
-		&& Boolean(environment.OPENAI_API_KEY);
+	try {
+		return environment.MODEL_GENERATION_ENABLED === 'true'
+			&& parseModelBudgetLimits(environment).enabled
+			&& environment.MODEL_PROVIDER === 'openai'
+			&& environment.MODEL_NAME === OPENAI_MODEL
+			&& Boolean(environment.OPENAI_API_KEY);
+	} catch {
+		return false;
+	}
 }

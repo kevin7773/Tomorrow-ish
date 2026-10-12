@@ -110,13 +110,19 @@ describe('governed candidate selection', () => {
 		const { sqlite, service } = fixture();
 		await service.select({ email: 'editor@test' }, input('candidate-1'));
 		const generation = new D1GenerationRepository(d1(sqlite));
-		const claim = (candidateId: string, id: string) => generation.claimArticleBodyGeneration({
+		const claim = async (candidateId: string, id: string) => {
+			await generation.admitModelBudget({ attemptKey: `key-${id}`, operation: 'GENERATE_ARTICLE_BODY',
+				sourceIntakeId: TARGET.intakeId, normalizedEventVersionId: VERSION, candidateId, owner: 'worker',
+				budgetDay: '2026-10-12', estimatedCostMicrousd: 1, createdAt: NOW,
+				limits: { enabled: true, operationMaxMicrousd: { NORMALIZE: 10, GENERATE_CANDIDATES: 10, GENERATE_ARTICLE_BODY: 10 }, itemMaxMicrousd: 10, dailyMaxMicrousd: 10 } });
+			return generation.claimArticleBodyGeneration({
 			id, candidateId, sourceIntakeId: TARGET.intakeId, normalizedEventVersionId: VERSION,
 			provider: 'test', model: 'test', promptVersion: 'article-body-v2', inputHash: `hash-${id}`,
-			inputCharacters: 10, estimatedCostMicrousd: 1, idempotencyKey: `key-${id}`,
+			inputCharacters: 10, estimatedCostMicrousd: 1, idempotencyKey: `key-${id}`, owner: 'worker',
 			requestedByEmail: 'editor@test', sourceWasSensitive: false, cautionReason: null,
 			createdAt: NOW, auditId: `audit-${id}`, smokeTarget: TARGET,
-		});
+			});
+		};
 		expect(await claim('candidate-2', 'sibling-run')).toBe(false);
 		expect(sqlite.prepare('SELECT COUNT(*) count FROM candidate_body_generation_runs').get()).toEqual({ count: 0 });
 		expect(await claim('candidate-1', 'selected-run')).toBe(true);

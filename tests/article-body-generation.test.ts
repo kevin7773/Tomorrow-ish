@@ -82,6 +82,9 @@ function repository(bodyContext: ArticleBodyGenerationContext | null = context()
 	const fail = vi.fn(async () => true);
 	const resolveStale = vi.fn(async () => true);
 	const repo = {
+		admitModelBudget: vi.fn(async () => 'ADMITTED' as const),
+		markModelBudgetStarted: vi.fn(async () => true), settleModelBudget: vi.fn(async () => true),
+		findModelBudgetReservation: vi.fn(async () => null),
 		claimModelRequest: vi.fn(async () => 'CLAIMED' as const),
 		markModelRequestStarted: vi.fn(async () => true), finishModelRequest: vi.fn(async () => true),
 		findModelRequestReservation: vi.fn(async () => null),
@@ -128,6 +131,7 @@ describe('governed article body generation', () => {
 		expect(generate).toHaveBeenCalledTimes(1);
 		expect(complete).not.toHaveBeenCalled();
 		expect(fail).not.toHaveBeenCalled();
+		expect(repo.settleModelBudget).toHaveBeenCalledWith(expect.objectContaining({ status: 'AMBIGUOUS' }));
 	});
 
 	it('claims one eligible DRAFT candidate, supplies sensitive source governance, and persists only its body', async () => {
@@ -141,6 +145,9 @@ describe('governed article body generation', () => {
 		});
 
 		expect(runId).toBe('body-id-1');
+		expect(repo.settleModelBudget).toHaveBeenCalledWith(expect.objectContaining({
+			status: 'FINALIZED', resolutionReason: 'PROVIDER_RESPONSE_VALIDATED',
+		}));
 		expect(generate).toHaveBeenCalledTimes(1);
 			expect(generate.mock.calls[0][0]).toMatchObject({
 			source: {
@@ -260,6 +267,29 @@ describe('governed article body generation', () => {
 		expect(generate).not.toHaveBeenCalled();
 	});
 
+	it('fails closed before body reservation or provider construction when budget admission is disabled', async () => {
+		const { repo, claim } = repository();
+		const createProvider = vi.fn(() => new FakeModelProvider());
+		const generation = new GenerationService(repo, {
+			providerId: 'fake', modelId: 'fake-v1', estimateMaximumCostMicrousd: () => 10,
+			createProvider,
+		}, {
+			generationEnabled: true,
+			now: () => '2026-09-12T03:00:00.000Z', createId: () => 'disabled-budget-body-run',
+			budgetLimits: {
+				enabled: false,
+				operationMaxMicrousd: { NORMALIZE: 0, GENERATE_CANDIDATES: 0, GENERATE_ARTICLE_BODY: 0 },
+				itemMaxMicrousd: 0, dailyMaxMicrousd: 0,
+			},
+		});
+		await expect(generation.generateArticleBody(identity, {
+			candidateId: 'candidate-target', idempotencyKey: 'body-budget-disabled',
+		})).rejects.toMatchObject({ code: 'model-budget' });
+		expect(repo.admitModelBudget).not.toHaveBeenCalled();
+		expect(claim).not.toHaveBeenCalled();
+		expect(createProvider).not.toHaveBeenCalled();
+	});
+
 	it('prevents duplicate submission while another body run is pending', async () => {
 		const { repo, claim } = repository(context({ bodyGenerationState: 'PENDING', bodyGenerationRunId: 'run-pending' }));
 		const provider = new FakeModelProvider();
@@ -300,6 +330,9 @@ describe('governed article body generation', () => {
 		expect(generate).toHaveBeenCalledTimes(1);
 		expect(complete).not.toHaveBeenCalled();
 		expect(fail).not.toHaveBeenCalled();
+		expect(repo.settleModelBudget).toHaveBeenCalledWith(expect.objectContaining({
+			status: 'AMBIGUOUS', resolutionReason: 'PROVIDER_NETWORK',
+		}));
 		expect(original.candidate.draftBodyMarkdown).toBe('');
 		expect(original.candidate.status).toBe('DRAFT');
 	});
@@ -322,6 +355,9 @@ describe('governed article body generation', () => {
 		expect(generate).toHaveBeenCalledTimes(1);
 		expect(complete).not.toHaveBeenCalled();
 		expect(fail).not.toHaveBeenCalled();
+		expect(repo.settleModelBudget).toHaveBeenCalledWith(expect.objectContaining({
+			status: 'AMBIGUOUS', resolutionReason: 'TIMEOUT',
+		}));
 	});
 
 	it('records a definitive provider rejection as FAILED without retrying', async () => {
@@ -340,6 +376,9 @@ describe('governed article body generation', () => {
 		expect(fail).toHaveBeenCalledWith(expect.objectContaining({
 			failureClassification: 'PROVIDER_REQUEST', providerHttpStatus: 400,
 			providerRequestId: 'req_rejected',
+		}));
+		expect(repo.settleModelBudget).toHaveBeenCalledWith(expect.objectContaining({
+			status: 'RELEASED', providerRequestId: 'req_rejected',
 		}));
 	});
 

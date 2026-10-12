@@ -92,8 +92,8 @@ class RuntimePipeline implements WorkflowPipelinePort {
 			throw new Error('WORKFLOW_LEASE_LOST');
 		}
 		const model = getRuntimeModelConfiguration();
-		const generation = new GenerationService(generationRepository, model.provider, {
-			dailyBudgetMicrousd: model.dailyBudgetMicrousd,
+		const generation = new GenerationService(generationRepository, model.providerAccess, {
+			budgetLimits: model.budgetLimits,
 			generationEnabled: model.generationEnabled,
 			limits: { ...DEFAULT_MODEL_LIMITS, defaultCandidateCount: 1, maxAttempts: 1 },
 			requestOwner: item.leaseOwner ?? '',
