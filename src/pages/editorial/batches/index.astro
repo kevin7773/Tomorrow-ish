@@ -4,7 +4,7 @@ import { getEditorialWorkflowRepository } from '../../../data/runtime-editorial-
 import { summarizeEditorialBatch } from '../../../domain/editorial-batch-queue';
 
 const batches = (await getEditorialWorkflowRepository().listBatches(30))
-	.map(summarizeEditorialBatch)
+	.map((batch) => summarizeEditorialBatch(batch))
 	.filter((entry) => entry.active);
 ---
 
@@ -12,7 +12,7 @@ const batches = (await getEditorialWorkflowRepository().listBatches(30))
 	<div class="editorial-page-header"><div><p class="section-kicker">Two-gate workflow</p><h1>Editorial batches</h1><p>Active batches move from intake triage through automatic generation to final editorial review.</p></div></div>
 	<section class="editorial-panel">
 		{batches.length === 0 ? <p>No active workflow batches.</p> : <div class="editorial-list">
-			{batches.map((entry) => <article class="editorial-list__item"><div><strong>Batch {entry.batch.id}</strong><p>{entry.batch.itemCount} intake{entry.batch.itemCount === 1 ? '' : 's'} · {entry.awaitingTriage} awaiting triage · {entry.generating} generating · {entry.readyForFinalReview} ready for final review{entry.failed > 0 && <> · {entry.failed} failed</>}</p></div><div class="editorial-form__actions">
+			{batches.map((entry) => <article class="editorial-list__item"><div><strong>Batch {entry.batch.id}</strong><p>{entry.batch.itemCount} intake{entry.batch.itemCount === 1 ? '' : 's'} · {entry.awaitingTriage} awaiting triage · {entry.queued} queued · {entry.generating} actively generating · {entry.readyForFinalReview} ready for final review · {entry.failed} failed</p></div><div class="editorial-form__actions">
 				{entry.action?.kind === 'link' && <a class:list={['editorial-button', { 'editorial-button--quiet': entry.action.quiet }]} href={entry.action.href}>{entry.action.label}</a>}
 				{entry.action?.kind === 'status' && <span class="editorial-badge">{entry.action.label}</span>}
 			</div></article>)}

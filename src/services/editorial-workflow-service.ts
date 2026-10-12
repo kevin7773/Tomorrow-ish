@@ -3,13 +3,13 @@ import type { EditorialBatchItem } from '../domain/editorial-workflow';
 import type { EditorialIdentity } from '../domain/editorial';
 import { EditorialValidationError, requiredText } from './validation';
 import { isSmokeTargetPair, type EditorialSmokeTarget } from './editorial-smoke-target';
+import { requirePublicationReady } from './publication-integrity';
 
 export interface WorkflowPipelinePort {
 	advance(item: EditorialBatchItem, guard?: { renew(): Promise<void> }): Promise<{ storyId: string; ready: boolean }>;
 }
 
 export interface FinalReviewImagePort {
-	approveLatestGenerated(storyId: string, identity: EditorialIdentity): Promise<void>;
 	regenerate(storyId: string, identity: EditorialIdentity): Promise<void>;
 }
 
@@ -114,12 +114,11 @@ export class EditorialWorkflowService {
 
 	async publish(identity: EditorialIdentity, batchIdValue: unknown, intakeIdValue: unknown, confirmation: unknown): Promise<void> {
 		if (confirmation !== 'PUBLISH') throw new EditorialValidationError('Type PUBLISH to confirm publication.');
-		if (!this.images) throw new Error('Final-review image operations are not configured.');
 		const batchId = requiredText(batchIdValue, 'Batch ID', 100);
 		const intakeId = requiredText(intakeIdValue, 'Intake ID', 100);
 		const item = await this.repository.findItem(batchId, intakeId);
 		if (!item?.storyId || item.state !== 'READY_FOR_REVIEW') throw new EditorialValidationError('The article is not ready for final review.', 'conflict');
-		await this.images.approveLatestGenerated(item.storyId, identity);
+		requirePublicationReady(await this.repository.findPublicationReadiness(item.storyId));
 		const at = this.now();
 		if (!(await this.repository.publishFinal({ batchId, intakeId, storyId: item.storyId,
 			actorEmail: email(identity), at, eventId: this.createId(), auditId: this.createId() }))) {

@@ -40,12 +40,13 @@ function setup(initial = workflowItem()) {
 		releaseLease: vi.fn(async () => true),
 		retryFailed: vi.fn(async () => { if (item.state !== 'FAILED') return false; item = { ...item, state: 'SELECTED', failureStage: null, failureClassification: null }; return true; }),
 		ensureFinalReminder: vi.fn(async () => item.state === 'READY_FOR_REVIEW'),
+		findPublicationReadiness: vi.fn(async () => 'READY' as const),
 		publishFinal: vi.fn(async () => { if (item.state !== 'READY_FOR_REVIEW') return false; item = { ...item, state: 'PUBLISHED' }; events.push('ARTICLE_PUBLISHED'); return true; }),
 		rejectFinal: vi.fn(async () => { if (item.state !== 'READY_FOR_REVIEW') return false; item = { ...item, state: 'REJECTED' }; events.push('ARTICLE_REJECTED'); return true; }),
 		recordEvent: vi.fn(async ({ kind }) => { events.push(kind); }),
 	};
 	const pipeline: WorkflowPipelinePort = { advance: vi.fn(async () => ({ storyId: 'story-1', ready: true })) };
-	const images: FinalReviewImagePort = { approveLatestGenerated: vi.fn(async () => undefined), regenerate: vi.fn(async () => undefined) };
+	const images: FinalReviewImagePort = { regenerate: vi.fn(async () => undefined) };
 	let id = 0;
 	const service = new EditorialWorkflowService(repository, pipeline, images, { now: () => now, createId: () => `id-${++id}`, generationEnabled: true,
 		smokeTarget: { batchId: 'batch-1', intakeId: 'intake-1' } });
@@ -82,12 +83,13 @@ describe('two-gate editorial workflow', () => {
 			attachCandidate: vi.fn(), findGeneratedCandidateId: vi.fn(), findStoryIdByCandidate: vi.fn(), attachExistingStory: vi.fn(), ensureReviewStory: vi.fn(),
 			markReady: vi.fn(async (_batchId, intakeId, storyId) => { const item = items.get(intakeId)!; items.set(intakeId, { ...item, state: 'READY_FOR_REVIEW', storyId }); events.push('ARTICLE_READY_FOR_REVIEW'); return true; }),
 			markFailed: vi.fn(), releaseLease: vi.fn(async () => true), retryFailed: vi.fn(), ensureFinalReminder: vi.fn(async () => true),
+			findPublicationReadiness: vi.fn(async () => 'READY' as const),
 			publishFinal: vi.fn(async ({ intakeId }) => { const item = items.get(intakeId)!; items.set(intakeId, { ...item, state: 'PUBLISHED' }); events.push('ARTICLE_PUBLISHED'); return true; }),
 			rejectFinal: vi.fn(async ({ intakeId }) => { const item = items.get(intakeId)!; items.set(intakeId, { ...item, state: 'REJECTED' }); events.push('ARTICLE_REJECTED'); return true; }),
 			recordEvent: vi.fn(async ({ kind }) => { events.push(kind); }),
 		};
 		const pipeline: WorkflowPipelinePort = { advance: vi.fn(async (item) => ({ storyId: `story-${item.intakeId.at(-1)}`, ready: true })) };
-		const images: FinalReviewImagePort = { approveLatestGenerated: vi.fn(async () => undefined), regenerate: vi.fn(async () => undefined) };
+		const images: FinalReviewImagePort = { regenerate: vi.fn(async () => undefined) };
 		let id = 0;
 		const service = new EditorialWorkflowService(repository, pipeline, images, { now: () => now, createId: () => `demo-${++id}`, generationEnabled: true,
 			smokeTarget: { batchId: 'batch-1', intakeId: 'intake-1' } });
@@ -147,15 +149,26 @@ describe('two-gate editorial workflow', () => {
 		);
 	});
 
-	it('requires explicit publication and blocks incomplete final packages', async () => {
+	it('requires explicit publication and blocks incomplete final packages without approving an image', async () => {
 		const test = setup(workflowItem('READY_FOR_REVIEW'));
 		await expect(test.service.publish(identity, 'batch-1', 'intake-1', '')).rejects.toThrow(/PUBLISH/);
 		expect(test.repository.publishFinal).not.toHaveBeenCalled();
-		vi.mocked(test.images.approveLatestGenerated).mockRejectedValueOnce(new Error('image missing'));
-		await expect(test.service.publish(identity, 'batch-1', 'intake-1', 'PUBLISH')).rejects.toThrow('image missing');
+		vi.mocked(test.repository.findPublicationReadiness).mockResolvedValueOnce('IMAGE_REQUIRED');
+		await expect(test.service.publish(identity, 'batch-1', 'intake-1', 'PUBLISH'))
+			.rejects.toMatchObject({ code: 'image-required' });
 		expect(test.getItem().state).toBe('READY_FOR_REVIEW');
 		await test.service.publish(identity, 'batch-1', 'intake-1', 'PUBLISH');
 		expect(test.getItem().state).toBe('PUBLISHED');
+	});
+
+	it.each([
+		['IMAGE_NOT_APPROVED', 'image-not-approved'],
+		['STORY_NOT_APPROVED', 'story-not-approved'],
+	] as const)('returns actionable %s publication validation', async (readiness, code) => {
+		const test = setup(workflowItem('READY_FOR_REVIEW'));
+		vi.mocked(test.repository.findPublicationReadiness).mockResolvedValueOnce(readiness);
+		await expect(test.service.publish(identity, 'batch-1', 'intake-1', 'PUBLISH')).rejects.toMatchObject({ code });
+		expect(test.repository.publishFinal).not.toHaveBeenCalled();
 	});
 
 	it('editing and image regeneration leave the article in final review', async () => {
@@ -208,6 +221,17 @@ describe('two-gate editorial workflow', () => {
 	it('keeps legacy candidate and story routes available', () => {
 		expect(readFileSync(join(process.cwd(), 'src/pages/editorial/candidates/[id].astro'), 'utf8')).toContain('Candidate provenance');
 		expect(readFileSync(join(process.cwd(), 'src/pages/editorial/stories/[id].astro'), 'utf8')).toContain('Audit history');
+	});
+
+	it('surfaces known publication prerequisites while retaining a generic unexpected-failure message', () => {
+		const actions = readFileSync(join(process.cwd(), 'src/lib/editorial-actions.ts'), 'utf8');
+		const messages = readFileSync(join(process.cwd(), 'src/components/EditorialMessage.astro'), 'utf8');
+		for (const code of ['image-required', 'image-not-approved', 'story-not-approved']) {
+			expect(actions).toContain(`'${code}'`);
+			expect(messages).toContain(`'${code}'`);
+		}
+		expect(actions).toContain("redirectWithResult(returnPath, 'error', 'operation-failed')");
+		expect(messages).toContain("'operation-failed': 'The editorial operation could not be completed.'");
 	});
 
 	it('requires an audited candidate selection before automatic body generation and disables model-level retries', () => {

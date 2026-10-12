@@ -134,17 +134,6 @@ class RuntimePipeline implements WorkflowPipelinePort {
 }
 
 class RuntimeFinalImages implements FinalReviewImagePort {
-	async approveLatestGenerated(storyId: string, identity: EditorialIdentity): Promise<void> {
-		const repository = getArticleImageRepository();
-		const images = await repository.listByStory(storyId);
-		const approved = images.find((image) => image.status === 'APPROVED');
-		if (approved) return;
-		const generated = images.find((image) => image.status === 'GENERATED');
-		if (!generated) throw new Error('A generated image is required before publication.');
-		await imageReviewService(smokeTarget(env.EDITORIAL_WORKFLOW_SMOKE_BATCH_ID, env.EDITORIAL_WORKFLOW_SMOKE_INTAKE_ID))
-			.approve(identity, { storyId, imageId: generated.id, altText: generated.altText ?? 'Tomorrow-ish article illustration.' });
-	}
-
 	async regenerate(storyId: string, identity: EditorialIdentity): Promise<void> {
 		const repository = getArticleImageRepository();
 		const images = await repository.listByStory(storyId);

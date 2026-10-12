@@ -55,6 +55,9 @@ const errors: Record<string, string> = {
 	'image-disabled': 'Article-image generation is disabled or missing configuration. The story was not changed.',
 	'image-provider-rejected': 'The image provider rejected the request. The story was not changed.',
 	'image-provider-unavailable': 'The image provider did not complete the request. The story was not changed; retry manually when ready.',
+	'image-required': 'An editorially approved image is required before this story can be published.',
+	'image-not-approved': 'The story image must be explicitly approved and attached before publication.',
+	'story-not-approved': 'The story must be approved before publication.',
 	'operation-failed': 'The editorial operation could not be completed.',
 };
 const safeCount = typeof count === 'string' && /^\d+$/.test(count) ? count : null;

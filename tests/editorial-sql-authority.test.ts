@@ -64,10 +64,12 @@ describe('D1 publication authority SQL', () => {
 		});
 		expect(batches).toHaveLength(1);
 		expect(batches[0]).toHaveLength(2);
-		expect(batches[0][0].query).toMatch(/'STORY'.*'PUBLISHED'/s);
+		expect(batches[0][0].query).toMatch(/SET status = 'PUBLISHED', published_at = \?/);
 		expect(batches[0][0].query).toMatch(/status = 'APPROVED'/);
-		expect(batches[0][1].query).toMatch(/SET status = 'PUBLISHED', published_at = \?/);
-		expect(batches[0][1].query).toMatch(/status = 'APPROVED'/);
+		expect(batches[0][0].query).toMatch(/image\.status = 'APPROVED'/);
+		expect(batches[0][0].query).toContain('image.asset_key = stories.og_image_key');
+		expect(batches[0][1].query).toMatch(/'STORY'.*'PUBLISHED'.*'APPROVED'.*'PUBLISHED'/s);
+		expect(batches[0][1].query).toContain('changes() > 0');
 	});
 
 	it('uses a literal DRAFT status for candidate conversion', async () => {

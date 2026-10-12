@@ -2,6 +2,7 @@ import type { EditorialRepository } from '../data/editorial-repository';
 import type { EditorialIdentity } from '../domain/editorial';
 import { canTransitionPublication } from '../domain/publication-status';
 import { EditorialValidationError, requiredText } from './validation';
+import { requirePublicationReady } from './publication-integrity';
 
 export const PUBLISH_CONFIRMATION = 'PUBLISH';
 
@@ -26,9 +27,10 @@ export async function publishStory(
 
 	const story = await repository.findEditorialStoryById(storyId);
 	if (!story) throw new EditorialValidationError('The story was not found.', 'not-found');
-	if (!canTransitionPublication(story.status, 'PUBLISHED') || story.status !== 'APPROVED') {
-		throw new EditorialValidationError('Only an approved story can be published.');
+	if (!canTransitionPublication(story.status, 'PUBLISHED')) {
+		throw new EditorialValidationError('The story must be approved before publication.', 'story-not-approved');
 	}
+	requirePublicationReady(await repository.findPublicationReadiness(storyId));
 
 	const publishedAt = (dependencies.now ?? (() => new Date().toISOString()))();
 	const createId = dependencies.createId ?? (() => crypto.randomUUID());

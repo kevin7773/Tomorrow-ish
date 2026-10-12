@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it, vi } from 'vitest';
 import { D1EditorialCronWindowRepository } from '../src/data/d1-editorial-cron-window-repository';
+import { D1EditorialRepository } from '../src/data/d1-editorial-repository';
 import { D1EditorialWorkflowRepository } from '../src/data/d1-editorial-workflow-repository';
 import { D1GenerationRepository } from '../src/data/d1-generation-repository';
 import { fiveMinuteWindow, runDeduplicatedCronWindow } from '../src/services/editorial-cron-window';
@@ -165,6 +166,102 @@ describe('editorial workflow recovery primitives', () => {
 		expect(sqlite.prepare("SELECT COUNT(*) count FROM editorial_workflow_events WHERE event_kind='WORKFLOW_PUBLISHED_RECONCILED'").get()).toEqual({ count: 1 });
 		expect(await repository.reconcilePublished({ limit: 50, actorEmail: 'automation@test', at: NOW,
 			createEventId: () => `event-${++id}`, createAuditId: () => `audit-${++id}` })).toBe(0);
+		sqlite.close();
+	});
+
+	it('idempotently reconciles a READY legacy published story without changing its historical image evidence', async () => {
+		const sqlite = database(); batchItem(sqlite, 'legacy-intake', 1, 'READY_FOR_REVIEW');
+		sqlite.exec(`INSERT INTO satire_candidates (id,source_intake_id,proposed_headline,proposed_deck,draft_body_markdown,category_id,editorial_notes,status,created_by_email,updated_by_email,created_at,updated_at)
+			VALUES ('legacy-candidate','legacy-intake','Headline','Deck','Body','cat','','DRAFT','editor@test','editor@test','${NOW}','${NOW}');
+			INSERT INTO stories (id,slug,headline,deck,body_markdown,edition_date,published_at,category_id,status,social_excerpt,og_image_key,tags_json,created_at,updated_at,origin_candidate_id)
+			VALUES ('legacy-story','legacy-story','Headline','Deck','Body','2026-10-10','2026-10-10T18:42:46.182Z','cat','PUBLISHED','Deck',NULL,'[]','${NOW}','2026-10-10T18:42:46.182Z','legacy-candidate');
+			INSERT INTO article_images (id,story_id,provider,model,prompt,prompt_version,aspect_ratio,asset_key,content_type,byte_size,status,alt_text,metadata_json,requested_by_email,requested_at,generated_at)
+			VALUES ('legacy-image','legacy-story','test','test','prompt','v1','1:1','legacy-key','image/png',10,'GENERATED','Alt','{}','editor@test','${NOW}','${NOW}');
+			UPDATE editorial_batch_items SET candidate_id='legacy-candidate',story_id='legacy-story' WHERE source_intake_id='legacy-intake';`);
+		const before = sqlite.prepare('SELECT status,published_at,og_image_key,updated_at FROM stories WHERE id=?').get('legacy-story');
+		const repository = new D1EditorialWorkflowRepository(d1(sqlite)); let id = 0;
+		expect(await repository.reconcilePublished({ limit: 50, actorEmail: 'automation@test', at: NOW,
+			createEventId: () => `legacy-event-${++id}`, createAuditId: () => `legacy-audit-${++id}` })).toBe(1);
+		expect(await repository.findItem('batch', 'legacy-intake')).toMatchObject({ state: 'PUBLISHED', storyId: 'legacy-story' });
+		expect(sqlite.prepare('SELECT status,published_at,og_image_key,updated_at FROM stories WHERE id=?').get('legacy-story')).toEqual(before);
+		expect(sqlite.prepare('SELECT status,reviewed_at,reviewed_by_email FROM article_images WHERE id=?').get('legacy-image'))
+			.toEqual({ status: 'GENERATED', reviewed_at: null, reviewed_by_email: null });
+		expect(sqlite.prepare("SELECT from_status,to_status,reason FROM editorial_audit_log WHERE action='WORKFLOW_RECONCILED'").get())
+			.toEqual({ from_status: 'READY_FOR_REVIEW', to_status: 'PUBLISHED', reason: 'STATE_ONLY;prior=READY_FOR_REVIEW;image_evidence=LEGACY_MISSING_APPROVED_IMAGE' });
+		expect(sqlite.prepare("SELECT detail FROM editorial_workflow_events WHERE event_kind='WORKFLOW_PUBLISHED_RECONCILED'").get())
+			.toEqual({ detail: 'STATE_ONLY;prior=READY_FOR_REVIEW;image_evidence=LEGACY_MISSING_APPROVED_IMAGE' });
+		expect(await repository.reconcilePublished({ limit: 50, actorEmail: 'automation@test', at: NOW,
+			createEventId: () => `legacy-event-${++id}`, createAuditId: () => `legacy-audit-${++id}` })).toBe(0);
+		expect(sqlite.prepare("SELECT COUNT(*) count FROM editorial_audit_log WHERE action='WORKFLOW_RECONCILED'").get()).toEqual({ count: 1 });
+		expect(sqlite.prepare("SELECT COUNT(*) count FROM editorial_workflow_events WHERE event_kind='WORKFLOW_PUBLISHED_RECONCILED'").get()).toEqual({ count: 1 });
+		sqlite.close();
+	});
+
+	it('atomically publishes APPROVED to PUBLISHED only with a matching explicitly approved image', async () => {
+		const sqlite = database(); batchItem(sqlite, 'publish-intake', 1, 'READY_FOR_REVIEW');
+		sqlite.exec(`INSERT INTO satire_candidates (id,source_intake_id,proposed_headline,proposed_deck,draft_body_markdown,category_id,editorial_notes,status,created_by_email,updated_by_email,created_at,updated_at)
+			VALUES ('publish-candidate','publish-intake','Headline','Deck','Body','cat','','DRAFT','editor@test','editor@test','${NOW}','${NOW}');
+			INSERT INTO stories (id,slug,headline,deck,body_markdown,edition_date,category_id,status,social_excerpt,og_image_key,tags_json,created_at,updated_at,origin_candidate_id)
+			VALUES ('publish-story','publish-story','Headline','Deck','Body','2026-10-11','cat','APPROVED','Deck','approved-key','[]','${NOW}','${NOW}','publish-candidate');
+			INSERT INTO article_images (id,story_id,provider,model,prompt,prompt_version,aspect_ratio,asset_key,content_type,byte_size,status,alt_text,metadata_json,requested_by_email,requested_at,generated_at,reviewed_by_email,reviewed_at)
+			VALUES ('publish-image','publish-story','test','test','prompt','v1','1:1','approved-key','image/png',10,'APPROVED','Alt','{}','editor@test','${NOW}','${NOW}','editor@test','${NOW}');
+			UPDATE editorial_batch_items SET candidate_id='publish-candidate',story_id='publish-story' WHERE source_intake_id='publish-intake';`);
+		const repository = new D1EditorialWorkflowRepository(d1(sqlite));
+		expect(await repository.findPublicationReadiness('publish-story')).toBe('READY');
+		expect(await repository.publishFinal({ batchId: 'batch', intakeId: 'publish-intake', storyId: 'publish-story',
+			actorEmail: 'editor@test', at: NOW, eventId: 'publish-event', auditId: 'publish-audit' })).toBe(true);
+		expect(sqlite.prepare('SELECT status,published_at FROM stories WHERE id=?').get('publish-story'))
+			.toEqual({ status: 'PUBLISHED', published_at: NOW });
+		expect(sqlite.prepare('SELECT workflow_state FROM editorial_batch_items WHERE source_intake_id=?').get('publish-intake'))
+			.toEqual({ workflow_state: 'PUBLISHED' });
+		expect(sqlite.prepare("SELECT from_status,to_status FROM editorial_audit_log WHERE id='publish-audit'").get())
+			.toEqual({ from_status: 'APPROVED', to_status: 'PUBLISHED' });
+		expect(await repository.publishFinal({ batchId: 'batch', intakeId: 'publish-intake', storyId: 'publish-story',
+			actorEmail: 'editor@test', at: NOW, eventId: 'duplicate-event', auditId: 'duplicate-audit' })).toBe(false);
+		expect(sqlite.prepare("SELECT COUNT(*) count FROM editorial_audit_log WHERE action='PUBLISHED'").get()).toEqual({ count: 1 });
+		expect(sqlite.prepare("SELECT COUNT(*) count FROM editorial_workflow_events WHERE event_kind='ARTICLE_PUBLISHED'").get()).toEqual({ count: 1 });
+		sqlite.close();
+	});
+
+	it('applies the same atomic image and approval predicate to standalone publication', async () => {
+		const sqlite = database();
+		sqlite.exec(`INSERT INTO stories (id,slug,headline,deck,body_markdown,edition_date,category_id,status,social_excerpt,og_image_key,tags_json,created_at,updated_at)
+			VALUES ('standalone-story','standalone-story','Headline','Deck','Body','2026-10-11','cat','APPROVED','Deck','standalone-key','[]','${NOW}','${NOW}');
+			INSERT INTO article_images (id,story_id,provider,model,prompt,prompt_version,aspect_ratio,asset_key,content_type,byte_size,status,alt_text,metadata_json,requested_by_email,requested_at,generated_at,reviewed_by_email,reviewed_at)
+			VALUES ('standalone-image','standalone-story','test','test','prompt','v1','1:1','standalone-key','image/png',10,'APPROVED','Alt','{}','editor@test','${NOW}','${NOW}','editor@test','${NOW}');`);
+		const repository = new D1EditorialRepository(d1(sqlite));
+		expect(await repository.findPublicationReadiness('standalone-story')).toBe('READY');
+		expect(await repository.publishApprovedStory({ id: 'standalone-story', actorEmail: 'editor@test',
+			publishedAt: NOW, auditId: 'standalone-audit' })).toBe(true);
+		expect(sqlite.prepare('SELECT status,published_at FROM stories WHERE id=?').get('standalone-story'))
+			.toEqual({ status: 'PUBLISHED', published_at: NOW });
+		expect(sqlite.prepare("SELECT from_status,to_status FROM editorial_audit_log WHERE id='standalone-audit'").get())
+			.toEqual({ from_status: 'APPROVED', to_status: 'PUBLISHED' });
+		expect(await repository.publishApprovedStory({ id: 'standalone-story', actorEmail: 'editor@test',
+			publishedAt: NOW, auditId: 'standalone-duplicate' })).toBe(false);
+		expect(sqlite.prepare("SELECT COUNT(*) count FROM editorial_audit_log WHERE action='PUBLISHED'").get()).toEqual({ count: 1 });
+		sqlite.close();
+	});
+
+	it.each([
+		['missing', 'IMAGE_REQUIRED', null, null],
+		['generated', 'IMAGE_NOT_APPROVED', 'GENERATED', 'image-key'],
+		['mismatched', 'IMAGE_NOT_APPROVED', 'APPROVED', 'different-key'],
+	] as const)('fails closed for %s image evidence', async (_label, expected, imageStatus, imageKey) => {
+		const sqlite = database(); batchItem(sqlite, 'blocked-intake', 1, 'READY_FOR_REVIEW');
+		sqlite.exec(`INSERT INTO stories (id,slug,headline,deck,body_markdown,edition_date,category_id,status,social_excerpt,og_image_key,tags_json,created_at,updated_at)
+			VALUES ('blocked-story','blocked-story','Headline','Deck','Body','2026-10-11','cat','APPROVED','Deck',${imageKey ? "'image-key'" : 'NULL'},'[]','${NOW}','${NOW}');
+			UPDATE editorial_batch_items SET story_id='blocked-story' WHERE source_intake_id='blocked-intake';`);
+		if (imageStatus) sqlite.prepare(`INSERT INTO article_images (id,story_id,provider,model,prompt,prompt_version,aspect_ratio,asset_key,content_type,byte_size,status,alt_text,metadata_json,requested_by_email,requested_at,generated_at,reviewed_by_email,reviewed_at)
+			VALUES ('blocked-image','blocked-story','test','test','prompt','v1','1:1',?,'image/png',10,?,'Alt','{}','editor@test',?,?,?,?)`)
+			.run(imageKey, imageStatus, NOW, NOW, imageStatus === 'APPROVED' ? 'editor@test' : null, imageStatus === 'APPROVED' ? NOW : null);
+		const repository = new D1EditorialWorkflowRepository(d1(sqlite));
+		expect(await repository.findPublicationReadiness('blocked-story')).toBe(expected);
+		expect(await repository.publishFinal({ batchId: 'batch', intakeId: 'blocked-intake', storyId: 'blocked-story',
+			actorEmail: 'editor@test', at: NOW, eventId: 'blocked-event', auditId: 'blocked-audit' })).toBe(false);
+		expect(sqlite.prepare('SELECT status,published_at FROM stories WHERE id=?').get('blocked-story'))
+			.toEqual({ status: 'APPROVED', published_at: null });
+		expect(sqlite.prepare("SELECT COUNT(*) count FROM editorial_audit_log WHERE action='PUBLISHED'").get()).toEqual({ count: 0 });
 		sqlite.close();
 	});
 

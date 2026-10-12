@@ -61,6 +61,7 @@ export function actionErrorResponse(error: unknown, returnPath: string): Respons
 		const code = [
 			'not-found', 'duplicate', 'conflict', 'provider-unavailable', 'provider-rejected',
 			'provider-invalid-output', 'model-budget', 'model-disabled', 'operation-failed',
+			'image-required', 'image-not-approved', 'story-not-approved',
 		].includes(error.code) ? error.code : 'invalid-request';
 		return redirectWithResult(returnPath, 'error', code);
 	}

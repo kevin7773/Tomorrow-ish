@@ -1,6 +1,8 @@
 import type { CandidateSelection, CandidateSelectionContext, EditorialWorkflowRepository } from './editorial-workflow-repository';
 import type { EditorialBatch, EditorialBatchItem, EditorialWorkflowState } from '../domain/editorial-workflow';
+import type { PublicationReadiness } from '../domain/publication-integrity';
 import { SMOKE_BATCH_ID, SMOKE_INTAKE_ID } from '../services/editorial-smoke-target';
+import { PUBLICATION_READINESS_SQL, PUBLISHABLE_STORY_PREDICATE } from './publication-integrity';
 
 interface ItemRow {
 	batch_id: string; source_intake_id: string; ordinal: number; category_id: string;
@@ -200,33 +202,43 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 
 	async reconcilePublished(record: { limit: number; actorEmail: string; at: string; createEventId: () => string; createAuditId: () => string }): Promise<number> {
 		const rows = await this.db.prepare(`SELECT item.batch_id, item.source_intake_id,
-			COALESCE(item.story_id, story.id) AS story_id, item.workflow_state
+			COALESCE(item.story_id, story.id) AS story_id, item.workflow_state,
+			CASE WHEN EXISTS (SELECT 1 FROM article_images AS image
+				WHERE image.story_id = story.id AND image.status = 'APPROVED')
+				THEN 'APPROVED' ELSE 'LEGACY_MISSING_APPROVED_IMAGE' END AS image_evidence
 			FROM editorial_batch_items AS item
 			JOIN stories AS story ON story.id = item.story_id OR
 				(item.story_id IS NULL AND item.candidate_id IS NOT NULL AND story.origin_candidate_id = item.candidate_id)
-			WHERE item.workflow_state IN ('SELECTED', 'GENERATING', 'FAILED') AND story.status = 'PUBLISHED'
-			AND EXISTS (SELECT 1 FROM article_images AS image WHERE image.story_id = story.id AND image.status = 'APPROVED')
+			WHERE item.workflow_state IN ('SELECTED', 'GENERATING', 'READY_FOR_REVIEW', 'FAILED')
+			AND story.status = 'PUBLISHED'
 			ORDER BY item.updated_at, item.ordinal LIMIT ?`).bind(record.limit).all<{
 			batch_id: string; source_intake_id: string; story_id: string; workflow_state: EditorialWorkflowState;
+			image_evidence: 'APPROVED' | 'LEGACY_MISSING_APPROVED_IMAGE';
 		}>();
 		let changed = 0;
 		for (const row of rows.results) {
+			const auditId = record.createAuditId();
+			const eventId = record.createEventId();
+			const detail = `STATE_ONLY;prior=${row.workflow_state};image_evidence=${row.image_evidence}`;
 			const results = await this.db.batch([
 				this.db.prepare(`UPDATE editorial_batch_items SET workflow_state = 'PUBLISHED', story_id = ?,
 					failure_stage = NULL, failure_classification = NULL, lease_owner = NULL,
 					lease_acquired_at = NULL, lease_expires_at = NULL, updated_at = ?
-					WHERE batch_id = ? AND source_intake_id = ? AND workflow_state IN ('SELECTED', 'GENERATING', 'FAILED')
-					AND EXISTS (SELECT 1 FROM stories WHERE id = ? AND status = 'PUBLISHED')
-					AND EXISTS (SELECT 1 FROM article_images WHERE story_id = ? AND status = 'APPROVED')`)
-					.bind(row.story_id, record.at, row.batch_id, row.source_intake_id, row.story_id, row.story_id),
+					WHERE batch_id = ? AND source_intake_id = ?
+					AND workflow_state IN ('SELECTED', 'GENERATING', 'READY_FOR_REVIEW', 'FAILED')
+					AND EXISTS (SELECT 1 FROM stories WHERE id = ? AND status = 'PUBLISHED')`)
+					.bind(row.story_id, record.at, row.batch_id, row.source_intake_id, row.story_id),
 				this.db.prepare(`INSERT INTO editorial_audit_log
-					(id, actor_email, entity_type, entity_id, action, from_status, to_status, created_at)
-					SELECT ?, ?, 'STORY', ?, 'WORKFLOW_RECONCILED', ?, 'PUBLISHED', ? WHERE changes() > 0`)
-					.bind(record.createAuditId(), record.actorEmail, row.story_id, row.workflow_state, record.at),
-				this.event(record.createEventId(), row.batch_id, row.source_intake_id, row.story_id,
-					'WORKFLOW_PUBLISHED_RECONCILED', row.workflow_state, record.at),
+					(id, actor_email, entity_type, entity_id, action, from_status, to_status, reason, created_at)
+					SELECT ?, ?, 'STORY', ?, 'WORKFLOW_RECONCILED', ?, 'PUBLISHED', ?, ? WHERE changes() > 0`)
+					.bind(auditId, record.actorEmail, row.story_id, row.workflow_state, detail, record.at),
+				this.db.prepare(`INSERT INTO editorial_workflow_events
+					(id, batch_id, source_intake_id, story_id, event_kind, detail, created_at)
+					SELECT ?, ?, ?, ?, 'WORKFLOW_PUBLISHED_RECONCILED', ?, ?
+					WHERE EXISTS (SELECT 1 FROM editorial_audit_log WHERE id = ?)`)
+					.bind(eventId, row.batch_id, row.source_intake_id, row.story_id, detail, record.at, auditId),
 			]);
-			changed += Number(results[0].meta.changes === 1);
+			changed += Number(results.every((result) => result.meta.changes === 1));
 		}
 		return changed;
 	}
@@ -406,22 +418,31 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 	async publishFinal(record: { batchId: string; intakeId: string; storyId: string; actorEmail: string; at: string; eventId: string; auditId: string }): Promise<boolean> {
 		const results = await this.db.batch([
 			this.db.prepare(`UPDATE stories SET status = 'PUBLISHED', published_at = ?, updated_at = ?
-				WHERE id = ? AND status = 'REVIEW' AND published_at IS NULL AND og_image_key IS NOT NULL
-				AND trim(headline) <> '' AND trim(body_markdown) <> ''`)
+				WHERE id = ? AND ${PUBLISHABLE_STORY_PREDICATE}`)
 				.bind(record.at, record.at, record.storyId),
 			this.db.prepare(`UPDATE editorial_batch_items SET workflow_state = 'PUBLISHED', updated_at = ?
 				WHERE batch_id = ? AND source_intake_id = ? AND story_id = ?
 				AND workflow_state = 'READY_FOR_REVIEW' AND EXISTS
-				(SELECT 1 FROM stories WHERE id = ? AND status = 'PUBLISHED')`)
-				.bind(record.at, record.batchId, record.intakeId, record.storyId, record.storyId),
+				(SELECT 1 FROM stories WHERE id = ? AND status = 'PUBLISHED' AND published_at = ?)`)
+				.bind(record.at, record.batchId, record.intakeId, record.storyId, record.storyId, record.at),
 			this.db.prepare(`INSERT INTO editorial_audit_log
 				(id, actor_email, entity_type, entity_id, action, from_status, to_status, created_at)
-				SELECT ?, ?, 'STORY', ?, 'PUBLISHED', 'REVIEW', 'PUBLISHED', ?
-				WHERE EXISTS (SELECT 1 FROM stories WHERE id = ? AND status = 'PUBLISHED' AND published_at = ?)`)
+				SELECT ?, ?, 'STORY', ?, 'PUBLISHED', 'APPROVED', 'PUBLISHED', ? WHERE changes() > 0
+				AND EXISTS (SELECT 1 FROM stories WHERE id = ? AND status = 'PUBLISHED' AND published_at = ?)`)
 				.bind(record.auditId, record.actorEmail, record.storyId, record.at, record.storyId, record.at),
-			this.event(record.eventId, record.batchId, record.intakeId, record.storyId, 'ARTICLE_PUBLISHED', null, record.at),
+			this.db.prepare(`INSERT INTO editorial_workflow_events
+				(id, batch_id, source_intake_id, story_id, event_kind, detail, created_at)
+				SELECT ?, ?, ?, ?, 'ARTICLE_PUBLISHED', NULL, ?
+				WHERE EXISTS (SELECT 1 FROM editorial_audit_log WHERE id = ?)`)
+				.bind(record.eventId, record.batchId, record.intakeId, record.storyId, record.at, record.auditId),
 		]);
-		return results[0].meta.changes === 1 && results[1].meta.changes === 1;
+		return results.every((result) => result.meta.changes === 1);
+	}
+
+	async findPublicationReadiness(storyId: string): Promise<PublicationReadiness> {
+		const row = await this.db.prepare(PUBLICATION_READINESS_SQL).bind(storyId)
+			.first<{ readiness: PublicationReadiness }>();
+		return row?.readiness ?? 'NOT_FOUND';
 	}
 
 	async rejectFinal(record: { batchId: string; intakeId: string; storyId: string; actorEmail: string; at: string; eventId: string; auditId: string }): Promise<boolean> {

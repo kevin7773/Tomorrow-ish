@@ -1,4 +1,5 @@
 import type { EditorialBatch, EditorialBatchItem } from '../domain/editorial-workflow';
+import type { PublicationReadiness } from '../domain/publication-integrity';
 
 export interface CandidateSelection {
 	batchId: string;
@@ -44,6 +45,7 @@ export interface EditorialWorkflowRepository {
 	releaseLease(batchId: string, intakeId: string, owner: string, at: string): Promise<boolean>;
 	retryFailed(batchId: string, intakeId: string, actorEmail: string, at: string, eventId: string): Promise<boolean>;
 	ensureFinalReminder(batchId: string, at: string, eventId: string): Promise<boolean>;
+	findPublicationReadiness(storyId: string): Promise<PublicationReadiness>;
 	publishFinal(record: { batchId: string; intakeId: string; storyId: string; actorEmail: string; at: string; eventId: string; auditId: string }): Promise<boolean>;
 	rejectFinal(record: { batchId: string; intakeId: string; storyId: string; actorEmail: string; at: string; eventId: string; auditId: string }): Promise<boolean>;
 	recordEvent(record: { id: string; batchId: string; intakeId: string; storyId: string | null; kind: string; detail?: string | null; at: string }): Promise<void>;

@@ -12,6 +12,7 @@ import type {
 } from '../domain/editorial';
 import type { NonPublishingStatus } from '../domain/publication-status';
 import type { StoryCategory } from '../domain/story';
+import type { PublicationReadiness } from '../domain/publication-integrity';
 
 export interface CreateIntakeRecord {
 	intakeId: string;
@@ -203,6 +204,7 @@ export interface EditorialRepository {
 	findEditorialStoryById(id: string): Promise<EditorialStory | null>;
 	updateStory(record: UpdateStoryRecord): Promise<boolean>;
 	transitionStory(record: TransitionStoryRecord): Promise<boolean>;
+	findPublicationReadiness(storyId: string): Promise<PublicationReadiness>;
 	publishApprovedStory(record: PublishApprovedStoryRecord): Promise<boolean>;
 	listAuditEntries(
 		entityType: AuditEntry['entityType'],

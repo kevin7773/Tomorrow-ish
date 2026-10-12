@@ -229,6 +229,7 @@ describe('editorial and publication authority', () => {
 		const publishApprovedStory = vi.fn().mockResolvedValue(true);
 		const repo = repository({
 			findEditorialStoryById: vi.fn().mockResolvedValue(story()),
+			findPublicationReadiness: vi.fn().mockResolvedValue('READY'),
 			publishApprovedStory,
 		});
 
@@ -251,5 +252,43 @@ describe('editorial and publication authority', () => {
 		await expect(
 			publishStory(repo, null, { storyId: 'story-1', confirmation: 'PUBLISH' }),
 		).rejects.toThrow('authenticated editor');
+	});
+
+	it.each([
+		['IMAGE_REQUIRED', 'image-required'],
+		['IMAGE_NOT_APPROVED', 'image-not-approved'],
+	] as const)('blocks standalone publication for %s before the atomic transition', async (readiness, code) => {
+		const publishApprovedStory = vi.fn();
+		const repo = repository({
+			findEditorialStoryById: vi.fn().mockResolvedValue(story()),
+			findPublicationReadiness: vi.fn().mockResolvedValue(readiness),
+			publishApprovedStory,
+		});
+		await expect(publishStory(repo, identity, { storyId: 'story-1', confirmation: 'PUBLISH' }))
+			.rejects.toMatchObject({ code });
+		expect(publishApprovedStory).not.toHaveBeenCalled();
+	});
+
+	it('blocks standalone publication unless the story itself is approved', async () => {
+		const publishApprovedStory = vi.fn();
+		const repo = repository({
+			findEditorialStoryById: vi.fn().mockResolvedValue(story({ status: 'REVIEW' })),
+			findPublicationReadiness: vi.fn().mockResolvedValue('STORY_NOT_APPROVED'),
+			publishApprovedStory,
+		});
+		await expect(publishStory(repo, identity, { storyId: 'story-1', confirmation: 'PUBLISH' }))
+			.rejects.toMatchObject({ code: 'story-not-approved' });
+		expect(publishApprovedStory).not.toHaveBeenCalled();
+	});
+
+	it('rejects an unauthenticated publication attempt before any story or image predicate lookup', async () => {
+		const findEditorialStoryById = vi.fn();
+		const findPublicationReadiness = vi.fn();
+		const publishApprovedStory = vi.fn();
+		await expect(publishStory(repository({ findEditorialStoryById, findPublicationReadiness, publishApprovedStory }),
+			null, { storyId: 'story-1', confirmation: 'PUBLISH' })).rejects.toMatchObject({ code: 'unauthorized' });
+		expect(findEditorialStoryById).not.toHaveBeenCalled();
+		expect(findPublicationReadiness).not.toHaveBeenCalled();
+		expect(publishApprovedStory).not.toHaveBeenCalled();
 	});
 });

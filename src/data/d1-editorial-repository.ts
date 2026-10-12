@@ -12,6 +12,8 @@ import type {
 } from '../domain/editorial';
 import type { PublicationStatus } from '../domain/publication-status';
 import type { StoryCategory } from '../domain/story';
+import type { PublicationReadiness } from '../domain/publication-integrity';
+import { PUBLICATION_READINESS_SQL, PUBLISHABLE_STORY_PREDICATE } from './publication-integrity';
 import type {
 	AddSourceReferenceRecord,
 	ArchiveRecord,
@@ -1007,29 +1009,31 @@ export class D1EditorialRepository implements EditorialRepository {
 		const results = await this.db.batch([
 			this.db
 				.prepare(`
+					UPDATE stories
+					SET status = 'PUBLISHED', published_at = ?, updated_at = ?
+					WHERE id = ? AND ${PUBLISHABLE_STORY_PREDICATE}
+				`)
+				.bind(record.publishedAt, record.publishedAt, record.id),
+			this.db
+				.prepare(`
 					INSERT INTO editorial_audit_log (
 						id, actor_email, entity_type, entity_id, action,
 						from_status, to_status, created_at
 					)
-					SELECT ?, ?, 'STORY', story.id, 'PUBLISHED', 'APPROVED', 'PUBLISHED', ?
-					FROM stories AS story
-					WHERE story.id = ? AND story.status = 'APPROVED' AND story.published_at IS NULL
+					SELECT ?, ?, 'STORY', ?, 'PUBLISHED', 'APPROVED', 'PUBLISHED', ?
+					WHERE changes() > 0 AND EXISTS (
+						SELECT 1 FROM stories WHERE id = ? AND status = 'PUBLISHED' AND published_at = ?
+					)
 				`)
-				.bind(
-					record.auditId,
-					record.actorEmail,
-					record.publishedAt,
-					record.id,
-				),
-			this.db
-				.prepare(`
-					UPDATE stories
-					SET status = 'PUBLISHED', published_at = ?, updated_at = ?
-					WHERE id = ? AND status = 'APPROVED' AND published_at IS NULL
-				`)
-				.bind(record.publishedAt, record.publishedAt, record.id),
+				.bind(record.auditId, record.actorEmail, record.id, record.publishedAt, record.id, record.publishedAt),
 		]);
 		return results[0].meta.changes === 1 && results[1].meta.changes === 1;
+	}
+
+	async findPublicationReadiness(storyId: string): Promise<PublicationReadiness> {
+		const row = await this.db.prepare(PUBLICATION_READINESS_SQL).bind(storyId)
+			.first<{ readiness: PublicationReadiness }>();
+		return row?.readiness ?? 'NOT_FOUND';
 	}
 
 	async listAuditEntries(
