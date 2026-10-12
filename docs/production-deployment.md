@@ -96,27 +96,132 @@ Verify the resulting status counts without exposing story bodies:
 npx wrangler d1 execute DB --remote --command "SELECT status, COUNT(*) AS story_count FROM stories GROUP BY status ORDER BY status"
 ```
 
-## First production deployment
+## Supported production release procedure
 
-Run the complete local gate from a clean `main` checkout after confirming the committed D1 UUID:
+`npm run deploy` is intentionally blocked. Plain `wrangler deploy`, using `src/worker.ts` from the root configuration, is not a supported release path because it can omit Astro-generated chunks. A release must treat `dist/server/wrangler.json`, `entry.mjs`, every generated module, and `dist/client` as one immutable artifact.
+
+The reviewed production identity and non-secret configuration are frozen in `release/production-baseline.json`. Changing that file is a production configuration change and requires separate review. Runtime secret values are never exported; the validator checks only that the required secret binding names remain attached.
+
+### 1. Local release gate
+
+Start from clean local and remote `main` at the exact approved commit:
 
 ```powershell
+$env:CLOUDFLARE_ACCOUNT_ID = '13fbf38daabf893cddf8e7214957bfce'
 npm ci
 npm test
 npm run check
-npm run build
-npx wrangler deploy --dry-run
+npm run release:prepare -- --commit <approved-commit-sha>
 git diff --check
 git status --short --branch
 ```
 
-Review the dry-run binding table. It must list only `env.DB (tomorrow-ish-production)` and `env.ASSETS`.
+`release:prepare` performs the production Astro build, validates the generated configuration, runs `wrangler versions upload --dry-run` against `dist/server/wrangler.json`, recursively follows local imports from `entry.mjs`, and compares every generated JavaScript module with the dry-run package under `.release/wrangler-dry-run`. A missing entrypoint, chunk, binding, route, gate, or safety setting stops the release.
 
-After the production migration has been applied and deployment is explicitly approved:
+For an uncommitted local checkpoint only, `npm run release:prepare -- --local-checkpoint` may exercise packaging. Its report says `releaseEligible: false`; it must never be uploaded.
+
+### 2. Read-only production preflight
+
+Before any remote mutation, capture a reviewed JSON snapshot containing:
+
+```json
+{
+  "accountId": "13fbf38daabf893cddf8e7214957bfce",
+  "workerName": "tomorrow-ish",
+  "d1": [{ "binding": "DB", "database_name": "tomorrow-ish-production", "database_id": "96f4a86d-1d60-47b1-a240-86552d001191" }],
+  "r2": [{ "binding": "IMAGE_ASSETS", "bucket_name": "tomorrow-ish-images" }],
+  "assets": { "binding": "ASSETS", "directory": "../client" },
+  "workersDev": false,
+  "previewUrls": false,
+  "routes": [{ "pattern": "tomorrow-ish.news", "custom_domain": true }],
+  "crons": ["0 13 * * *", "0 21 * * *", "*/5 * * * *"],
+  "secretNames": ["CLOUDFLARE_AI_API_TOKEN", "IMAGE_WEBHOOK_SECRET", "OPENAI_API_KEY"],
+  "vars": {
+    "CF_ACCESS_TEAM_DOMAIN": "https://jolly-glitter-da93.cloudflareaccess.com",
+    "CF_ACCESS_AUD": "d7990901bf79388de024fee36a5a8abcd4452ff4c908acfa19189b37856fb30b",
+    "EDITORIAL_ALLOWED_EMAIL": "klsmallwood73@gmail.com",
+    "MODEL_PROVIDER": "openai",
+    "MODEL_NAME": "gpt-5.6-terra",
+    "MODEL_GENERATION_ENABLED": "false",
+    "EDITORIAL_WORKFLOW_GENERATION_ENABLED": "false",
+    "EDITORIAL_WORKFLOW_SMOKE_BATCH_ID": "b24b69e8-0816-4c13-90fe-0925feecac00",
+    "EDITORIAL_WORKFLOW_SMOKE_INTAKE_ID": "2c7f63bc-a733-4952-84f3-3bc6048290cb",
+    "EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY": "",
+    "MODEL_DAILY_BUDGET_MICRO_USD": "1000000",
+    "AUTOMATION_ENABLED": "true",
+    "AUTOMATION_SOURCE_URL": "https://tomorrow-ish.news/api/automation/source-feed",
+    "AUTOMATION_MAX_ITEMS_PER_RUN": "3",
+    "AUTOMATION_ACTOR_EMAIL": "automation@tomorrow-ish.news",
+    "IMAGE_PROVIDER": "cloudflare-ai-gateway",
+    "IMAGE_MODEL": "openai/gpt-image-2",
+    "IMAGE_GENERATION_ENABLED": "false",
+    "CLOUDFLARE_ACCOUNT_ID": "13fbf38daabf893cddf8e7214957bfce",
+    "CLOUDFLARE_AI_GATEWAY_ID": "tomorrow-ish",
+    "IMAGE_WEBHOOK_ORIGIN": "https://tomorrow-ish.news",
+    "REVIEW_NOTIFICATION_WEBHOOK_URL": "https://tomorrow-ish.news/api/internal/review-notifications",
+    "ADS_ENABLED": "false",
+    "ADSENSE_ARTICLE_INLINE_1_SLOT": "",
+    "ADSENSE_ARTICLE_INLINE_2_SLOT": "",
+    "ADSENSE_DESKTOP_SIDEBAR_SLOT": ""
+  }
+}
+```
+
+Populate it from authenticated `wrangler whoami --account ... --json`, Worker settings/version reads, the Workers routes and custom-domain APIs, the schedules API, D1 identity, and `wrangler secret list`. Do not infer `workers.dev` or preview settings from an HTTP redirect. Validate it locally:
 
 ```powershell
-npm run deploy
+npm run release:validate -- --live-snapshot .release/live-before.json
 ```
+
+Also capture Time Travel, exports, current deployment/version, module inventory, D1 counts, and provider/audit baselines required by the approved change. A multi-account login is fail-closed unless `CLOUDFLARE_ACCOUNT_ID` is explicitly set to the production account.
+
+### 3. Pause Cron without redeploying application code
+
+Generate a complete sibling configuration in `dist/server`; the tool proves that only `triggers.crons` differs:
+
+```powershell
+npm run release:cron:pause-config
+npm run release:operator -- cron-pause --execute --commit <approved-commit-sha> --live-snapshot .release/live-before.json
+```
+
+This uses `wrangler triggers deploy` with the complete Astro-generated configuration. Immediately reread schedules, routes, custom domain, `workers.dev`, preview URLs, and bindings. The pause is valid only when schedules are empty and every other value matches the baseline.
+
+### 4. Upload, inspect, and activate a version
+
+Upload creates a version but does not activate it:
+
+```powershell
+npm run release:operator -- upload --execute --commit <approved-commit-sha> --live-snapshot .release/live-paused.json --tag <reviewed-tag> --message "<reviewed-message>"
+npx wrangler versions view <new-version-id> --name tomorrow-ish --json > .release/version.json
+```
+
+Obtain the version-specific multipart module inventory through the authenticated Workers API and normalize its part names as `{ "modules": ["entry.mjs", "chunks/...mjs"] }` in `.release/module-inventory.json`. Then validate the actual uploaded bindings and every generated module before activation:
+
+```powershell
+npm run release:validate -- --live-snapshot .release/live-paused.json --version-snapshot .release/version.json --module-inventory .release/module-inventory.json
+npm run release:operator -- activate --execute --commit <approved-commit-sha> --live-snapshot .release/live-paused.json --version <new-version-id> --version-snapshot .release/version.json --module-inventory .release/module-inventory.json --message "<reviewed-activation-message>"
+```
+
+Activation is blocked if the inspected version ID, handlers, compatibility settings, variables, D1/R2/assets bindings, secret references, or module inventory differ from the reviewed artifact.
+
+### 5. Restore schedules and verify
+
+```powershell
+npm run release:cron:restore-config
+npm run release:operator -- cron-restore --execute --commit <approved-commit-sha> --live-snapshot .release/live-paused.json
+```
+
+Capture `.release/live-after.json` and rerun `release:validate`. The release is incomplete until all three original schedules are restored exactly once, the custom domain and Access boundary are healthy, the intended version is at 100%, a five-minute Cron window completes with one owner, and before/after data/provider invariants pass.
+
+### 6. Safe rollback
+
+Before activation, inspect and retain a known-good version whose version snapshot passes both the complete production binding/configuration checks and the all-generation-disabled checks. Rollback changes only the active version; it does not improvise migration rollback or alter data:
+
+```powershell
+npm run release:operator -- rollback --execute --commit <approved-commit-sha> --live-snapshot .release/live-after.json --version <disabled-version-id> --version-snapshot .release/disabled-version.json --message "Disable generation and restore verified Worker"
+```
+
+After rollback, repeat effective-configuration, routes/domain, health, schedules, Cron-ownership, and provider-activity verification. If an additive migration was already applied, leave it in place unless a separately reviewed data recovery procedure says otherwise.
 
 The configured Custom Domain sends all paths on `tomorrow-ish.news` to this Worker. Cloudflare creates the required DNS record and managed certificate when the Custom Domain is attached. If the first deployment cannot attach the domain, use **Workers & Pages → tomorrow-ish → Settings → Domains & Routes → Add → Custom Domain**, enter `tomorrow-ish.news`, and resolve any conflicting DNS record before retrying.
 
@@ -149,8 +254,8 @@ In **Workers & Pages → tomorrow-ish → Settings → Builds**:
 1. Connect the existing GitHub repository.
 2. Set the root directory to the repository root.
 3. Set the production branch to `main`.
-4. Use `npm run build` as the build command.
-5. Use `npx wrangler deploy` as the production deploy command.
+4. Use `npm run build` as the build command only for artifact validation.
+5. Do not configure automatic production deployment. The supported path requires reviewed version upload, inspection, explicit activation, and Cron verification; `npx wrangler deploy` is intentionally unsupported.
 6. Do not include D1 migration or seed commands in either field.
 7. Leave non-production branch builds disabled until a separate preview D1 binding is configured. When that exists, use `npx wrangler versions upload` for non-production branches and confirm previews cannot access production D1.
 8. Review the generated Workers Builds API token. The M1 application needs no build variables, runtime variables, or secrets.
@@ -177,7 +282,7 @@ $routes | ForEach-Object { Invoke-WebRequest -Uri $_ -Method Head -MaximumRedire
 
 Also verify a published story, an unknown route, all redirect hosts, certificate status, and that the production `workers.dev` route and Preview URLs are disabled.
 
-The application emits fixed canonical, Open Graph, JSON-LD, robots, and sitemap URLs under `https://tomorrow-ish.news`. The configured trailing-slash policy redirects non-root trailing-slash requests to the corresponding slashless URL. No production application secrets are required: M1 reads only the `DB` and `ASSETS` bindings.
+The application emits fixed canonical, Open Graph, JSON-LD, robots, and sitemap URLs under `https://tomorrow-ish.news`. The configured trailing-slash policy redirects non-root trailing-slash requests to the corresponding slashless URL. Runtime secret values stay in Cloudflare; release validation checks that their binding names are present without exporting their values.
 
 ## Cloudflare references
 

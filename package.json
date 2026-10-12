@@ -15,7 +15,12 @@
     "test": "vitest run",
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
     "db:seed:local": "wrangler d1 execute DB --local --file=./seed.sql",
-    "deploy": "npm run build && wrangler deploy",
+    "deploy": "node ./scripts/release/refuse-direct-deploy.mjs",
+    "release:prepare": "node ./scripts/release/prepare-release.mjs",
+    "release:validate": "node ./scripts/release/validate-release.mjs --config dist/server/wrangler.json --package-dir .release/wrangler-dry-run",
+    "release:cron:pause-config": "node ./scripts/release/cron-config.mjs pause",
+    "release:cron:restore-config": "node ./scripts/release/cron-config.mjs restore",
+    "release:operator": "node ./scripts/release/operator.mjs",
     "astro": "astro"
   },
   "dependencies": {
@@ -28,6 +33,7 @@
     "@astrojs/check": "0.9.10",
     "@cloudflare/workers-types": "5.20260910.1",
     "@types/node": "24.13.4",
+    "es-module-lexer": "2.3.2",
     "typescript": "5.9.2",
     "vitest": "4.1.11",
     "wrangler": "4.131.0"
