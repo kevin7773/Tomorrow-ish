@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { D1EditorialWorkflowRepository } from '../src/data/d1-editorial-workflow-repository';
+import { D1GenerationRepository } from '../src/data/d1-generation-repository';
 import { CandidateSelectionService } from '../src/services/candidate-selection-service';
 
 const NOW = '2026-10-11T20:00:00.000Z';
@@ -38,9 +39,14 @@ function fixture(): { sqlite: DatabaseSync; repository: D1EditorialWorkflowRepos
 		VALUES ('${TARGET.batchId}','${TARGET.intakeId}',1,'cat','SELECTED','editor@test','${NOW}','${NOW}','${NOW}');
 		INSERT INTO normalized_event_versions (id,source_intake_id,version_number,review_state,origin,event_statement,proposed_significance_score,proposed_satire_potential_score,proposed_suitability,suitability_reason,created_by_email,reviewed_by_email,created_at,reviewed_at)
 		VALUES ('${VERSION}','${TARGET.intakeId}',1,'ACCEPTED','EDITOR','Event',3,4,'SUITABLE','Reviewed','editor@test','editor@test','${NOW}','${NOW}');
+		INSERT INTO source_references (id,source_intake_id,source_title,source_url,publisher_name,source_tier,source_type,created_at,updated_at)
+		VALUES ('reference-1','${TARGET.intakeId}','Source','https://example.test/source','Publisher','TIER_1','PRIMARY','${NOW}','${NOW}');
 		INSERT INTO satire_candidates (id,source_intake_id,proposed_headline,proposed_deck,draft_body_markdown,category_id,editorial_notes,status,created_by_email,updated_by_email,created_at,updated_at,normalized_event_version_id)
 		VALUES ('candidate-1','${TARGET.intakeId}','One','Deck','','cat','','DRAFT','editor@test','editor@test','${NOW}','${NOW}','${VERSION}'),
-		('candidate-2','${TARGET.intakeId}','Two','Deck','','cat','','DRAFT','editor@test','editor@test','${NOW}','${NOW}','${VERSION}');`);
+		('candidate-2','${TARGET.intakeId}','Two','Deck','','cat','','DRAFT','editor@test','editor@test','${NOW}','${NOW}','${VERSION}'),
+		('candidate-3','${TARGET.intakeId}','Three','Deck','','cat','','DRAFT','editor@test','editor@test','${NOW}','${NOW}','${VERSION}'),
+		('candidate-4','${TARGET.intakeId}','Four','Deck','','cat','','DRAFT','editor@test','editor@test','${NOW}','${NOW}','${VERSION}'),
+		('candidate-5','${TARGET.intakeId}','Five','Deck','','cat','','DRAFT','editor@test','editor@test','${NOW}','${NOW}','${VERSION}');`);
 	const repository = new D1EditorialWorkflowRepository(d1(sqlite));
 	let id = 0;
 	return { sqlite, repository, service: new CandidateSelectionService(repository, TARGET,
@@ -71,10 +77,51 @@ describe('governed candidate selection', () => {
 		expect(await service.select({ email: 'editor@test' }, input())).toBe('SELECTED');
 		expect(await service.select({ email: 'editor@test' }, input())).toBe('UNCHANGED');
 		expect(sqlite.prepare('SELECT COUNT(*) count FROM editorial_candidate_selection_events').get()).toEqual({ count: 1 });
-		expect(sqlite.prepare('SELECT id,status,draft_body_markdown FROM satire_candidates ORDER BY id').all())
-			.toEqual([{ id: 'candidate-1', status: 'DRAFT', draft_body_markdown: '' }, { id: 'candidate-2', status: 'DRAFT', draft_body_markdown: '' }]);
+		expect(sqlite.prepare("SELECT COUNT(*) count FROM satire_candidates WHERE status='DRAFT' AND draft_body_markdown='' ").get())
+			.toEqual({ count: 5 });
 		expect(sqlite.prepare('SELECT COUNT(*) count FROM model_runs').get()).toEqual({ count: 0 });
 		expect(sqlite.prepare('SELECT COUNT(*) count FROM model_request_reservations').get()).toEqual({ count: 0 });
+		sqlite.close();
+	});
+
+	it('authorizes only the exact active selection for paid manual body generation', async () => {
+		const { sqlite, service } = fixture();
+		await expect(service.requireSelectedForBodyGeneration('candidate-1')).rejects.toThrow(/active governed/i);
+		await service.select({ email: 'editor@test' }, input('candidate-1'));
+		await expect(service.requireSelectedForBodyGeneration('candidate-1')).resolves.toBeUndefined();
+		for (const sibling of ['candidate-2', 'candidate-3', 'candidate-4', 'candidate-5']) {
+			await expect(service.requireSelectedForBodyGeneration(sibling)).rejects.toThrow(/active governed/i);
+		}
+		await expect(service.requireSelectedForBodyGeneration('cross-batch-candidate')).rejects.toThrow(/active governed/i);
+		await expect(service.requireSelectedForBodyGeneration('cross-intake-candidate')).rejects.toThrow(/active governed/i);
+		sqlite.close();
+	});
+
+	it('fails closed when the active selection changes before body generation', async () => {
+		const { sqlite, service } = fixture();
+		await service.select({ email: 'editor@test' }, input('candidate-1'));
+		await service.select({ email: 'editor@test' }, input('candidate-2', { reason: 'Governed change.' }));
+		await expect(service.requireSelectedForBodyGeneration('candidate-1')).rejects.toThrow(/active governed/i);
+		await expect(service.requireSelectedForBodyGeneration('candidate-2')).resolves.toBeUndefined();
+		sqlite.close();
+	});
+
+	it('atomically creates a body reservation only for the selected smoke candidate', async () => {
+		const { sqlite, service } = fixture();
+		await service.select({ email: 'editor@test' }, input('candidate-1'));
+		const generation = new D1GenerationRepository(d1(sqlite));
+		const claim = (candidateId: string, id: string) => generation.claimArticleBodyGeneration({
+			id, candidateId, sourceIntakeId: TARGET.intakeId, normalizedEventVersionId: VERSION,
+			provider: 'test', model: 'test', promptVersion: 'article-body-v2', inputHash: `hash-${id}`,
+			inputCharacters: 10, estimatedCostMicrousd: 1, idempotencyKey: `key-${id}`,
+			requestedByEmail: 'editor@test', sourceWasSensitive: false, cautionReason: null,
+			createdAt: NOW, auditId: `audit-${id}`, smokeTarget: TARGET,
+		});
+		expect(await claim('candidate-2', 'sibling-run')).toBe(false);
+		expect(sqlite.prepare('SELECT COUNT(*) count FROM candidate_body_generation_runs').get()).toEqual({ count: 0 });
+		expect(await claim('candidate-1', 'selected-run')).toBe(true);
+		expect(sqlite.prepare('SELECT candidate_id,status FROM candidate_body_generation_runs').get())
+			.toEqual({ candidate_id: 'candidate-1', status: 'PENDING' });
 		sqlite.close();
 	});
 
@@ -111,5 +158,7 @@ describe('governed candidate selection', () => {
 		expect(page).toContain('Select for workflow body generation');
 		expect(page).toContain('/editorial/actions/candidate-selection');
 		expect(page).toContain('name="action" value="generate-body"');
+		const action = readFileSync(join(process.cwd(), 'src/pages/editorial/actions/generation.ts'), 'utf8');
+		expect(action.indexOf('requireSelectedForBodyGeneration')).toBeLessThan(action.indexOf('getRuntimeModelConfiguration()'));
 	});
 });

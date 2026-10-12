@@ -87,7 +87,10 @@ export class EditorialWorkflowService {
 				};
 				const result = await this.pipeline.advance(item, { renew });
 				if (result.ready) {
-					if (await this.repository.markReady(item.batchId, item.intakeId, result.storyId, owner, this.now(), this.createId())) report.ready += 1;
+					const allowMissingImage = !this.imageGenerationEnabled
+						&& isSmokeTargetPair(this.smokeTarget, item.batchId, item.intakeId);
+					if (await this.repository.markReady(item.batchId, item.intakeId, result.storyId, owner,
+						this.now(), this.createId(), allowMissingImage)) report.ready += 1;
 				} else {
 					await this.repository.releaseLease(item.batchId, item.intakeId, owner, this.now());
 					report.pending += 1;

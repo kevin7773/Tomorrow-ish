@@ -129,6 +129,7 @@ export interface ClaimArticleBodyGenerationRecord {
 	cautionReason: string | null;
 	createdAt: string;
 	auditId: string;
+	smokeTarget: { batchId: string; intakeId: string } | null;
 }
 
 export interface CompleteArticleBodyGenerationRecord {

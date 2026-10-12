@@ -129,6 +129,24 @@ describe('two-gate editorial workflow', () => {
 		expect(test.repository.ensureFinalReminder).toHaveBeenCalledWith('batch-1', now, expect.any(String));
 	});
 
+	it('scopes image-free readiness to an image-disabled exact smoke target', async () => {
+		const exact = setup(workflowItem('SELECTED'));
+		const imageDisabled = new EditorialWorkflowService(exact.repository, exact.pipeline, exact.images, {
+			now: () => now, createId: () => 'image-free-ready', generationEnabled: true,
+			smokeTarget: { batchId: 'batch-1', intakeId: 'intake-1' }, imageGenerationEnabled: false,
+		});
+		await imageDisabled.process();
+		expect(exact.repository.markReady).toHaveBeenCalledWith(
+			'batch-1', 'intake-1', 'story-1', expect.any(String), now, 'image-free-ready', true,
+		);
+
+		const imageRequired = setup(workflowItem('SELECTED'));
+		await imageRequired.service.process();
+		expect(imageRequired.repository.markReady).toHaveBeenCalledWith(
+			'batch-1', 'intake-1', 'story-1', expect.any(String), now, expect.any(String), false,
+		);
+	});
+
 	it('requires explicit publication and blocks incomplete final packages', async () => {
 		const test = setup(workflowItem('READY_FOR_REVIEW'));
 		await expect(test.service.publish(identity, 'batch-1', 'intake-1', '')).rejects.toThrow(/PUBLISH/);

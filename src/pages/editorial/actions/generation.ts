@@ -12,6 +12,8 @@ import {
 import { GenerationService } from '../../../services/generation-service';
 import type { ModelProvider } from '../../../ai/model-provider';
 import { smokeTarget } from '../../../services/editorial-smoke-target';
+import { getEditorialWorkflowRepository } from '../../../data/runtime-editorial-workflow-repository';
+import { CandidateSelectionService } from '../../../services/candidate-selection-service';
 
 const unusedProvider: ModelProvider = {
 	providerId: 'unused', modelId: 'unused', estimateMaximumCostMicrousd: () => 0,
@@ -44,11 +46,19 @@ export const POST: APIRoute = async (context) => {
 			await service.resolveStaleArticleBodyGeneration(identity, formRecord(form));
 			return redirectWithResult(`/editorial/candidates/${encodeURIComponent(candidateId)}`, 'message', 'article-body-pending-resolved');
 		}
+		const configuredTarget = smokeTarget(
+			env.EDITORIAL_WORKFLOW_SMOKE_BATCH_ID,
+			env.EDITORIAL_WORKFLOW_SMOKE_INTAKE_ID,
+		);
+		if (action === 'generate-body') {
+			await new CandidateSelectionService(getEditorialWorkflowRepository(), configuredTarget)
+				.requireSelectedForBodyGeneration(form.get('candidateId'));
+		}
 		const model = getRuntimeModelConfiguration();
 		const service = new GenerationService(getGenerationRepository(), model.provider, {
 			dailyBudgetMicrousd: model.dailyBudgetMicrousd,
 			generationEnabled: model.generationEnabled,
-			smokeTarget: smokeTarget(env.EDITORIAL_WORKFLOW_SMOKE_BATCH_ID, env.EDITORIAL_WORKFLOW_SMOKE_INTAKE_ID),
+			smokeTarget: configuredTarget,
 		});
 		switch (action) {
 			case 'normalize': {

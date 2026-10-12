@@ -51,6 +51,16 @@ function batchItem(sqlite: DatabaseSync, id: string, ordinal: number, state = 'S
 		failure_stage='MODEL',failure_classification='MALFORMED_OUTPUT' WHERE source_intake_id=?`).run(id);
 }
 
+function smokeBatchItem(sqlite: DatabaseSync, state = 'GENERATING'): void {
+	sqlite.prepare("INSERT INTO automation_runs (id,trigger_kind,status,started_at,completed_at) VALUES (?,'SCHEDULED','SUCCEEDED',?,?)")
+		.run(SMOKE_BATCH_ID, NOW, NOW);
+	sqlite.prepare('INSERT INTO editorial_batches (id,item_count,created_at) VALUES (?,1,?)').run(SMOKE_BATCH_ID, NOW);
+	intake(sqlite, SMOKE_INTAKE_ID);
+	sqlite.prepare(`INSERT INTO editorial_batch_items (batch_id,source_intake_id,ordinal,category_id,workflow_state,
+		selected_by_email,selected_at,created_at,updated_at) VALUES (?,?,1,'cat',?,'editor@test',?,?,?)`)
+		.run(SMOKE_BATCH_ID, SMOKE_INTAKE_ID, state, NOW, NOW, NOW);
+}
+
 describe('editorial workflow recovery primitives', () => {
 	it('atomically leases one item to only one concurrent processor', async () => {
 		const sqlite = database(); batchItem(sqlite, 'intake-1', 1); const repository = new D1EditorialWorkflowRepository(d1(sqlite));
@@ -182,6 +192,46 @@ describe('editorial workflow recovery primitives', () => {
 			storyId: 'story', owner: 'worker', at: NOW, eventId: 'attach-event' })).toBe(true);
 		expect(await repository.markReady('batch', 'intake-1', 'story', 'worker', NOW, 'ready-event')).toBe(true);
 		expect(await repository.findItem('batch', 'intake-1')).toMatchObject({ state: 'READY_FOR_REVIEW', leaseOwner: null });
+		sqlite.close();
+	});
+
+	it('allows only an explicitly image-disabled smoke path to become review-ready without an image', async () => {
+		const sqlite = database(); smokeBatchItem(sqlite);
+		sqlite.exec(`INSERT INTO satire_candidates (id,source_intake_id,proposed_headline,proposed_deck,draft_body_markdown,category_id,editorial_notes,status,created_by_email,updated_by_email,created_at,updated_at,body_generation_state)
+			VALUES ('candidate','${SMOKE_INTAKE_ID}','Headline','Deck','Body','cat','','DRAFT','editor@test','editor@test','${NOW}','${NOW}','SUCCEEDED');
+			INSERT INTO stories (id,slug,headline,deck,body_markdown,edition_date,category_id,status,social_excerpt,tags_json,created_at,updated_at,origin_candidate_id)
+			VALUES ('story','review-story','Headline','Deck','Body','2026-10-11','cat','REVIEW','Deck','[]','${NOW}','${NOW}','candidate');
+			UPDATE editorial_batch_items SET candidate_id='candidate',story_id='story',lease_owner='worker',lease_acquired_at='${NOW}',lease_expires_at='2026-10-11T12:10:00.000Z' WHERE source_intake_id='${SMOKE_INTAKE_ID}';`);
+		const repository = new D1EditorialWorkflowRepository(d1(sqlite));
+		expect(await repository.markReady(SMOKE_BATCH_ID, SMOKE_INTAKE_ID, 'story', 'worker', NOW, 'normal-ready')).toBe(false);
+		expect(await repository.markReady(SMOKE_BATCH_ID, SMOKE_INTAKE_ID, 'story', 'worker', NOW, 'smoke-ready', true)).toBe(true);
+		expect(await repository.findItem(SMOKE_BATCH_ID, SMOKE_INTAKE_ID)).toMatchObject({ state: 'READY_FOR_REVIEW' });
+		expect(sqlite.prepare('SELECT og_image_key,status,published_at FROM stories WHERE id=?').get('story'))
+			.toEqual({ og_image_key: null, status: 'REVIEW', published_at: null });
+		expect(await repository.publishFinal({ batchId: SMOKE_BATCH_ID, intakeId: SMOKE_INTAKE_ID, storyId: 'story',
+			actorEmail: 'editor@test', at: NOW, eventId: 'publish-event', auditId: 'publish-audit' })).toBe(false);
+		expect(sqlite.prepare('SELECT status,published_at,og_image_key FROM stories WHERE id=?').get('story'))
+			.toEqual({ status: 'REVIEW', published_at: null, og_image_key: null });
+		sqlite.close();
+	});
+
+	it('replays a completed body and existing REVIEW story without creating duplicates', async () => {
+		const sqlite = database(); smokeBatchItem(sqlite);
+		sqlite.exec(`INSERT INTO normalized_event_versions (id,source_intake_id,version_number,review_state,origin,event_statement,proposed_significance_score,proposed_satire_potential_score,proposed_suitability,suitability_reason,created_by_email,reviewed_by_email,created_at,reviewed_at)
+			VALUES ('version','${SMOKE_INTAKE_ID}',1,'ACCEPTED','EDITOR','Event',2,3,'SUITABLE','Reviewed','editor@test','editor@test','${NOW}','${NOW}');
+			INSERT INTO satire_candidates (id,source_intake_id,proposed_headline,proposed_deck,draft_body_markdown,category_id,editorial_notes,status,created_by_email,updated_by_email,created_at,updated_at,normalized_event_version_id,body_generation_state,body_generation_run_id)
+			VALUES ('candidate','${SMOKE_INTAKE_ID}','Headline','Deck','Body','cat','','DRAFT','editor@test','editor@test','${NOW}','${NOW}','version','SUCCEEDED','body-run');
+			INSERT INTO candidate_body_generation_runs (id,status,candidate_id,source_intake_id,normalized_event_version_id,provider,model,prompt_version,input_hash,output_hash,input_tokens,output_tokens,input_characters,output_characters,latency_ms,retry_count,estimated_cost_microusd,idempotency_key,requested_by_email,source_was_sensitive,created_at,completed_at)
+			VALUES ('body-run','SUCCEEDED','candidate','${SMOKE_INTAKE_ID}','version','test','test','article-body-v2','input','output',1,1,10,10,1,0,1,'body-key','editor@test',0,'${NOW}','${NOW}');
+			INSERT INTO stories (id,slug,headline,deck,body_markdown,edition_date,category_id,status,social_excerpt,tags_json,created_at,updated_at,origin_candidate_id)
+			VALUES ('story','review-story','Headline','Deck','Body','2026-10-11','cat','REVIEW','Deck','[]','${NOW}','${NOW}','candidate');
+			UPDATE editorial_batch_items SET candidate_id='candidate',lease_owner='worker',lease_acquired_at='${NOW}',lease_expires_at='2026-10-11T12:10:00.000Z' WHERE source_intake_id='${SMOKE_INTAKE_ID}';`);
+		const repository = new D1EditorialWorkflowRepository(d1(sqlite));
+		expect(await repository.attachExistingStory({ batchId: SMOKE_BATCH_ID, intakeId: SMOKE_INTAKE_ID, candidateId: 'candidate',
+			storyId: 'story', owner: 'worker', at: NOW, eventId: 'attach-existing' })).toBe(true);
+		expect(await repository.markReady(SMOKE_BATCH_ID, SMOKE_INTAKE_ID, 'story', 'worker', NOW, 'ready-existing', true)).toBe(true);
+		expect(sqlite.prepare('SELECT COUNT(*) count FROM candidate_body_generation_runs').get()).toEqual({ count: 1 });
+		expect(sqlite.prepare('SELECT COUNT(*) count FROM stories').get()).toEqual({ count: 1 });
 		sqlite.close();
 	});
 });

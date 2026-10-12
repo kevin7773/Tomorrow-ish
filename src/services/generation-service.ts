@@ -125,6 +125,13 @@ function isOwnershipFenceLoss(error: unknown): boolean {
 	return error instanceof Error && ['WORKFLOW_LEASE_LOST', 'MODEL_REQUEST_FENCE_LOST'].includes(error.message);
 }
 
+function bodyOutcomeRequiresInvestigation(error: unknown): boolean {
+	const cause = error instanceof ModelExecutionError ? error.cause : error;
+	if (isOwnershipFenceLoss(error)) return true;
+	if (cause instanceof DOMException && cause.name === 'AbortError') return true;
+	return cause instanceof ModelProviderError && cause.retryable;
+}
+
 function reservationFailureStatus(error: unknown): 'FAILED' | 'AMBIGUOUS' {
 	const cause = error instanceof ModelExecutionError ? error.cause : error;
 	if (cause instanceof ModelOutputError) return 'FAILED';
@@ -535,6 +542,7 @@ export class GenerationService {
 			inputCharacters: inputText.length, estimatedCostMicrousd: reservedCostMicrousd,
 			idempotencyKey: key, requestedByEmail, sourceWasSensitive: sensitive,
 			cautionReason, createdAt, auditId: this.createId(),
+			smokeTarget: this.smokeTarget ?? null,
 		});
 		if (!claimed) {
 			throw new EditorialValidationError('The candidate changed or body generation is already in progress.', 'conflict');
@@ -587,8 +595,8 @@ export class GenerationService {
 			return runId;
 		} catch (error) {
 			if (error instanceof EditorialValidationError && error.code === 'conflict') throw error;
-			if (isOwnershipFenceLoss(error)) throw new EditorialValidationError(
-				'The workflow lease was lost; the provider outcome remains pending investigation.', 'conflict');
+			if (bodyOutcomeRequiresInvestigation(error)) throw new EditorialValidationError(
+				'The article-body provider outcome remains pending investigation; do not retry.', 'conflict');
 			const completedAt = this.now();
 			const diagnostics = persistedProviderDiagnostics(error);
 			await this.repository.failArticleBodyGeneration({

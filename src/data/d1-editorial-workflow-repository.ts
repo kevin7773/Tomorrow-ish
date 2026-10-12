@@ -1,5 +1,6 @@
 import type { CandidateSelection, CandidateSelectionContext, EditorialWorkflowRepository } from './editorial-workflow-repository';
 import type { EditorialBatch, EditorialBatchItem, EditorialWorkflowState } from '../domain/editorial-workflow';
+import { SMOKE_BATCH_ID, SMOKE_INTAKE_ID } from '../services/editorial-smoke-target';
 
 interface ItemRow {
 	batch_id: string; source_intake_id: string; ordinal: number; category_id: string;
@@ -337,14 +338,16 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 			? racedStoryId : null;
 	}
 
-	async markReady(batchId: string, intakeId: string, storyId: string, owner: string, at: string, eventId: string): Promise<boolean> {
+	async markReady(batchId: string, intakeId: string, storyId: string, owner: string, at: string, eventId: string, allowMissingImage = false): Promise<boolean> {
 		const results = await this.db.batch([
 			this.db.prepare(`UPDATE editorial_batch_items SET workflow_state = 'READY_FOR_REVIEW', updated_at = ?,
 				lease_owner = NULL, lease_acquired_at = NULL, lease_expires_at = NULL
 				WHERE batch_id = ? AND source_intake_id = ? AND story_id = ? AND workflow_state = 'GENERATING'
 				AND lease_owner = ? AND lease_expires_at > ?
-				AND EXISTS (SELECT 1 FROM article_images WHERE story_id = ? AND status IN ('GENERATED', 'APPROVED'))`)
-				.bind(at, batchId, intakeId, storyId, owner, at, storyId),
+				AND ((? = 1 AND batch_id = ? AND source_intake_id = ?)
+					OR EXISTS (SELECT 1 FROM article_images WHERE story_id = ? AND status IN ('GENERATED', 'APPROVED')))`)
+				.bind(at, batchId, intakeId, storyId, owner, at, allowMissingImage ? 1 : 0,
+					SMOKE_BATCH_ID, SMOKE_INTAKE_ID, storyId),
 			this.event(eventId, batchId, intakeId, storyId, 'ARTICLE_READY_FOR_REVIEW', null, at),
 		]);
 		return results[0].meta.changes === 1;

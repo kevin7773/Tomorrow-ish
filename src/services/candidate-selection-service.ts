@@ -41,4 +41,20 @@ export class CandidateSelectionService {
 		if (before?.candidateId === candidateId) return 'UNCHANGED';
 		return before ? 'CHANGED' : 'SELECTED';
 	}
+
+	async requireSelectedForBodyGeneration(candidateIdValue: unknown): Promise<void> {
+		const candidateId = requiredText(candidateIdValue, 'Candidate ID', 100);
+		if (!this.smokeTarget) {
+			throw new EditorialValidationError('Article body generation is outside the configured smoke target.', 'conflict');
+		}
+		const selected = await this.repository.findCandidateSelection(
+			this.smokeTarget.batchId,
+			this.smokeTarget.intakeId,
+		);
+		if (!selected || selected.candidateId !== candidateId
+			|| selected.batchId !== this.smokeTarget.batchId
+			|| selected.intakeId !== this.smokeTarget.intakeId) {
+			throw new EditorialValidationError('Only the active governed smoke candidate may generate an article body.', 'conflict');
+		}
+	}
 }

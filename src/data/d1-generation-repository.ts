@@ -431,6 +431,10 @@ export class D1GenerationRepository implements GenerationRepository {
 				WHERE version.id = candidate.normalized_event_version_id
 				AND version.source_intake_id = candidate.source_intake_id
 				AND version.review_state = 'ACCEPTED')
+			AND (? IS NULL OR EXISTS (SELECT 1 FROM editorial_candidate_selections AS selection
+				WHERE selection.batch_id = ? AND selection.source_intake_id = ?
+				AND selection.candidate_id = candidate.id
+				AND selection.normalized_event_version_id = candidate.normalized_event_version_id))
 			AND (intake.satire_suitability <> 'SENSITIVE' OR trim(COALESCE(?, '')) <> '')
 			AND NOT EXISTS (SELECT 1 FROM candidate_body_generation_runs AS run
 				WHERE run.candidate_id = candidate.id AND run.status = 'PENDING')`)
@@ -438,7 +442,8 @@ export class D1GenerationRepository implements GenerationRepository {
 					record.inputCharacters, record.estimatedCostMicrousd, record.idempotencyKey,
 					record.requestedByEmail, record.sourceWasSensitive ? 1 : 0, record.cautionReason,
 					record.createdAt, record.candidateId, record.sourceIntakeId,
-					record.normalizedEventVersionId, record.cautionReason),
+					record.normalizedEventVersionId, record.smokeTarget?.batchId ?? null,
+					record.smokeTarget?.batchId ?? '', record.smokeTarget?.intakeId ?? '', record.cautionReason),
 			this.db.prepare(`UPDATE satire_candidates
 				SET body_generation_state = 'PENDING', body_generation_run_id = ?,
 					updated_by_email = ?, updated_at = ?

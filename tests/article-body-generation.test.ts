@@ -285,7 +285,7 @@ describe('governed article body generation', () => {
 		expect(generate).toHaveBeenCalledTimes(1);
 	});
 
-	it('records one safe failure without changing the candidate body or retrying automatically', async () => {
+	it('keeps a retryable or lost provider response PENDING for investigation without retrying', async () => {
 		const original = context();
 		const { repo, complete, fail } = repository(original);
 		const provider = new FakeModelProvider();
@@ -296,16 +296,51 @@ describe('governed article body generation', () => {
 			}));
 		await expect(service(repo, provider).generateArticleBody(identity, {
 			candidateId: 'candidate-target', idempotencyKey: 'body-provider-failure',
-		})).rejects.toMatchObject({ code: 'provider-unavailable' });
+		})).rejects.toMatchObject({ code: 'conflict' });
 		expect(generate).toHaveBeenCalledTimes(1);
 		expect(complete).not.toHaveBeenCalled();
-		expect(fail).toHaveBeenCalledWith(expect.objectContaining({
-			candidateId: 'candidate-target', failureClassification: 'PROVIDER_NETWORK',
-			providerHttpStatus: 503, providerErrorType: 'server_error', providerErrorCode: 'unavailable',
-			providerErrorMessage: null, providerRequestId: 'req_safe',
-		}));
+		expect(fail).not.toHaveBeenCalled();
 		expect(original.candidate.draftBodyMarkdown).toBe('');
 		expect(original.candidate.status).toBe('DRAFT');
+	});
+
+	it('keeps a timed-out provider submission PENDING and never retries it', async () => {
+		const original = context();
+		const { repo, complete, fail } = repository(original);
+		const provider = new FakeModelProvider();
+		const generate = vi.spyOn(provider, 'generateArticleBody').mockImplementation(async (_input, signal) => {
+			await new Promise((_, reject) => signal.addEventListener('abort', () => reject(new DOMException('Timed out', 'AbortError')), { once: true }));
+			throw new Error('unreachable');
+		});
+		const guarded = new GenerationService(repo, provider, {
+			now: () => '2026-09-12T03:00:00.000Z', createId: () => 'timeout-body-run',
+			limits: { ...DEFAULT_MODEL_LIMITS, candidateTimeoutMs: 5 },
+		});
+		await expect(guarded.generateArticleBody(identity, {
+			candidateId: original.candidate.id, idempotencyKey: 'body-timeout-attempt',
+		})).rejects.toMatchObject({ code: 'conflict' });
+		expect(generate).toHaveBeenCalledTimes(1);
+		expect(complete).not.toHaveBeenCalled();
+		expect(fail).not.toHaveBeenCalled();
+	});
+
+	it('records a definitive provider rejection as FAILED without retrying', async () => {
+		const { repo, fail } = repository();
+		const provider = new FakeModelProvider();
+		const generate = vi.spyOn(provider, 'generateArticleBody').mockRejectedValue(
+			new ModelProviderError('PROVIDER_REQUEST', false, undefined, {
+				httpStatus: 400, errorType: 'invalid_request_error', errorCode: 'invalid_schema',
+				errorMessage: 'Definitive rejection.', requestId: 'req_rejected', retryAfter: null,
+			}),
+		);
+		await expect(service(repo, provider).generateArticleBody(identity, {
+			candidateId: 'candidate-target', idempotencyKey: 'body-provider-rejected',
+		})).rejects.toMatchObject({ code: 'provider-rejected' });
+		expect(generate).toHaveBeenCalledTimes(1);
+		expect(fail).toHaveBeenCalledWith(expect.objectContaining({
+			failureClassification: 'PROVIDER_REQUEST', providerHttpStatus: 400,
+			providerRequestId: 'req_rejected',
+		}));
 	});
 
 	it('terminates a claim when validation fails before the provider is invoked', async () => {

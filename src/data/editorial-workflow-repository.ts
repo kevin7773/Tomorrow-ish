@@ -39,7 +39,7 @@ export interface EditorialWorkflowRepository {
 		batchId: string; intakeId: string; candidateId: string; storyId: string; slug: string;
 		editionDate: string; socialExcerpt: string; actorEmail: string; owner: string; at: string; eventId: string;
 	}): Promise<string | null>;
-	markReady(batchId: string, intakeId: string, storyId: string, owner: string, at: string, eventId: string): Promise<boolean>;
+	markReady(batchId: string, intakeId: string, storyId: string, owner: string, at: string, eventId: string, allowMissingImage?: boolean): Promise<boolean>;
 	markFailed(batchId: string, intakeId: string, owner: string, stage: string, classification: string, at: string, eventId: string): Promise<void>;
 	releaseLease(batchId: string, intakeId: string, owner: string, at: string): Promise<boolean>;
 	retryFailed(batchId: string, intakeId: string, actorEmail: string, at: string, eventId: string): Promise<boolean>;
