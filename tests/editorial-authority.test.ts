@@ -60,6 +60,109 @@ function repository(methods: Partial<EditorialRepository>): EditorialRepository 
 }
 
 describe('editorial and publication authority', () => {
+	function storyEditInput(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+		return {
+			id: 'story-1',
+			slug: 'agency-forms-task-force',
+			headline: 'Agency Forms Task Force to Review Task Forces',
+			deck: 'The findings will be reviewed by a separate panel.',
+			bodyMarkdown: 'A revised clearly fictional draft.',
+			editionDate: '2026-09-11',
+			categoryId: 'cat-civic-life',
+			socialExcerpt: 'A fictional task force convenes.',
+			tags: '',
+			...overrides,
+		};
+	}
+
+	function storyEditor(existing: EditorialStory) {
+		const updateStory = vi.fn().mockResolvedValue(true);
+		const service = new EditorialService(repository({
+			findEditorialStoryById: vi.fn().mockResolvedValue(existing),
+			categoryExists: vi.fn().mockResolvedValue(true),
+			updateStory,
+		}), {
+			now: () => '2026-09-10T13:00:00.000Z',
+			createId: () => 'audit-update',
+		});
+		return { service, updateStory };
+	}
+
+	it('allows an authenticated body-only edit to preserve an unchanged legacy slug', async () => {
+		const legacySlug = 'agency-forms--task-force';
+		const { service, updateStory } = storyEditor(story({ slug: legacySlug, status: 'REVIEW' }));
+
+		await expect(service.updateStory(identity, storyEditInput({ slug: legacySlug }))).resolves.toBeUndefined();
+		expect(updateStory).toHaveBeenCalledWith(expect.objectContaining({
+			id: 'story-1',
+			expectedSlug: legacySlug,
+			slug: legacySlug,
+			bodyMarkdown: 'A revised clearly fictional draft.',
+			actorEmail: identity.email,
+			auditId: 'audit-update',
+		}));
+	});
+
+	it.each([
+		['changed invalid slug', 'replacement--slug'],
+		['missing slug', undefined],
+		['tampered non-string slug', 42],
+		['another story legacy slug', 'other--story'],
+	])('rejects %s before the audited story update', async (_label, submittedSlug) => {
+		const { service, updateStory } = storyEditor(story({ slug: 'agency-forms--task-force', status: 'REVIEW' }));
+
+		await expect(service.updateStory(identity, storyEditInput({ slug: submittedSlug }))).rejects.toBeInstanceOf(EditorialValidationError);
+		expect(updateStory).not.toHaveBeenCalled();
+	});
+
+	it('validates and accepts a requested change from an existing valid slug', async () => {
+		const { service, updateStory } = storyEditor(story({ status: 'REVIEW' }));
+
+		await service.updateStory(identity, storyEditInput({ slug: 'agency-reviews-task-force' }));
+		expect(updateStory).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agency-reviews-task-force' }));
+	});
+
+	it('cannot substitute a valid slug already owned by another story', async () => {
+		const updateStory = vi.fn().mockRejectedValue(new Error('UNIQUE constraint failed: stories.slug'));
+		const service = new EditorialService(repository({
+			findEditorialStoryById: vi.fn().mockResolvedValue(story({ status: 'REVIEW' })),
+			categoryExists: vi.fn().mockResolvedValue(true),
+			updateStory,
+		}));
+
+		await expect(service.updateStory(identity, storyEditInput({ slug: 'another-story' })))
+			.rejects.toThrow(/UNIQUE constraint failed/);
+		expect(updateStory).toHaveBeenCalledWith(expect.objectContaining({
+			id: 'story-1',
+			expectedSlug: 'agency-forms-task-force',
+			slug: 'another-story',
+		}));
+	});
+
+	it('keeps strict slug validation for new stories', async () => {
+		const convertApprovedCandidateToDraft = vi.fn();
+		const service = new EditorialService(repository({
+			findCandidateById: vi.fn().mockResolvedValue(candidate()),
+			convertApprovedCandidateToDraft,
+		}));
+
+		await expect(service.convertApprovedCandidateToDraft(identity, {
+			candidateId: 'candidate-1',
+			slug: 'new--invalid-slug',
+			editionDate: '2026-09-11',
+			socialExcerpt: 'A fictional task force convenes.',
+		})).rejects.toBeInstanceOf(EditorialValidationError);
+		expect(convertApprovedCandidateToDraft).not.toHaveBeenCalled();
+	});
+
+	it('requires an authenticated editor before preserving a legacy slug', async () => {
+		const { service, updateStory } = storyEditor(story({ slug: 'agency-forms--task-force', status: 'REVIEW' }));
+
+		await expect(service.updateStory(null as never, storyEditInput({ slug: 'agency-forms--task-force' })))
+			.rejects.toThrow(/authenticated editor/i);
+		expect(updateStory).not.toHaveBeenCalled();
+	});
+
 	it('converts an approved candidate through the DRAFT-only repository method', async () => {
 		const convertApprovedCandidateToDraft = vi.fn().mockResolvedValue(true);
 		const service = new EditorialService(

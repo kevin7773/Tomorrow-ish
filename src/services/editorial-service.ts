@@ -407,9 +407,11 @@ export class EditorialService {
 		if (!(await this.repository.categoryExists(categoryId))) {
 			throw new EditorialValidationError('Category is invalid.');
 		}
+		const slug = input.slug === story.slug ? story.slug : storySlug(input.slug);
 		const updated = await this.repository.updateStory({
 			id,
-			slug: storySlug(input.slug),
+			expectedSlug: story.slug,
+			slug,
 			headline: requiredText(input.headline, 'Headline', 300),
 			deck: requiredText(input.deck, 'Deck', 1_000),
 			bodyMarkdown: requiredText(input.bodyMarkdown, 'Body', 50_000),

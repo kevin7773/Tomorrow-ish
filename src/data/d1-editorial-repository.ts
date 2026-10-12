@@ -937,7 +937,7 @@ export class D1EditorialRepository implements EditorialRepository {
 					UPDATE stories SET
 						slug = ?, headline = ?, deck = ?, body_markdown = ?, edition_date = ?,
 						category_id = ?, social_excerpt = ?, tags_json = ?, updated_at = ?
-					WHERE id = ? AND status NOT IN ('PUBLISHED', 'ARCHIVED')
+					WHERE id = ? AND slug = ? AND status NOT IN ('PUBLISHED', 'ARCHIVED')
 				`)
 				.bind(
 					record.slug,
@@ -950,6 +950,7 @@ export class D1EditorialRepository implements EditorialRepository {
 					JSON.stringify(record.tags),
 					record.updatedAt,
 					record.id,
+					record.expectedSlug,
 				),
 			this.db
 				.prepare(`

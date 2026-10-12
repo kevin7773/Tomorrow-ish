@@ -27,6 +27,32 @@ function recordingDatabase(batches: RecordedStatement[][]): D1Database {
 }
 
 describe('D1 publication authority SQL', () => {
+	it('fences story edits against the authoritative persisted slug and audits in the same batch', async () => {
+		const batches: RecordedStatement[][] = [];
+		const repository = new D1EditorialRepository(recordingDatabase(batches));
+		await repository.updateStory({
+			id: 'story-1',
+			expectedSlug: 'legacy--story',
+			slug: 'legacy--story',
+			headline: 'Headline',
+			deck: 'Deck',
+			bodyMarkdown: 'Revised body.',
+			editionDate: '2026-09-11',
+			categoryId: 'category-1',
+			socialExcerpt: 'Excerpt.',
+			tags: [],
+			actorEmail: 'newsgoblin@tomorrow-ish.news',
+			updatedAt: '2026-09-10T14:00:00.000Z',
+			auditId: 'audit-update',
+		});
+
+		expect(batches).toHaveLength(1);
+		expect(batches[0]).toHaveLength(2);
+		expect(batches[0][0].query).toMatch(/WHERE id = \? AND slug = \?/);
+		expect(batches[0][0].bindings.at(-1)).toBe('legacy--story');
+		expect(batches[0][1].query).toContain("'UPDATED'");
+	});
+
 	it('publishes and audits in one batch owned by the explicit repository method', async () => {
 		const batches: RecordedStatement[][] = [];
 		const repository = new D1EditorialRepository(recordingDatabase(batches));

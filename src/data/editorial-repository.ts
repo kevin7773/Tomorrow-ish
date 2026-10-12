@@ -144,6 +144,7 @@ export interface ConvertCandidateRecord {
 
 export interface UpdateStoryRecord {
 	id: string;
+	expectedSlug: string;
 	slug: string;
 	headline: string;
 	deck: string;
