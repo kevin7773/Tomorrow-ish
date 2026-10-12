@@ -11,7 +11,11 @@ import {
 	requireEditor,
 	safeReturnPath,
 } from '../../../lib/editorial-actions';
-import { ArticleImageService } from '../../../services/article-image-service';
+import {
+	ArticleImageService,
+	assertImageAttemptHistoryAllowsSubmission,
+	governedImageVisualDirection,
+} from '../../../services/article-image-service';
 import { getAsyncArticleImageService, getImageWebhookUrl } from '../../../services/runtime-async-article-image-service';
 import { smokeTarget } from '../../../services/editorial-smoke-target';
 import { EditorialValidationError } from '../../../services/validation';
@@ -21,10 +25,12 @@ export const POST: APIRoute = async (context) => {
 	const form = await context.request.formData();
 	const returnPath = safeReturnPath(form.get('returnPath'), '/editorial/stories');
 	try {
+		const identity = requireEditor(context);
 		const imageRepository = getArticleImageRepository();
 		const editorialRepository = getEditorialRepository();
 		const action = form.get('action');
 		const configuredTarget = smokeTarget(env.EDITORIAL_WORKFLOW_SMOKE_BATCH_ID, env.EDITORIAL_WORKFLOW_SMOKE_INTAKE_ID);
+		let visualDirection: string | undefined;
 		if (action === 'generate') {
 			const storyId = String(form.get('storyId') ?? '');
 			const story = await editorialRepository.findEditorialStoryById(storyId);
@@ -46,6 +52,8 @@ export const POST: APIRoute = async (context) => {
 			if (!isImageGenerationEnabled(env)) {
 				throw new EditorialValidationError('Article image generation is disabled.', 'model-disabled');
 			}
+			visualDirection = governedImageVisualDirection(form.get('visualDirection'));
+			assertImageAttemptHistoryAllowsSubmission(await imageRepository.listByStory(storyId));
 		}
 		const provider = action === 'generate' ? getImageProvider() : {
 			provider: 'unused', model: 'unused', lifecycle: 'synchronous' as const,
@@ -65,7 +73,6 @@ export const POST: APIRoute = async (context) => {
 				authorizeSmokeTarget: (configured) => authorizeImageSmokeTarget(getEditorialWorkflowRepository(), configured),
 			},
 		);
-		const identity = requireEditor(context);
 		const input = {
 			storyId: form.get('storyId'),
 			imageId: form.get('imageId'),
@@ -73,7 +80,7 @@ export const POST: APIRoute = async (context) => {
 		};
 		switch (action) {
 			case 'generate': {
-				const result = await service.generate(identity, input);
+				const result = await service.generate(identity, { ...input, visualDirection });
 				if (result.status === 'GENERATION_FAILED') {
 					return redirectWithResult(returnPath, 'error', 'image-provider-unavailable');
 				}

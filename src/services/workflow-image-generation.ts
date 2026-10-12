@@ -11,5 +11,11 @@ export async function generateWorkflowImageIfEnabled(
 	createService: (target: EditorialSmokeTarget | null) => ArticleImageService,
 ) {
 	if (!isImageGenerationEnabled(environment)) return { imageId: null, status: 'DISABLED' as const };
-	return createService(target).generate(identity, { storyId });
+	// Paid image work requires an authenticated editor to review the assembled
+	// prompt and submit an explicit visual direction. Scheduled work cannot do so.
+	void target;
+	void storyId;
+	void identity;
+	void createService;
+	return { imageId: null, status: 'EDITORIAL_DIRECTION_REQUIRED' as const };
 }

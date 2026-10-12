@@ -1,7 +1,10 @@
 import type { ArticleImageRepository } from '../data/article-image-repository';
 import type { EditorialRepository } from '../data/editorial-repository';
 import type { EditorialIdentity } from '../domain/editorial';
-import { produceArticleImagePrompt } from '../images/article-image-prompt';
+import {
+	produceArticleImagePrompt,
+	validateImageVisualDirection,
+} from '../images/article-image-prompt';
 import type { ImageAssetStore } from '../images/asset-store';
 import { estimateSmokeImageCost, type ImageCostEstimate } from '../images/image-generation-pricing';
 import { ImageProviderError, type ImageProvider } from '../images/image-provider';
@@ -25,6 +28,24 @@ export interface ArticleImageGenerationResult {
 }
 
 export const STALE_PENDING_MINIMUM_MS = 60 * 60 * 1000;
+
+export function governedImageVisualDirection(value: unknown): string {
+	const direction = requiredText(value, 'Visual direction', 600);
+	try {
+		return validateImageVisualDirection(direction);
+	} catch (error) {
+		throw new EditorialValidationError(error instanceof Error ? error.message : 'Visual direction is invalid.');
+	}
+}
+
+export function assertImageAttemptHistoryAllowsSubmission(images: readonly { status: string }[]): void {
+	if (images.length > 0 && images[0].status !== 'REGENERATE_REQUESTED') {
+		throw new EditorialValidationError(
+			'A subsequent image attempt requires an explicit Request another version transition.',
+			'conflict',
+		);
+	}
+}
 
 function actor(identity: EditorialIdentity | null | undefined): string {
 	if (!identity?.email) throw new EditorialValidationError('An authenticated editor is required.', 'unauthorized');
@@ -73,7 +94,10 @@ export class ArticleImageService {
 		this.estimateCost = dependencies.estimateCost ?? estimateSmokeImageCost;
 	}
 
-	async generate(identity: EditorialIdentity, input: { storyId: unknown }): Promise<ArticleImageGenerationResult> {
+	async generate(
+		identity: EditorialIdentity,
+		input: { storyId: unknown; visualDirection?: unknown },
+	): Promise<ArticleImageGenerationResult> {
 		const requestedByEmail = actor(identity);
 		const storyId = requiredText(input.storyId, 'Story ID', 100);
 		const story = await this.editorialRepository.findEditorialStoryById(storyId);
@@ -92,12 +116,16 @@ export class ArticleImageService {
 				throw new EditorialValidationError('Image generation is outside the configured smoke target.', 'conflict');
 			}
 		}
+		const visualDirection = this.smokeTarget !== undefined
+			? governedImageVisualDirection(input.visualDirection)
+			: undefined;
 		if (story.status !== 'REVIEW' && story.status !== 'APPROVED') {
 			throw new EditorialValidationError('Only a story in final review can request paid image generation.');
 		}
 		if (await this.imageRepository.hasPendingForStory(storyId)) {
 			throw new EditorialValidationError('An image generation is already pending for this story.', 'conflict');
 		}
+		assertImageAttemptHistoryAllowsSubmission(await this.imageRepository.listByStory(storyId));
 
 		const id = this.createId();
 		const requestedAt = this.now();
@@ -114,7 +142,7 @@ export class ArticleImageService {
 				satiricalMechanism: candidate.satiricalMechanism,
 			};
 		}
-		const prompt = produceArticleImagePrompt(story, promptGovernance);
+		const prompt = produceArticleImagePrompt(story, promptGovernance, visualDirection);
 		const aspectRatio = this.provider.generationProfile?.aspectRatio ?? '16:9';
 		if (!this.attemptKey || !/^[A-Za-z0-9][A-Za-z0-9:._/-]{15,199}$/.test(this.attemptKey)) {
 			throw new ImageProviderError('The image attempt key is missing or invalid.', 'PROVIDER_CONFIGURATION');

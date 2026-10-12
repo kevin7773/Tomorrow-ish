@@ -68,7 +68,7 @@ describe('article image persistence governance', () => {
 	it('keeps pending state visible and non-reviewable in the editorial UI', () => {
 		const page = readFileSync(join(process.cwd(), 'src/pages/editorial/stories/[id].astro'), 'utf8');
 		expect(page).toContain("image.status === 'PENDING'");
-		expect(page).toContain('disabled={!imageGenerationEnabled || hasPendingImage}');
+		expect(page).toContain('disabled={!imageGenerationEnabled || hasPendingImage || !imageAttemptHistoryReady || !promptWasExplicitlyReviewed}');
 		expect(page).toMatch(/image\.status === 'GENERATED'[\s\S]*Approve and attach image/);
 		expect(page).not.toMatch(/image\.status === 'PENDING'[\s\S]{0,300}Approve and attach image/);
 	});
@@ -78,9 +78,25 @@ describe('article image persistence governance', () => {
 		expect(isImageGenerationEnabled({})).toBe(false);
 		expect(isImageGenerationEnabled({ IMAGE_GENERATION_ENABLED: 'false' })).toBe(false);
 		expect(isImageGenerationEnabled({ IMAGE_GENERATION_ENABLED: 'true' })).toBe(true);
-		expect(page).toContain('disabled={!imageGenerationEnabled || hasPendingImage}');
+		expect(page).toContain('disabled={!imageGenerationEnabled || hasPendingImage || !imageAttemptHistoryReady || !promptWasExplicitlyReviewed}');
 		expect(page).toContain("!imageGenerationEnabled ? 'Image generation disabled'");
 		expect(page).toContain('Image generation is currently disabled.');
+		expect(page).toContain('Explicit visual direction');
+		expect(page).toContain('Final assembled provider prompt');
+	});
+
+	it('validates direction and regeneration history before constructing a paid provider', () => {
+		const route = readFileSync(join(process.cwd(), 'src/pages/editorial/actions/images.ts'), 'utf8');
+		const action = route.indexOf("if (action === 'generate')");
+		const authentication = route.indexOf('requireEditor(context)');
+		const direction = route.indexOf('governedImageVisualDirection', action);
+		const history = route.indexOf('assertImageAttemptHistoryAllowsSubmission', action);
+		const provider = route.indexOf('getImageProvider()', action);
+		expect(authentication).toBeGreaterThan(-1);
+		expect(authentication).toBeLessThan(action);
+		expect(direction).toBeGreaterThan(-1);
+		expect(history).toBeGreaterThan(direction);
+		expect(provider).toBeGreaterThan(history);
 	});
 
 	it('labels only matching non-null image assets as the current hero', () => {

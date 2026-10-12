@@ -73,7 +73,7 @@ class RuntimePipeline implements WorkflowPipelinePort {
 				await guard?.renew();
 				const generated = await generateWorkflowImageIfEnabled(env, target, existingStoryId,
 					{ email: item.selectedByEmail ?? 'automation@tomorrow-ish.news' }, imageService);
-				return { storyId: existingStoryId, ready: generated.status === 'GENERATED' || generated.status === 'DISABLED' };
+				return { storyId: existingStoryId, ready: generated.status === 'DISABLED' };
 			}
 		}
 		const generationRepository = new D1GenerationRepository(env.DB);
@@ -132,7 +132,7 @@ class RuntimePipeline implements WorkflowPipelinePort {
 		if (images.some((image) => image.status === 'PENDING')) return { storyId, ready: false };
 		await guard?.renew();
 		const result = await generateWorkflowImageIfEnabled(env, target, storyId, identity, imageService);
-		return { storyId, ready: result.status === 'GENERATED' || result.status === 'DISABLED' };
+		return { storyId, ready: result.status === 'DISABLED' };
 	}
 }
 

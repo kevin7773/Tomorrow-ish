@@ -6,7 +6,13 @@ import { getArticleImageRepository } from '../../../data/runtime-article-image-r
 import { isCurrentHeroImage } from '../../../domain/article-image';
 import { PUBLICATION_STATUSES, canTransitionPublication } from '../../../domain/publication-status';
 import { isImageGenerationEnabled } from '../../../images/image-provider-factory';
+import {
+	BELICHICK_SMOKE_VISUAL_DIRECTION,
+	produceArticleImagePrompt,
+} from '../../../images/article-image-prompt';
+import { estimateSmokeImageCost } from '../../../images/image-generation-pricing';
 import EditorialLayout from '../../../layouts/EditorialLayout.astro';
+import { SMOKE_STORY_ID } from '../../../services/editorial-smoke-target';
 import { PUBLISH_CONFIRMATION } from '../../../services/publication-service';
 
 const id = Astro.params.id ?? '';
@@ -17,6 +23,14 @@ const [story, categories, images] = await Promise.all([
 	getArticleImageRepository().listByStory(id),
 ]);
 if (!story) return Astro.redirect('/editorial/stories?error=not-found');
+const candidate = story.originCandidateId ? await repository.findCandidateById(story.originCandidateId) : null;
+const intake = candidate ? await repository.findIntakeById(candidate.sourceIntakeId) : null;
+const promptGovernance = candidate && intake ? {
+	satireSuitability: intake.satireSuitability,
+	guardrailFlags: intake.guardrailFlags,
+	editorialCautionDirection: candidate.editorialNotes,
+	satiricalMechanism: candidate.satiricalMechanism,
+} : undefined;
 const auditEntries = await repository.listAuditEntries('STORY', story.id);
 const csrfToken = Astro.locals.csrfToken;
 const returnPath = `/editorial/stories/${story.id}`;
@@ -26,6 +40,26 @@ const nextStatuses = PUBLICATION_STATUSES.filter(
 const contentLocked = story.status === 'PUBLISHED' || story.status === 'ARCHIVED';
 const hasPendingImage = images.some((image) => image.status === 'PENDING');
 const imageGenerationEnabled = isImageGenerationEnabled(env);
+const imageAttemptHistoryReady = images.length === 0 || images[0].status === 'REGENERATE_REQUESTED';
+const requestedVisualDirection = Astro.url.searchParams.get('visualDirection');
+const visualDirection = requestedVisualDirection
+	?? (story.id === SMOKE_STORY_ID ? BELICHICK_SMOKE_VISUAL_DIRECTION : '');
+let promptPreview: ReturnType<typeof produceArticleImagePrompt> | null = null;
+let promptEstimate: ReturnType<typeof estimateSmokeImageCost> | null = null;
+let promptPreviewError: string | null = null;
+if (visualDirection) {
+	try {
+		promptPreview = produceArticleImagePrompt(story, promptGovernance, visualDirection);
+		promptEstimate = estimateSmokeImageCost({
+			provider: env.IMAGE_PROVIDER ?? '',
+			model: env.IMAGE_MODEL ?? '',
+			generationProfile: { aspectRatio: '3:2', size: '1536x1024', quality: 'medium', outputFormat: 'webp' },
+		}, promptPreview.prompt, '3:2');
+	} catch (error) {
+		promptPreviewError = error instanceof Error ? error.message : 'The visual direction could not be previewed.';
+	}
+}
+const promptWasExplicitlyReviewed = requestedVisualDirection !== null && promptPreview !== null;
 ---
 
 <EditorialLayout title={story.headline}>
@@ -81,17 +115,32 @@ const imageGenerationEnabled = isImageGenerationEnabled(env);
 		<section class="editorial-panel" aria-labelledby="image-generation-heading">
 			<h2 id="image-generation-heading">Article image</h2>
 			<p>Generation is a paid, manual action. Each result starts unapproved and cannot become the public hero image until an editor approves it with alt text.</p>
+			<form class="editorial-form" method="get" action={returnPath}>
+				<label><span>Explicit visual direction</span><textarea name="visualDirection" minlength="20" maxlength="600" required>{visualDirection}</textarea></label>
+				<button class="editorial-button editorial-button--quiet" type="submit">Preview final provider prompt</button>
+			</form>
+			{promptPreviewError && <p class="editorial-error">{promptPreviewError}</p>}
+			{promptPreview && (
+				<details open>
+					<summary>Final assembled provider prompt</summary>
+					<p>{promptPreview.prompt}</p>
+					<p>Suggested alt text: {promptPreview.proposedAltText}</p>
+					<p>Application estimate: {promptEstimate?.estimatedCostMicrousd ?? 'Unavailable'} microusd (not verified billing).</p>
+				</details>
+			)}
 			<form method="post" action="/editorial/actions/images">
 				<input type="hidden" name="csrf_token" value={csrfToken} />
 				<input type="hidden" name="action" value="generate" />
 				<input type="hidden" name="storyId" value={story.id} />
+				<input type="hidden" name="visualDirection" value={visualDirection} />
 				<input type="hidden" name="returnPath" value={returnPath} />
-				<button class="editorial-button" type="submit" disabled={!imageGenerationEnabled || hasPendingImage}>
-					{!imageGenerationEnabled ? 'Image generation disabled' : hasPendingImage ? 'Image generation pending' : 'Generate landscape image'}
+				<button class="editorial-button" type="submit" disabled={!imageGenerationEnabled || hasPendingImage || !imageAttemptHistoryReady || !promptWasExplicitlyReviewed}>
+					{!imageGenerationEnabled ? 'Image generation disabled' : hasPendingImage ? 'Image generation pending' : !imageAttemptHistoryReady ? 'Request another version first' : !promptWasExplicitlyReviewed ? 'Review the provider prompt first' : 'Generate landscape image'}
 				</button>
 			</form>
 			{!imageGenerationEnabled && <p>Image generation is currently disabled.</p>}
 			{imageGenerationEnabled && hasPendingImage && <p>The provider accepted this request. Approval and another paid generation remain unavailable until it completes or fails.</p>}
+			{!imageAttemptHistoryReady && <p>A subsequent paid attempt requires the governed Request another version transition.</p>}
 		</section>
 	)}
 
