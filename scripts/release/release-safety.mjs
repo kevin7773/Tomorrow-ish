@@ -32,6 +32,80 @@ function check(errors, condition, message) {
 	if (!condition) errors.push(message);
 }
 
+const MODEL_BUDGET_VARIABLES = [
+	'MODEL_NORMALIZE_MAX_COST_MICRO_USD',
+	'MODEL_CANDIDATES_MAX_COST_MICRO_USD',
+	'MODEL_ARTICLE_BODY_MAX_COST_MICRO_USD',
+	'MODEL_ITEM_BUDGET_MICRO_USD',
+	'MODEL_DAILY_BUDGET_MICRO_USD',
+];
+
+function reviewedBudgetValue(value) {
+	if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return null;
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+export function validateReviewedModelBudgetVariables(vars) {
+	const errors = [];
+	const admission = vars?.MODEL_BUDGET_ADMISSION_ENABLED;
+	if (admission === undefined) return { mode: 'legacy-disabled' };
+	check(errors, admission === 'false', 'MODEL_BUDGET_ADMISSION_ENABLED must remain explicitly false');
+	const values = Object.fromEntries(MODEL_BUDGET_VARIABLES.map((name) => [name, reviewedBudgetValue(vars?.[name])]));
+	for (const name of MODEL_BUDGET_VARIABLES) {
+		check(errors, values[name] !== null, `${name} must be a canonical positive safe integer`);
+	}
+	const item = values.MODEL_ITEM_BUDGET_MICRO_USD;
+	const daily = values.MODEL_DAILY_BUDGET_MICRO_USD;
+	for (const name of MODEL_BUDGET_VARIABLES.slice(0, 3)) {
+		check(errors, values[name] !== null && item !== null && values[name] <= item,
+			`${name} must not exceed MODEL_ITEM_BUDGET_MICRO_USD`);
+		check(errors, values[name] !== null && daily !== null && values[name] <= daily,
+			`${name} must not exceed MODEL_DAILY_BUDGET_MICRO_USD`);
+	}
+	if (errors.length) throw new ReleaseSafetyError('Reviewed model-budget configuration is not fail-closed.', errors);
+	return { mode: 'configured-disabled', values };
+}
+
+export function validateBaselineTransition(previous, next, contract) {
+	const errors = [];
+	const previousIdentity = structuredClone(previous);
+	const nextIdentity = structuredClone(next);
+	delete previousIdentity.requiredVars;
+	delete nextIdentity.requiredVars;
+	check(errors, same(previousIdentity, nextIdentity), 'baseline fields outside requiredVars changed');
+	const changes = contract?.allowedVariableChanges;
+	check(errors, typeof contract?.name === 'string' && contract.name.length > 0, 'transition contract name is required');
+	check(errors, changes && typeof changes === 'object' && !Array.isArray(changes), 'allowedVariableChanges must be an object');
+	const priorVars = previous.requiredVars ?? {};
+	const nextVars = next.requiredVars ?? {};
+	const actualChanged = [...new Set([...Object.keys(priorVars), ...Object.keys(nextVars)])]
+		.filter((name) => priorVars[name] !== nextVars[name]).sort();
+	const allowedChanged = changes && typeof changes === 'object' ? Object.keys(changes).sort() : [];
+	check(errors, same(actualChanged, allowedChanged), 'actual variable changes differ from the reviewed transition contract');
+	for (const name of allowedChanged) {
+		const expected = changes[name];
+		const from = Object.hasOwn(priorVars, name) ? priorVars[name] : null;
+		const to = Object.hasOwn(nextVars, name) ? nextVars[name] : null;
+		check(errors, expected && expected.from === from && expected.to === to,
+			`${name} does not match its reviewed from/to values`);
+	}
+	for (const gate of ['MODEL_GENERATION_ENABLED', 'EDITORIAL_WORKFLOW_GENERATION_ENABLED', 'IMAGE_GENERATION_ENABLED']) {
+		check(errors, priorVars[gate] === 'false' && nextVars[gate] === 'false', `${gate} must remain false across transition`);
+	}
+	check(errors, priorVars.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '' && nextVars.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '',
+		'image smoke attempt key must remain blank across transition');
+	check(errors, priorVars.MODEL_BUDGET_ADMISSION_ENABLED === undefined,
+		'previous baseline must not already contain MODEL_BUDGET_ADMISSION_ENABLED');
+	try {
+		validateReviewedModelBudgetVariables(nextVars);
+	} catch (error) {
+		errors.push(error instanceof Error ? error.message : String(error));
+	}
+	if (errors.length) throw new ReleaseSafetyError('Production baseline transition is not exact.', errors);
+	return { name: contract.name, changedVariables: actualChanged };
+}
+
 export function validateGeneratedConfiguration(config, baseline, options = {}) {
 	const errors = [];
 	const expectedCrons = options.paused ? [] : baseline.crons;
@@ -59,6 +133,11 @@ export function validateGeneratedConfiguration(config, baseline, options = {}) {
 	check(errors, config.vars?.EDITORIAL_WORKFLOW_GENERATION_ENABLED === 'false', 'workflow generation gate must be false');
 	check(errors, config.vars?.IMAGE_GENERATION_ENABLED === 'false', 'image generation gate must be false');
 	check(errors, config.vars?.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '', 'image smoke attempt key must be blank');
+	try {
+		validateReviewedModelBudgetVariables(config.vars ?? {});
+	} catch (error) {
+		errors.push(error instanceof Error ? error.message : String(error));
+	}
 	if (errors.length) throw new ReleaseSafetyError('Generated Wrangler configuration is not production-safe.', errors);
 	return { worker: config.name, accountId: config.account_id, crons: expectedCrons.length };
 }
@@ -192,6 +271,11 @@ export function validateLiveSnapshot(snapshot, baseline, options = {}) {
 		check(errors, snapshot.vars?.[gate] === 'false', `live ${gate} must be false`);
 	}
 	check(errors, snapshot.vars?.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '', 'live image smoke attempt key must be blank');
+	try {
+		validateReviewedModelBudgetVariables(snapshot.vars ?? {});
+	} catch (error) {
+		errors.push(error instanceof Error ? error.message : String(error));
+	}
 	check(errors, same([...(snapshot.secretNames ?? [])].sort(), [...baseline.requiredSecrets].sort()),
 		'live secret binding names differ from baseline');
 	if (errors.length) throw new ReleaseSafetyError('Live production identity or configuration is not safe.', errors);

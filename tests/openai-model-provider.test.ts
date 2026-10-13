@@ -6,6 +6,7 @@ import {
 	CANDIDATE_SCHEMA,
 	NORMALIZATION_SCHEMA,
 	assertProviderCompatibleStructuredOutputSchema,
+	estimateOpenAIMaximumCostMicrousd,
 	OpenAIModelProvider,
 	OPENAI_MODEL,
 	OPENAI_RESPONSES_URL,
@@ -64,6 +65,14 @@ async function providerFailure(response: Response): Promise<ModelProviderError> 
 }
 
 describe('OpenAI Responses provider', () => {
+	it('keeps the reviewed operation ceilings aligned with the conservative estimator', () => {
+		expect(estimateOpenAIMaximumCostMicrousd('NORMALIZE', 1_000)).toBe(50_000);
+		expect(estimateOpenAIMaximumCostMicrousd('GENERATE_CANDIDATES', 4_000)).toBe(50_000);
+		expect(estimateOpenAIMaximumCostMicrousd('GENERATE_ARTICLE_BODY', 6_000)).toBe(60_000);
+		expect(estimateOpenAIMaximumCostMicrousd('NORMALIZE', 1_001)).toBeGreaterThan(50_000);
+		expect(estimateOpenAIMaximumCostMicrousd('GENERATE_CANDIDATES', 4_001)).toBeGreaterThan(50_000);
+		expect(estimateOpenAIMaximumCostMicrousd('GENERATE_ARTICLE_BODY', 6_001)).toBeGreaterThan(60_000);
+	});
 	it('uses only supported strict Structured Outputs keywords in both response schemas', () => {
 		const normalizationSchema = JSON.stringify(NORMALIZATION_SCHEMA);
 		const candidateSchema = JSON.stringify(CANDIDATE_SCHEMA);

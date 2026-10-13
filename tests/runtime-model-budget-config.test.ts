@@ -3,8 +3,8 @@ import { parseModelBudgetLimits } from '../src/ai/model-budget-config';
 
 const complete = {
 	MODEL_BUDGET_ADMISSION_ENABLED: 'true', MODEL_NORMALIZE_MAX_COST_MICRO_USD: '50000',
-	MODEL_CANDIDATES_MAX_COST_MICRO_USD: '43870', MODEL_ARTICLE_BODY_MAX_COST_MICRO_USD: '54000',
-	MODEL_ITEM_BUDGET_MICRO_USD: '150000', MODEL_DAILY_BUDGET_MICRO_USD: '1000000',
+	MODEL_CANDIDATES_MAX_COST_MICRO_USD: '50000', MODEL_ARTICLE_BODY_MAX_COST_MICRO_USD: '60000',
+	MODEL_ITEM_BUDGET_MICRO_USD: '150000', MODEL_DAILY_BUDGET_MICRO_USD: '150000',
 };
 
 describe('runtime model budget configuration', () => {
@@ -18,8 +18,13 @@ describe('runtime model budget configuration', () => {
 	it('parses distinct operation, item, and daily ceilings', () => {
 		const config = parseModelBudgetLimits(complete);
 		expect(config).toMatchObject({ enabled: true, itemMaxMicrousd: 150000,
-			dailyMaxMicrousd: 1000000,
-			operationMaxMicrousd: { NORMALIZE: 50000, GENERATE_CANDIDATES: 43870, GENERATE_ARTICLE_BODY: 54000 } });
+			dailyMaxMicrousd: 150000,
+			operationMaxMicrousd: { NORMALIZE: 50000, GENERATE_CANDIDATES: 50000, GENERATE_ARTICLE_BODY: 60000 } });
+	});
+
+	it('parses the proposed ceilings while admission remains explicitly disabled', () => {
+		expect(parseModelBudgetLimits({ ...complete, MODEL_BUDGET_ADMISSION_ENABLED: 'false' }))
+			.toMatchObject({ enabled: false, itemMaxMicrousd: 150000, dailyMaxMicrousd: 150000 });
 	});
 
 	it.each([
@@ -28,6 +33,7 @@ describe('runtime model budget configuration', () => {
 		{ ...complete, MODEL_DAILY_BUDGET_MICRO_USD: '0' },
 		{ ...complete, MODEL_ITEM_BUDGET_MICRO_USD: '12.5' },
 		{ ...complete, MODEL_CANDIDATES_MAX_COST_MICRO_USD: 'unknown' },
+		{ ...complete, MODEL_NORMALIZE_MAX_COST_MICRO_USD: '9007199254740992' },
 	])('rejects malformed model budget configuration', (environment) => {
 		expect(() => parseModelBudgetLimits(environment)).toThrow();
 	});

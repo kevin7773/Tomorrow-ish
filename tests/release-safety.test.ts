@@ -5,10 +5,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
 	createCronConfiguration,
 	validateDeployedModuleInventory,
+	validateBaselineTransition,
 	validateDisabledVersionSnapshot,
 	validateDryRunPackage,
 	validateGeneratedConfiguration,
 	validateLiveSnapshot,
+	validateReviewedModelBudgetVariables,
 	validateUploadedVersion,
 } from '../scripts/release/release-safety.mjs';
 
@@ -32,6 +34,24 @@ const baseline = {
 
 const disabledVars = { MODEL_GENERATION_ENABLED: 'false', EDITORIAL_WORKFLOW_GENERATION_ENABLED: 'false',
 	IMAGE_GENERATION_ENABLED: 'false', EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY: '' };
+
+const budgetVars = {
+	MODEL_BUDGET_ADMISSION_ENABLED: 'false',
+	MODEL_NORMALIZE_MAX_COST_MICRO_USD: '50000',
+	MODEL_CANDIDATES_MAX_COST_MICRO_USD: '50000',
+	MODEL_ARTICLE_BODY_MAX_COST_MICRO_USD: '60000',
+	MODEL_ITEM_BUDGET_MICRO_USD: '150000',
+	MODEL_DAILY_BUDGET_MICRO_USD: '150000',
+};
+
+const transitionContract = { name: 'phase-4b-model-budget-configuration', allowedVariableChanges: {
+	MODEL_BUDGET_ADMISSION_ENABLED: { from: null, to: 'false' },
+	MODEL_NORMALIZE_MAX_COST_MICRO_USD: { from: null, to: '50000' },
+	MODEL_CANDIDATES_MAX_COST_MICRO_USD: { from: null, to: '50000' },
+	MODEL_ARTICLE_BODY_MAX_COST_MICRO_USD: { from: null, to: '60000' },
+	MODEL_ITEM_BUDGET_MICRO_USD: { from: null, to: '150000' },
+	MODEL_DAILY_BUDGET_MICRO_USD: { from: '1000000', to: '150000' },
+} };
 
 function config() {
 	return { account_id: 'account-1', name: 'worker-1', topLevelName: 'worker-1', main: 'entry.mjs', no_bundle: true,
@@ -131,6 +151,50 @@ describe('production release safety', () => {
 			.toThrow(/variables differ/);
 		expect(() => validateLive(liveSnapshot({ r2: [{ binding: 'IMAGE_ASSETS', bucket_name: 'wrong' }] })))
 			.toThrow(/R2 bindings/);
+	});
+
+	it('accepts only a complete disabled model-budget configuration', () => {
+		expect(validateReviewedModelBudgetVariables({ ...disabledVars, ...budgetVars }))
+			.toMatchObject({ mode: 'configured-disabled' });
+		for (const [name, value] of [
+			['MODEL_BUDGET_ADMISSION_ENABLED', 'true'],
+			['MODEL_NORMALIZE_MAX_COST_MICRO_USD', undefined],
+			['MODEL_CANDIDATES_MAX_COST_MICRO_USD', '12.5'],
+			['MODEL_ARTICLE_BODY_MAX_COST_MICRO_USD', '9007199254740992'],
+			['MODEL_ITEM_BUDGET_MICRO_USD', '50000'],
+		] as const) {
+			const vars = { ...disabledVars, ...budgetVars, [name]: value };
+			expect(() => validateReviewedModelBudgetVariables(vars)).toThrow(/model-budget|MODEL_/);
+		}
+	});
+
+	it('rejects missing, wrong, or unexpectedly enabled values against the proposed exact baseline', () => {
+		const targetBaseline = { ...structuredClone(baseline),
+			requiredVars: { ...baseline.requiredVars, ...budgetVars } };
+		const targetConfig = { ...config(), vars: targetBaseline.requiredVars };
+		expect(() => validateGeneratedConfiguration(targetConfig, targetBaseline)).not.toThrow();
+		for (const [name, value] of [
+			['MODEL_BUDGET_ADMISSION_ENABLED', 'true'],
+			['MODEL_NORMALIZE_MAX_COST_MICRO_USD', undefined],
+			['MODEL_CANDIDATES_MAX_COST_MICRO_USD', '50001'],
+			['MODEL_DAILY_BUDGET_MICRO_USD', 'not-a-number'],
+		] as const) {
+			const vars = { ...targetBaseline.requiredVars, [name]: value };
+			expect(() => validateGeneratedConfiguration({ ...targetConfig, vars }, targetBaseline))
+				.toThrow(/variables differ|model-budget|MODEL_/);
+		}
+	});
+
+	it('validates the exact old-to-new budget baseline without weakening unrelated fields', () => {
+		const previous = { ...structuredClone(baseline),
+			requiredVars: { ...baseline.requiredVars, MODEL_DAILY_BUDGET_MICRO_USD: '1000000' } };
+		const next = { ...structuredClone(baseline), requiredVars: { ...previous.requiredVars, ...budgetVars } };
+		const contract = structuredClone(transitionContract);
+		expect(validateBaselineTransition(previous, next, contract)).toMatchObject({ changedVariables: Object.keys(budgetVars).sort() });
+		expect(() => validateBaselineTransition(previous, { ...next, routes: [] }, contract)).toThrow(/outside requiredVars/);
+		expect(() => validateBaselineTransition(previous, next, { ...contract, allowedVariableChanges: {
+			...contract.allowedVariableChanges, MODEL_BUDGET_ADMISSION_ENABLED: { from: null, to: 'true' },
+		} })).toThrow(/from\/to/);
 	});
 
 	it('rejects non-Cron configuration drift in paused mode', () => {

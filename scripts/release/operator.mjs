@@ -2,7 +2,7 @@ import { execFile, spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { assertOnlyCronDifference, readJson, validateDeployedModuleInventory, validateDisabledVersionSnapshot, validateDryRunPackage,
-	validateGeneratedConfiguration, validateLiveSnapshot, validateUploadedVersion } from './release-safety.mjs';
+	validateBaselineTransition, validateGeneratedConfiguration, validateLiveSnapshot, validateUploadedVersion } from './release-safety.mjs';
 
 function option(name) {
 	const index = process.argv.indexOf(name);
@@ -36,6 +36,20 @@ if (head !== expectedCommit || remote !== expectedCommit || dirty) {
 	throw new Error('Operator action requires clean local and remote main at the approved commit.');
 }
 const baseline = await readJson(resolve('release/production-baseline.json'));
+const transitionFromPath = option('--transition-from-baseline');
+const transitionContractPath = option('--transition-contract');
+const liveState = option('--live-state') ?? 'target';
+if ((transitionFromPath === null) !== (transitionContractPath === null)) {
+	throw new Error('--transition-from-baseline and --transition-contract must be supplied together.');
+}
+if (!['previous', 'target'].includes(liveState)) throw new Error('--live-state must be previous or target.');
+if (liveState === 'previous' && !transitionFromPath) {
+	throw new Error('--live-state previous requires an exact reviewed baseline transition.');
+}
+const previousBaseline = transitionFromPath ? await readJson(resolve(transitionFromPath)) : null;
+if (previousBaseline) {
+	validateBaselineTransition(previousBaseline, baseline, await readJson(resolve(transitionContractPath)));
+}
 const config = await readJson(resolve('dist/server/wrangler.json'));
 validateGeneratedConfiguration(config, baseline);
 await validateDryRunPackage(resolve('dist/server'), resolve('.release/wrangler-dry-run'), config);
@@ -45,7 +59,8 @@ if (process.env.CLOUDFLARE_ACCOUNT_ID !== baseline.accountId) {
 const liveSnapshot = required('--live-snapshot');
 const expectPaused = ['upload', 'inspect', 'activate', 'cron-restore'].includes(action)
 	|| (action === 'rollback' && process.argv.includes('--cron-paused'));
-validateLiveSnapshot(await readJson(resolve(liveSnapshot)), baseline, { paused: expectPaused });
+validateLiveSnapshot(await readJson(resolve(liveSnapshot)), liveState === 'previous' ? previousBaseline : baseline,
+	{ paused: expectPaused });
 
 if (action === 'upload') {
 	await run(['versions', 'upload', '--config', 'dist/server/wrangler.json', '--strict',
@@ -71,8 +86,12 @@ if (action === 'upload') {
 	await run(['triggers', 'deploy', '--config', 'dist/server/wrangler.restore.json']);
 } else {
 	const versionSnapshot = await readJson(resolve(required('--version-snapshot')));
-	validateUploadedVersion(versionSnapshot, baseline);
-	validateDisabledVersionSnapshot(versionSnapshot, baseline);
+	const rollbackBaseline = process.argv.includes('--rollback-to-previous')
+		? previousBaseline
+		: baseline;
+	if (!rollbackBaseline) throw new Error('--rollback-to-previous requires an exact reviewed baseline transition.');
+	validateUploadedVersion(versionSnapshot, rollbackBaseline);
+	validateDisabledVersionSnapshot(versionSnapshot, rollbackBaseline);
 	await run(['versions', 'deploy', `${required('--version')}@100%`, '--name', baseline.workerName,
 		'--message', required('--message'), '--yes']);
 }
