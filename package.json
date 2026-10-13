@@ -21,6 +21,7 @@
     "release:cron:pause-config": "node ./scripts/release/cron-config.mjs pause",
     "release:cron:restore-config": "node ./scripts/release/cron-config.mjs restore",
     "release:operator": "node ./scripts/release/operator.mjs",
+    "release:resend-secrets": "powershell -NoProfile -File ./scripts/release/provision-resend-secrets.ps1",
     "astro": "astro"
   },
   "dependencies": {

@@ -179,25 +179,23 @@ Populate it from authenticated `wrangler whoami --account ... --json`, Worker se
 npm run release:validate -- --live-snapshot .release/live-before.json
 ```
 
-For the one-time Phase 4H disabled Resend-routing transition, production initially matches the exact pre-Resend baseline while the generated artifact matches the exact proposed baseline. Validate both through the reviewed transition contract; never edit the baseline or omit exact comparison to make a mixed state pass:
+The completed Phase 4H variable-only state is frozen as `production-baseline.pre-resend-secrets.json`; its historical transition remains recorded in `resend-email-baseline-transition.json`. Do not validate that historical target against a newly built Phase 4I artifact, because the new artifact intentionally declares seven required secret names.
+
+The next reviewed transition is secret-name-only. While production contains the exact three-secret baseline, validate the generated seven-secret target against the frozen previous state with:
 
 ```powershell
-$transition = @(
-  '--transition-from-baseline', 'release/production-baseline.pre-resend.json',
-  '--transition-contract', 'release/resend-email-baseline-transition.json'
+$secretTransition = @(
+  '--transition-from-baseline', 'release/production-baseline.pre-resend-secrets.json',
+  '--transition-contract', 'release/resend-secret-baseline-transition.json'
 )
-npm run release:validate -- @transition --live-state previous --live-snapshot .release/live-before.json
+npm run release:validate -- @secretTransition --live-state previous --live-snapshot .release/live-before-secrets.json
 ```
 
-Use the same transition arguments and `--live-state previous` for Cron pause, upload, inspection, and activation while the observed live version is still the previous configuration. For example:
+Provision those values only through `scripts/release/provision-resend-secrets.ps1`. The script uses protected prompts, passes the exact four-value JSON object over standard input, creates an inactive version with `wrangler versions secret bulk`, and inspects all bindings and disabled gates. It never calls `versions deploy`, never writes plaintext values to a file, and will not overwrite existing evidence. A possible-but-unconfirmed version is an investigation stop, not permission to repeat the operation.
 
-```powershell
-npm run release:operator -- cron-pause --execute --commit <approved-commit-sha> --live-snapshot .release/live-before.json --live-state previous --transition-from-baseline release/production-baseline.pre-resend.json --transition-contract release/resend-email-baseline-transition.json
-npm run release:operator -- upload --execute --commit <approved-commit-sha> --live-snapshot .release/live-paused.json --live-state previous --transition-from-baseline release/production-baseline.pre-resend.json --transition-contract release/resend-email-baseline-transition.json --tag <reviewed-tag> --message "<reviewed-message>"
-npm run release:operator -- activate --execute --commit <approved-commit-sha> --live-snapshot .release/live-paused.json --live-state previous --transition-from-baseline release/production-baseline.pre-resend.json --transition-contract release/resend-email-baseline-transition.json --version <new-version-id> --version-snapshot .release/version.json --module-inventory .release/module-inventory.json --message "<reviewed-activation-message>"
-```
+Operator prerequisites are: a separately approved and pushed commit; clean local/remote `main`; a completed build and strict package dry run; an authenticated production account with `CLOUDFLARE_ACCOUNT_ID` explicitly set; a fresh normal-mode live snapshot matching the three-secret previous baseline; an existing evidence directory; a dedicated Tomorrow-ish Resend API key (never a key from another application); the verified Resend webhook signing secret; the approved editor destination; and a freshly generated bearer token of at least 32 characters. Secret values must be entered only at the protected prompts.
 
-Immediately after activation, capture a fresh snapshot and switch to `--live-state target`. The operator validates the proposed uploaded version regardless of which exact live state is selected. Restore Cron only after the target snapshot validates exactly.
+Activation is intentionally absent from the provisioning script. A separately authorized window must identify the inspected inactive version in the non-secret evidence, capture a fresh target snapshot, validate the version again, and explicitly invoke the ordinary activation contract. A requested activation version that differs from the inspected version is rejected.
 
 Also capture Time Travel, exports, current deployment/version, module inventory, D1 counts, and provider/audit baselines required by the approved change. A multi-account login is fail-closed unless `CLOUDFLARE_ACCOUNT_ID` is explicitly set to the production account.
 
@@ -261,13 +259,13 @@ npm run release:operator -- rollback --execute --commit <approved-commit-sha> --
 
 After rollback, repeat effective-configuration, routes/domain, health, schedules, Cron-ownership, and provider-activity verification. If an additive migration was already applied, leave it in place unless a separately reviewed data recovery procedure says otherwise.
 
-During the Phase 4H configuration transition, retain and inspect the active pre-Resend, all-disabled Worker before activation. Supply both transition files and `--rollback-to-previous`; this makes the operator validate that rollback version against the frozen previous baseline rather than the proposed target baseline:
+During a future Phase 4I secret-binding activation, retain and inspect the active three-secret, all-disabled Worker. Supply the secret transition files and `--rollback-to-previous`; this makes the operator validate that rollback version against the frozen previous baseline rather than the seven-secret target baseline:
 
 ```powershell
-npm run release:operator -- rollback --execute --commit <approved-commit-sha> --live-snapshot .release/live-after.json --transition-from-baseline release/production-baseline.pre-resend.json --transition-contract release/resend-email-baseline-transition.json --rollback-to-previous --version <pre-resend-disabled-version-id> --version-snapshot .release/previous-version.json --message "Restore pre-Resend fully disabled Worker"
+npm run release:operator -- rollback --execute --commit <approved-commit-sha> --live-snapshot .release/live-after.json --transition-from-baseline release/production-baseline.pre-resend-secrets.json --transition-contract release/resend-secret-baseline-transition.json --rollback-to-previous --version <three-secret-disabled-version-id> --version-snapshot .release/previous-version.json --message "Restore three-secret fully disabled Worker"
 ```
 
-After activation, capture a fresh live snapshot and validate it with `--live-state target`. All seven capability gates remain explicitly false in both baselines. The only target variable additions are the reviewed sender address and internal adapter URL; Resend and recipient secrets remain absent.
+After a separately authorized activation, capture a fresh live snapshot and validate it with `--live-state target`. All seven capability gates remain explicitly false in both baselines. The only Phase 4I target changes are the four reviewed secret binding names; their values never appear in release evidence.
 
 The configured Custom Domain sends all paths on `tomorrow-ish.news` to this Worker. Cloudflare creates the required DNS record and managed certificate when the Custom Domain is attached. If the first deployment cannot attach the domain, use **Workers & Pages → tomorrow-ish → Settings → Domains & Routes → Add → Custom Domain**, enter `tomorrow-ish.news`, and resolve any conflicting DNS record before retrying.
 

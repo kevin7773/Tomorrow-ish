@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
 	createCronConfiguration,
 	validateDeployedModuleInventory,
+	validateActivationTarget,
 	validateBaselineTransition,
 	validateDisabledVersionSnapshot,
 	validateDryRunPackage,
@@ -70,7 +71,8 @@ function config() {
 		compatibility_date: '2026-09-10', compatibility_flags: ['nodejs_compat'],
 		workers_dev: false, preview_urls: false, routes: baseline.routes, triggers: { crons: baseline.crons },
 		assets: baseline.assets, d1_databases: baseline.d1, r2_buckets: baseline.r2,
-		vars: baseline.requiredVars, rules: [{ type: 'ESModule', globs: ['**/*.js', '**/*.mjs'] }] };
+		secrets: { required: baseline.requiredSecrets }, vars: baseline.requiredVars,
+		rules: [{ type: 'ESModule', globs: ['**/*.js', '**/*.mjs'] }] };
 }
 
 function liveSnapshot(overrides = {}) {
@@ -143,7 +145,7 @@ describe('production release safety', () => {
 	it('validates only the two reviewed disabled Resend routing variables', () => {
 		const read = (path: string) => JSON.parse(readFileSync(path, 'utf8'));
 		const previous = read('release/production-baseline.pre-resend.json');
-		const target = read('release/production-baseline.json');
+		const target = read('release/production-baseline.pre-resend-secrets.json');
 		const contract = read('release/resend-email-baseline-transition.json');
 		expect(validateBaselineTransition(previous, target, contract)).toMatchObject({
 			name: 'phase-4h-resend-email-disabled',
@@ -169,6 +171,51 @@ describe('production release safety', () => {
 				...contract.allowedVariableChanges, UNREVIEWED: { from: null, to: 'false' },
 			},
 		})).toThrow(/actual variable changes differ/);
+	});
+
+	it('allows exactly the reviewed additive Resend secret bindings', () => {
+		const read = (path: string) => JSON.parse(readFileSync(path, 'utf8'));
+		const previous = read('release/production-baseline.pre-resend-secrets.json');
+		const target = read('release/production-baseline.json');
+		const contract = read('release/resend-secret-baseline-transition.json');
+		const expected = ['EDITORIAL_NOTIFICATION_TO_EMAIL', 'RESEND_API_KEY',
+			'RESEND_WEBHOOK_SIGNING_SECRET', 'REVIEW_NOTIFICATION_EXTERNAL_BEARER_TOKEN'];
+		expect(validateBaselineTransition(previous, target, contract)).toMatchObject({
+			name: 'phase-4i-resend-secrets-disabled', changedVariables: [], changedSecrets: expected,
+		});
+		for (const removed of expected) {
+			const missing = structuredClone(target);
+			missing.requiredSecrets = missing.requiredSecrets.filter((name: string) => name !== removed);
+			expect(() => validateBaselineTransition(previous, missing, contract)).toThrow(/secret binding changes/);
+		}
+		const extra = structuredClone(target);
+		extra.requiredSecrets.push('UNREVIEWED_SECRET');
+		expect(() => validateBaselineTransition(previous, extra, contract)).toThrow(/secret binding changes/);
+		const renamed = structuredClone(target);
+		renamed.requiredSecrets = renamed.requiredSecrets
+			.filter((name: string) => name !== 'RESEND_API_KEY').concat('RESEND_API_TOKEN');
+		expect(() => validateBaselineTransition(previous, renamed, contract)).toThrow(/secret binding changes/);
+		const removalContract = structuredClone(contract);
+		removalContract.allowedSecretChanges.CLOUDFLARE_AI_API_TOKEN = { from: 'present', to: null };
+		const removedExisting = structuredClone(target);
+		removedExisting.requiredSecrets = removedExisting.requiredSecrets
+			.filter((name: string) => name !== 'CLOUDFLARE_AI_API_TOKEN');
+		expect(() => validateBaselineTransition(previous, removedExisting, removalContract))
+			.toThrow(/not an additive/);
+	});
+
+	it('requires target generated and live configurations to contain all seven secret names', () => {
+		const target = { ...structuredClone(baseline), requiredSecrets: [
+			'SECRET_A', 'SECRET_B', 'SECRET_C', 'SECRET_D', 'SECRET_E', 'SECRET_F', 'SECRET_G',
+		] };
+		const targetConfig = { ...config(), secrets: { required: target.requiredSecrets }, vars: target.requiredVars };
+		expect(() => validateGeneratedConfiguration(targetConfig, target)).not.toThrow();
+		expect(() => validateGeneratedConfiguration({ ...targetConfig,
+			secrets: { required: target.requiredSecrets.slice(0, -1) } }, target)).toThrow(/required secret names/);
+		const snapshot = { ...liveSnapshot(), vars: target.requiredVars, secretNames: target.requiredSecrets };
+		expect(() => validateLiveSnapshot(snapshot, target, { now: snapshotNow })).not.toThrow();
+		expect(() => validateLiveSnapshot({ ...snapshot, secretNames: target.requiredSecrets.slice(0, -1) }, target,
+			{ now: snapshotNow })).toThrow(/secret binding names/);
 	});
 
 	it('requires every capability gate to be explicitly false in target mode', () => {
@@ -284,7 +331,8 @@ describe('production release safety', () => {
 	});
 
 	it('validates the exact old-to-new budget baseline without weakening unrelated fields', () => {
-		const { EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED: _externalGate, ...previousRequiredVars } = baseline.requiredVars;
+		const { EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED: _externalGate,
+			MODEL_BUDGET_ADMISSION_ENABLED: _budgetGate, ...previousRequiredVars } = baseline.requiredVars;
 		const previous = { ...structuredClone(baseline),
 			requiredVars: { ...previousRequiredVars, MODEL_DAILY_BUDGET_MICRO_USD: '1000000' } };
 		const next = { ...structuredClone(baseline), requiredVars: {
@@ -317,6 +365,11 @@ describe('production release safety', () => {
 			script_runtime: { compatibility_date: '2026-09-10', compatibility_flags: ['nodejs_compat'] }, bindings } }, baseline))
 			.toMatchObject({ versionId: 'version-1' });
 		await expect(validateDeployedModuleInventory(fixture.source, { modules: ['entry.mjs'] })).rejects.toThrow(/dependency\.mjs/);
+	});
+
+	it('rejects activation when the requested and inspected version identities differ', () => {
+		expect(validateActivationTarget('version-1', 'version-1')).toBe(true);
+		expect(() => validateActivationTarget('version-1', 'version-2')).toThrow(/does not match/);
 	});
 
 	it('rejects a rollback version unless every generation gate is disabled', () => {

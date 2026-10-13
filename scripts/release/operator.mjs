@@ -2,7 +2,8 @@ import { execFile, spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { assertOnlyCronDifference, readJson, validateDeployedModuleInventory, validateDisabledVersionSnapshot, validateDryRunPackage,
-	validateBaselineTransition, validateGeneratedConfiguration, validateLiveSnapshot, validateUploadedVersion } from './release-safety.mjs';
+	validateActivationTarget, validateBaselineTransition, validateGeneratedConfiguration, validateLiveSnapshot,
+	validateUploadedVersion } from './release-safety.mjs';
 
 function option(name) {
 	const index = process.argv.indexOf(name);
@@ -71,7 +72,7 @@ if (action === 'upload') {
 } else if (action === 'activate') {
 	const versionId = required('--version');
 	const inspected = validateUploadedVersion(await readJson(resolve(required('--version-snapshot'))), baseline);
-	if (inspected.versionId !== versionId) throw new Error('Inspected version does not match the requested activation version.');
+	validateActivationTarget(versionId, inspected.versionId);
 	await validateDeployedModuleInventory(resolve('dist/server'), await readJson(resolve(required('--module-inventory'))));
 	await run(['versions', 'deploy', `${versionId}@100%`, '--name', baseline.workerName,
 		'--message', required('--message'), '--yes']);

@@ -7,6 +7,17 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
   "preview_urls": false,
+  "secrets": {
+    "required": [
+      "CLOUDFLARE_AI_API_TOKEN",
+      "EDITORIAL_NOTIFICATION_TO_EMAIL",
+      "IMAGE_WEBHOOK_SECRET",
+      "OPENAI_API_KEY",
+      "RESEND_API_KEY",
+      "RESEND_WEBHOOK_SIGNING_SECRET",
+      "REVIEW_NOTIFICATION_EXTERNAL_BEARER_TOKEN"
+    ]
+  },
   "vars": {
     "CF_ACCESS_TEAM_DOMAIN": "https://jolly-glitter-da93.cloudflareaccess.com",
     "CF_ACCESS_AUD": "d7990901bf79388de024fee36a5a8abcd4452ff4c908acfa19189b37856fb30b",

@@ -36,8 +36,12 @@
   ],
   "requiredSecrets": [
     "CLOUDFLARE_AI_API_TOKEN",
+    "EDITORIAL_NOTIFICATION_TO_EMAIL",
     "IMAGE_WEBHOOK_SECRET",
-    "OPENAI_API_KEY"
+    "OPENAI_API_KEY",
+    "RESEND_API_KEY",
+    "RESEND_WEBHOOK_SIGNING_SECRET",
+    "REVIEW_NOTIFICATION_EXTERNAL_BEARER_TOKEN"
   ],
   "requiredVars": {
     "CF_ACCESS_TEAM_DOMAIN": "https://jolly-glitter-da93.cloudflareaccess.com",

@@ -86,10 +86,15 @@ export function validateBaselineTransition(previous, next, contract) {
 	const nextIdentity = structuredClone(next);
 	delete previousIdentity.requiredVars;
 	delete nextIdentity.requiredVars;
-	check(errors, same(previousIdentity, nextIdentity), 'baseline fields outside requiredVars changed');
+	delete previousIdentity.requiredSecrets;
+	delete nextIdentity.requiredSecrets;
+	check(errors, same(previousIdentity, nextIdentity), 'baseline fields outside requiredVars and requiredSecrets changed');
 	const changes = contract?.allowedVariableChanges;
+	const secretChanges = contract?.allowedSecretChanges ?? {};
 	check(errors, typeof contract?.name === 'string' && contract.name.length > 0, 'transition contract name is required');
 	check(errors, changes && typeof changes === 'object' && !Array.isArray(changes), 'allowedVariableChanges must be an object');
+	check(errors, secretChanges && typeof secretChanges === 'object' && !Array.isArray(secretChanges),
+		'allowedSecretChanges must be an object when supplied');
 	const priorVars = previous.requiredVars ?? {};
 	const nextVars = next.requiredVars ?? {};
 	const actualChanged = [...new Set([...Object.keys(priorVars), ...Object.keys(nextVars)])]
@@ -102,6 +107,29 @@ export function validateBaselineTransition(previous, next, contract) {
 		const to = Object.hasOwn(nextVars, name) ? nextVars[name] : null;
 		check(errors, expected && expected.from === from && expected.to === to,
 			`${name} does not match its reviewed from/to values`);
+	}
+	const priorSecrets = new Set(previous.requiredSecrets ?? []);
+	const nextSecrets = new Set(next.requiredSecrets ?? []);
+	check(errors, Array.isArray(previous.requiredSecrets)
+		&& priorSecrets.size === previous.requiredSecrets.length,
+		'previous requiredSecrets must be a unique array');
+	check(errors, Array.isArray(next.requiredSecrets)
+		&& nextSecrets.size === next.requiredSecrets.length,
+		'target requiredSecrets must be a unique array');
+	const actualSecretChanges = [...new Set([...priorSecrets, ...nextSecrets])]
+		.filter((name) => priorSecrets.has(name) !== nextSecrets.has(name)).sort();
+	const allowedSecretChanges = secretChanges && typeof secretChanges === 'object'
+		? Object.keys(secretChanges).sort() : [];
+	check(errors, same(actualSecretChanges, allowedSecretChanges),
+		'actual secret binding changes differ from the reviewed transition contract');
+	for (const name of allowedSecretChanges) {
+		const expected = secretChanges[name];
+		const from = priorSecrets.has(name) ? 'present' : null;
+		const to = nextSecrets.has(name) ? 'present' : null;
+		check(errors, expected?.from === from && expected?.to === to,
+			`${name} does not match its reviewed secret from/to presence`);
+		check(errors, from === null && to === 'present',
+			`${name} is not an additive null-to-present secret transition`);
 	}
 	for (const gate of ['MODEL_GENERATION_ENABLED', 'EDITORIAL_WORKFLOW_GENERATION_ENABLED', 'IMAGE_GENERATION_ENABLED']) {
 		check(errors, priorVars[gate] === 'false' && nextVars[gate] === 'false', `${gate} must remain false across transition`);
@@ -128,7 +156,8 @@ export function validateBaselineTransition(previous, next, contract) {
 		&& nextVars[gate] === 'false'
 		&& changes[gate]?.from === null
 		&& changes[gate]?.to === 'false');
-	return { name: contract.name, changedVariables: actualChanged, introducedDisabledGates };
+	return { name: contract.name, changedVariables: actualChanged, changedSecrets: actualSecretChanges,
+		introducedDisabledGates };
 }
 
 export function validateGeneratedConfiguration(config, baseline, options = {}) {
@@ -154,6 +183,11 @@ export function validateGeneratedConfiguration(config, baseline, options = {}) {
 		? 'paused configuration must contain no Cron schedules'
 		: 'Cron schedules differ from the reviewed baseline');
 	check(errors, same(config.vars ?? {}, baseline.requiredVars), 'Worker variables differ from the reviewed baseline');
+	check(errors, Array.isArray(config.secrets?.required)
+		&& new Set(config.secrets.required).size === config.secrets.required.length,
+		'generated required secret names must be a unique array');
+	check(errors, same([...(config.secrets?.required ?? [])].sort(), [...baseline.requiredSecrets].sort()),
+		'generated required secret names differ from the reviewed baseline');
 	check(errors, config.vars?.MODEL_GENERATION_ENABLED === 'false', 'model generation gate must be false');
 	check(errors, config.vars?.EDITORIAL_WORKFLOW_GENERATION_ENABLED === 'false', 'workflow generation gate must be false');
 	check(errors, config.vars?.IMAGE_GENERATION_ENABLED === 'false', 'image generation gate must be false');
@@ -171,6 +205,14 @@ export function validateGeneratedConfiguration(config, baseline, options = {}) {
 	}
 	if (errors.length) throw new ReleaseSafetyError('Generated Wrangler configuration is not production-safe.', errors);
 	return { worker: config.name, accountId: config.account_id, crons: expectedCrons.length };
+}
+
+export function validateActivationTarget(requestedVersionId, inspectedVersionId) {
+	if (typeof requestedVersionId !== 'string' || !requestedVersionId
+		|| requestedVersionId !== inspectedVersionId) {
+		throw new ReleaseSafetyError('Inspected version does not match the requested activation version.');
+	}
+	return true;
 }
 
 export function createCronConfiguration(config, baseline, paused) {

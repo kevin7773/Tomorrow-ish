@@ -53,14 +53,26 @@ Worker secrets:
 - `EDITORIAL_NOTIFICATION_TO_EMAIL`
 - `REVIEW_NOTIFICATION_EXTERNAL_BEARER_TOKEN`
 
-The destination email is treated as a secret binding so the address is not copied into source-controlled Wrangler configuration or release evidence. `EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED` must remain explicitly `false` for disabled deployment. The disabled Phase 4H transition intentionally adds only the two plain-text variables above. All four Resend/destination secrets remain absent; with the external gate false, an absent bearer token rejects adapter requests before provider submission, and an absent signing secret rejects callbacks.
+The destination email is treated as a secret binding so the address is not copied into source-controlled Wrangler configuration or release evidence. `EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED` must remain explicitly `false` throughout provisioning. Secret *names* are declared in source control; secret values remain only in protected operator input and Cloudflare.
 
-The exact disabled transition is frozen by `release/production-baseline.pre-resend.json`, `release/production-baseline.json`, and `release/resend-email-baseline-transition.json`. Validate the observed previous and target states with:
+The completed Phase 4H plain-variable transition is frozen by `release/production-baseline.pre-resend.json`, `release/production-baseline.pre-resend-secrets.json`, and `release/resend-email-baseline-transition.json`. The separately reviewed Phase 4I secret-name transition is frozen by `release/production-baseline.pre-resend-secrets.json`, `release/production-baseline.json`, and `release/resend-secret-baseline-transition.json`. The latter permits only four additive absent-to-present secret bindings; it cannot remove or rename any existing secret.
+
+Before a future authorized provisioning window, build and validate the exact target artifact, capture a fresh live snapshot that still contains only the previous three secrets, and run:
 
 ```powershell
-npm run release:validate -- --transition-from-baseline release/production-baseline.pre-resend.json --transition-contract release/resend-email-baseline-transition.json --live-state previous --live-snapshot .release/live-before.json
-npm run release:validate -- --transition-from-baseline release/production-baseline.pre-resend.json --transition-contract release/resend-email-baseline-transition.json --live-state target --live-snapshot .release/live-after.json
+npm run release:validate -- --transition-from-baseline release/production-baseline.pre-resend-secrets.json --transition-contract release/resend-secret-baseline-transition.json --live-state previous --live-snapshot .release/live-before-secrets.json
 ```
+
+Prerequisites are a separately approved, clean, pushed commit; a strict release-package dry run; authenticated access to the exact production account and Worker; a fresh live snapshot; a dedicated Tomorrow-ish Resend API key; the verified webhook signing secret; the approved recipient; and a unique bearer token of at least 32 characters. Do not reuse the TumbleTrust Resend key or any other application's credential.
+
+The protected operator is deliberately a two-step boundary. It securely prompts for the four values, streams them through process memory to `wrangler versions secret bulk`, creates one inactive version, inspects that version against the exact seven-secret/all-gates-false target baseline, and writes only non-secret evidence. It has no activation operation:
+
+```powershell
+New-Item -ItemType Directory -Force .release/evidence | Out-Null
+npm run release:resend-secrets -- -Commit <separately-approved-commit> -LiveSnapshot .release/live-before-secrets.json -Evidence .release/evidence/resend-secret-version.json -Tag phase-4i-resend-secrets-disabled -Message "Provision reviewed Resend bindings; all capabilities disabled"
+```
+
+If creation succeeds but identity or inspection is interrupted, stop. Locate and inspect the inactive Cloudflare version; do not repeat provisioning automatically. Promotion is a separate release action requiring its own authorization, a fresh target snapshot/version inspection, and the normal `release:operator activate` safeguards.
 
 ## Resend setup, not performed locally
 
@@ -71,7 +83,7 @@ npm run release:validate -- --transition-from-baseline release/production-baseli
 5. Register `https://tomorrow-ish.news/api/internal/resend-delivery-webhook` for `email.delivered`, `email.delivery_delayed`, `email.failed`, `email.bounced`, and `email.suppressed`.
 6. Save the resulting webhook signing secret as the Worker secret above.
 7. Ensure Cloudflare routing permits this signed callback route without an interactive Access redirect. Do not weaken Access protection for `/editorial`.
-8. Add the external adapter URL and secrets through a separately reviewed frozen-baseline transition while the capability gate remains false.
+8. Add the four secrets through the protected inactive-version workflow while the capability gate remains false. Do not use `wrangler secret put`, which immediately produces a deployable version outside this inspection contract.
 9. Use Resend's test-mode destination and mocked/non-production environment for acceptance before any real Gmail delivery is authorized.
 
 The application middleware applies Cloudflare Access identity checks only to `/editorial` and `/editorial/*`. Both machine endpoints live under `/api/internal/*`; the adapter requires its independent bearer secret and the callback requires a valid Resend signature. This permits machine delivery without weakening the protected editorial routes. Before activation, verify the account-level Zero Trust application is likewise scoped to the editorial paths. If it currently covers the whole hostname, add only the narrowly scoped machine-route policy needed for the signed callback; do not create a hostname-wide Access bypass.
