@@ -15,6 +15,7 @@ export interface ArticleImage {
 	provider: string;
 	model: string;
 	prompt: string;
+	visualDirection: string | null;
 	aspectRatio: string;
 	providerRequestId: string | null;
 	attemptKey: string | null;
@@ -23,6 +24,10 @@ export interface ArticleImage {
 	pricingBasis: Record<string, unknown>;
 	providerReportedUsage: Record<string, number> | null;
 	verifiedBilledCostMicrousd: number | null;
+	workflowBatchId: string | null;
+	workflowIntakeId: string | null;
+	budgetOperatingDate: string | null;
+	automationScope: 'ROUTINE_IMAGE_PREPARATION_V1' | null;
 	assetKey: string | null;
 	contentType: string | null;
 	byteSize: number | null;

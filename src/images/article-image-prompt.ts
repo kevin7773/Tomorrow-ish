@@ -73,6 +73,27 @@ export interface ArticleImagePromptGovernance {
 	satiricalMechanism: string;
 }
 
+export function routineImageVisualDirection(
+	story: EditorialStory,
+	governance?: ArticleImagePromptGovernance,
+): string {
+	const premise = cleanConcept(story.headline);
+	if (!premise || isInternalEditorialText(premise)) {
+		throw new Error('The story does not contain a reader-facing image premise.');
+	}
+	const sensitive = governance?.satireSuitability === 'SENSITIVE'
+		|| governance?.guardrailFlags.includes('UNRESOLVED_ALLEGATION');
+	const caution = sensitive ? approvedVisualDirection(governance?.editorialCautionDirection ?? '') : '';
+	if (sensitive && !caution) throw new Error('A sensitive story requires an approved visual caution direction.');
+	const supporting = [story.deck, story.socialExcerpt, story.bodyMarkdown]
+		.map(cleanConcept)
+		.find((value) => value.length > 0 && !isInternalEditorialText(value));
+	const focus = caution || supporting || premise;
+	return validateImageVisualDirection(
+		`A fictional symbolic editorial scene centered on ${lowerFirst(focus)}, using anonymous figures and abstract props in a generic ${story.category.name.toLowerCase()} setting.`,
+	);
+}
+
 function approvedVisualDirection(value: string): string {
 	const clauses = cleanText(value).split(/(?<=[.!?])\s+|;\s+/).filter(Boolean);
 	const selected = clauses.find((clause) => /\b(?:focus|direct) (?:the )?satire\b/i.test(clause))

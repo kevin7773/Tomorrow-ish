@@ -37,6 +37,8 @@ function story(status: EditorialStory['status'] = 'APPROVED'): EditorialStory {
 function image(status: ArticleImage['status'] = 'GENERATED'): ArticleImage {
 	return {
 		id: 'image-1', storyId: 'story-1', provider: 'fake', model: 'fake-v1', prompt: 'Prompt',
+		visualDirection: null, workflowBatchId: null, workflowIntakeId: null,
+		budgetOperatingDate: null, automationScope: null,
 		aspectRatio: '16:9', providerRequestId: 'request-1', assetKey: 'article-images/story-1/image-1.webp',
 		attemptKey: 'image:attempt:test-1', attemptState: 'RESOLVED', estimatedCostMicrousd: 42_000,
 		pricingBasis: {}, providerReportedUsage: null, verifiedBilledCostMicrousd: null,
@@ -391,6 +393,44 @@ describe('governed article image service', () => {
 		expect(imageRepository.attachSubmission).toHaveBeenCalledWith(expect.objectContaining({ providerRequestId: 'run-1' }));
 		expect(processStoredWebhook).toHaveBeenCalledWith('id-1');
 		expect(assetStore.put).not.toHaveBeenCalled();
+	});
+
+	it('does not submit a routine image when atomic budget or lease admission is rejected', async () => {
+		const editorialRepository = {
+			findEditorialStoryById: vi.fn().mockResolvedValue({ ...story('REVIEW'), originCandidateId: 'candidate-1' }),
+			findCandidateById: vi.fn().mockResolvedValue({
+				id: 'candidate-1', sourceIntakeId: 'intake-1', editorialNotes: '', satiricalMechanism: 'bureaucratic inversion',
+			}),
+			findIntakeById: vi.fn().mockResolvedValue({
+				id: 'intake-1', satireSuitability: 'SUITABLE', guardrailFlags: [],
+			}),
+		} as unknown as EditorialRepository;
+		const imageRepository = {
+			hasPendingForStory: vi.fn().mockResolvedValue(false),
+			listByStory: vi.fn().mockResolvedValue([]),
+			recordPending: vi.fn().mockResolvedValue(false),
+		} as unknown as ArticleImageRepository;
+		const provider: ImageProvider = {
+			provider: 'cloudflare-ai-gateway', model: 'openai/gpt-image-2', lifecycle: 'asynchronous',
+			generationProfile: { size: '1536x1024', aspectRatio: '3:2', quality: 'medium', outputFormat: 'webp' },
+			submit: vi.fn(),
+		};
+		const service = new ArticleImageService(editorialRepository, imageRepository, provider,
+			{ put: vi.fn(), delete: vi.fn() }, {
+				...attemptDependencies,
+				attemptKey: 'routine-image:v1:batch:intake-1:story-1',
+				createId: () => 'routine-image-1',
+				createWebhookUrl: vi.fn().mockResolvedValue('https://tomorrow-ish.news/callback?signature=safe'),
+				routine: { batchId: 'batch', intakeId: 'intake-1', leaseOwner: 'stale-worker',
+					attemptMaxMicrousd: 50_000, batchMaxMicrousd: 150_000, dailyMaxMicrousd: 150_000 },
+			});
+
+		await expect(service.generate(identity, { storyId: 'story-1', visualDirection }))
+			.rejects.toThrow('story changed or an image generation is already pending');
+		expect(imageRepository.recordPending).toHaveBeenCalledWith(expect.objectContaining({
+			routine: expect.objectContaining({ leaseOwner: 'stale-worker' }),
+		}));
+		expect(provider.submit).not.toHaveBeenCalled();
 	});
 
 	it('keeps an accepted background submission pending when no run ID is returned initially', async () => {

@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -29,19 +30,28 @@ const baseline = {
 	d1: [{ binding: 'DB', database_name: 'production', database_id: 'db-1' }],
 	r2: [{ binding: 'IMAGES', bucket_name: 'images' }], requiredSecrets: ['SECRET_A'],
 	requiredVars: { MODEL_GENERATION_ENABLED: 'false', EDITORIAL_WORKFLOW_GENERATION_ENABLED: 'false',
-		IMAGE_GENERATION_ENABLED: 'false', EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY: '' },
+		EDITORIAL_ROUTINE_IMAGE_PREPARATION_ENABLED: 'false', EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED: 'false',
+		EDITORIAL_AUTOMATED_PUBLICATION_ENABLED: 'false',
+		IMAGE_GENERATION_ENABLED: 'false', EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY: '',
+		IMAGE_ATTEMPT_BUDGET_MICRO_USD: '50000', IMAGE_BATCH_BUDGET_MICRO_USD: '150000',
+		IMAGE_DAILY_BUDGET_MICRO_USD: '150000' },
 };
 
 const disabledVars = { MODEL_GENERATION_ENABLED: 'false', EDITORIAL_WORKFLOW_GENERATION_ENABLED: 'false',
-	IMAGE_GENERATION_ENABLED: 'false', EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY: '' };
+	EDITORIAL_ROUTINE_IMAGE_PREPARATION_ENABLED: 'false', EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED: 'false',
+	EDITORIAL_AUTOMATED_PUBLICATION_ENABLED: 'false',
+	IMAGE_GENERATION_ENABLED: 'false', EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY: '',
+	IMAGE_ATTEMPT_BUDGET_MICRO_USD: '50000', IMAGE_BATCH_BUDGET_MICRO_USD: '150000',
+	IMAGE_DAILY_BUDGET_MICRO_USD: '150000' };
 
 const budgetVars = {
 	MODEL_BUDGET_ADMISSION_ENABLED: 'false',
 	MODEL_NORMALIZE_MAX_COST_MICRO_USD: '50000',
 	MODEL_CANDIDATES_MAX_COST_MICRO_USD: '50000',
 	MODEL_ARTICLE_BODY_MAX_COST_MICRO_USD: '60000',
-	MODEL_ITEM_BUDGET_MICRO_USD: '150000',
-	MODEL_DAILY_BUDGET_MICRO_USD: '150000',
+	MODEL_ITEM_BUDGET_MICRO_USD: '170000',
+	MODEL_BATCH_BUDGET_MICRO_USD: '510000',
+	MODEL_DAILY_BUDGET_MICRO_USD: '510000',
 };
 
 const transitionContract = { name: 'phase-4b-model-budget-configuration', allowedVariableChanges: {
@@ -49,8 +59,10 @@ const transitionContract = { name: 'phase-4b-model-budget-configuration', allowe
 	MODEL_NORMALIZE_MAX_COST_MICRO_USD: { from: null, to: '50000' },
 	MODEL_CANDIDATES_MAX_COST_MICRO_USD: { from: null, to: '50000' },
 	MODEL_ARTICLE_BODY_MAX_COST_MICRO_USD: { from: null, to: '60000' },
-	MODEL_ITEM_BUDGET_MICRO_USD: { from: null, to: '150000' },
-	MODEL_DAILY_BUDGET_MICRO_USD: { from: '1000000', to: '150000' },
+	MODEL_ITEM_BUDGET_MICRO_USD: { from: null, to: '170000' },
+	MODEL_BATCH_BUDGET_MICRO_USD: { from: null, to: '510000' },
+	MODEL_DAILY_BUDGET_MICRO_USD: { from: '1000000', to: '510000' },
+	EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED: { from: null, to: 'false' },
 } };
 
 function config() {
@@ -86,6 +98,15 @@ async function packageFixture(includeDependency = true) {
 }
 
 describe('production release safety', () => {
+	it('validates the checked-in pre-budget to Phase 4E disabled transition exactly', () => {
+		const read = (path: string) => JSON.parse(readFileSync(path, 'utf8'));
+		expect(validateBaselineTransition(
+			read('release/production-baseline.pre-model-budget.json'),
+			read('release/production-baseline.json'),
+			read('release/model-budget-baseline-transition.json'),
+		)).toMatchObject({ name: 'phase-4e-governed-editorial-automation-disabled' });
+	});
+
 	it('detects a missing generated chunk in the Wrangler dry-run package', async () => {
 		const fixture = await packageFixture(false);
 		await expect(validateDryRunPackage(fixture.source, fixture.output, config())).rejects.toThrow(/dependency\.mjs/);
@@ -186,11 +207,16 @@ describe('production release safety', () => {
 	});
 
 	it('validates the exact old-to-new budget baseline without weakening unrelated fields', () => {
+		const { EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED: _externalGate, ...previousRequiredVars } = baseline.requiredVars;
 		const previous = { ...structuredClone(baseline),
-			requiredVars: { ...baseline.requiredVars, MODEL_DAILY_BUDGET_MICRO_USD: '1000000' } };
-		const next = { ...structuredClone(baseline), requiredVars: { ...previous.requiredVars, ...budgetVars } };
+			requiredVars: { ...previousRequiredVars, MODEL_DAILY_BUDGET_MICRO_USD: '1000000' } };
+		const next = { ...structuredClone(baseline), requiredVars: {
+			...previous.requiredVars, ...budgetVars, EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED: 'false',
+		} };
 		const contract = structuredClone(transitionContract);
-		expect(validateBaselineTransition(previous, next, contract)).toMatchObject({ changedVariables: Object.keys(budgetVars).sort() });
+		expect(validateBaselineTransition(previous, next, contract)).toMatchObject({
+			changedVariables: [...Object.keys(budgetVars), 'EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED'].sort(),
+		});
 		expect(() => validateBaselineTransition(previous, { ...next, routes: [] }, contract)).toThrow(/outside requiredVars/);
 		expect(() => validateBaselineTransition(previous, next, { ...contract, allowedVariableChanges: {
 			...contract.allowedVariableChanges, MODEL_BUDGET_ADMISSION_ENABLED: { from: null, to: 'true' },

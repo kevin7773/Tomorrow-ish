@@ -20,6 +20,8 @@ import { authorizeImageSmokeTarget } from './image-smoke-authorization';
 import { EditorialValidationError } from './validation';
 import { D1RoutineBatchAdmissionRepository } from '../data/d1-routine-batch-admission-repository';
 import { RoutineBatchAdmissionService } from './routine-batch-admission-service';
+import { routineImagePreparationConfig, type RoutineImagePreparationConfig } from '../images/routine-image-config';
+import { routineImageVisualDirection } from '../images/article-image-prompt';
 import {
 	evaluateRoutineNormalization,
 	ROUTINE_AUTOMATION_ACTOR,
@@ -39,7 +41,10 @@ function stop(classification: string): never {
 	);
 }
 
-function imageService(target: EditorialSmokeTarget | null): ArticleImageService {
+function imageService(target: EditorialSmokeTarget | null, routine?: {
+	batchId: string; intakeId: string; storyId: string; leaseOwner: string;
+	config: RoutineImagePreparationConfig;
+}): ArticleImageService {
 	const repository = getArticleImageRepository();
 	const assets = getArticleImageAssetStore();
 	const asyncService = getAsyncArticleImageService(repository, assets);
@@ -47,9 +52,59 @@ function imageService(target: EditorialSmokeTarget | null): ArticleImageService 
 		createWebhookUrl: getImageWebhookUrl,
 		processStoredWebhook: (imageId) => asyncService.processStoredWebhook(imageId).then(() => undefined),
 		smokeTarget: target,
-		attemptKey: env.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY,
+		attemptKey: routine
+			? `routine-image:v1:${routine.batchId}:${routine.intakeId}:${routine.storyId}`
+			: env.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY,
 		authorizeSmokeTarget: (configured) => authorizeImageSmokeTarget(getEditorialWorkflowRepository(), configured),
+		...(routine === undefined ? {} : { routine: {
+			batchId: routine.batchId, intakeId: routine.intakeId, leaseOwner: routine.leaseOwner,
+			attemptMaxMicrousd: routine.config.attemptMaxMicrousd,
+			batchMaxMicrousd: routine.config.batchMaxMicrousd,
+			dailyMaxMicrousd: routine.config.dailyMaxMicrousd,
+		} }),
 	});
+}
+
+async function prepareRoutineImage(
+	item: EditorialBatchItem,
+	storyId: string,
+	guard?: { renew(): Promise<void> },
+): Promise<{ storyId: string; ready: boolean; allowMissingImage?: boolean }> {
+	const config = routineImagePreparationConfig(env);
+	if (!config.enabled) return { storyId, ready: true, allowMissingImage: true };
+	if (!isImageGenerationEnabled(env)) stop('ROUTINE_IMAGE_PROVIDER_DISABLED');
+	const imageRepository = getArticleImageRepository();
+	const images = await imageRepository.listByStory(storyId);
+	if (images.some((image) => image.status === 'GENERATED' || image.status === 'APPROVED')) {
+		return { storyId, ready: true };
+	}
+	if (images.some((image) => image.status === 'PENDING')) return { storyId, ready: false };
+	if (images.some((image) => image.automationScope === 'ROUTINE_IMAGE_PREPARATION_V1')) {
+		stop('ROUTINE_IMAGE_ATTEMPT_ALREADY_CONSUMED');
+	}
+	const editorial = getEditorialRepository();
+	const story = await editorial.findEditorialStoryById(storyId);
+	if (!story || story.status !== 'REVIEW' || !story.originCandidateId) stop('ROUTINE_IMAGE_STORY_NOT_REVIEWABLE');
+	if (!item.leaseOwner) stop('ROUTINE_IMAGE_LEASE_LOST');
+	const candidate = await editorial.findCandidateById(story.originCandidateId);
+	const intake = candidate ? await editorial.findIntakeById(candidate.sourceIntakeId) : null;
+	if (!candidate || !intake || candidate.sourceIntakeId !== item.intakeId) stop('ROUTINE_IMAGE_PROVENANCE_MISMATCH');
+	const direction = routineImageVisualDirection(story, {
+		satireSuitability: intake.satireSuitability,
+		guardrailFlags: intake.guardrailFlags,
+		editorialCautionDirection: candidate.editorialNotes,
+		satiricalMechanism: candidate.satiricalMechanism,
+	});
+	await guard?.renew();
+	const result = await imageService(null, {
+		batchId: item.batchId,
+		intakeId: item.intakeId,
+		storyId,
+		leaseOwner: item.leaseOwner,
+		config,
+	}).generate({ email: ROUTINE_AUTOMATION_ACTOR }, { storyId, visualDirection: direction });
+	if (result.status === 'GENERATION_FAILED') stop('ROUTINE_IMAGE_GENERATION_FAILED');
+	return { storyId, ready: result.status === 'GENERATED' };
 }
 
 const reviewOnlyImageProvider: ImageProvider = {
@@ -83,7 +138,7 @@ class RuntimePipeline implements WorkflowPipelinePort {
 				if (!item.leaseOwner || !(await workflow.attachExistingStory({ batchId: item.batchId, intakeId: item.intakeId,
 					candidateId: item.candidateId, storyId: existingStoryId, owner: item.leaseOwner,
 					at: new Date().toISOString(), eventId: crypto.randomUUID() }))) throw new Error('WORKFLOW_LEASE_LOST');
-				if (routine) return { storyId: existingStoryId, ready: true, allowMissingImage: true };
+				if (routine) return prepareRoutineImage(item, existingStoryId, guard);
 				const existingImages = await getArticleImageRepository().listByStory(existingStoryId);
 				if (existingImages.some((image) => image.status === 'GENERATED' || image.status === 'APPROVED')) {
 					return { storyId: existingStoryId, ready: true };
@@ -181,7 +236,7 @@ class RuntimePipeline implements WorkflowPipelinePort {
 			storyId = attached;
 		}
 
-		if (routine) return { storyId, ready: true, allowMissingImage: true };
+		if (routine) return prepareRoutineImage(item, storyId, guard);
 		const images = await getArticleImageRepository().listByStory(storyId);
 		if (images.some((image) => image.status === 'GENERATED' || image.status === 'APPROVED')) return { storyId, ready: true };
 		if (images.some((image) => image.status === 'PENDING')) return { storyId, ready: false };

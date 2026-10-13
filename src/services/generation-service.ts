@@ -28,6 +28,7 @@ import type { GenerateArticleBodyInput } from '../ai/model-provider';
 import type { ProviderResponseDiagnostics } from '../ai/model-provider';
 import { EditorialValidationError, requiredText } from './validation';
 import { isSmokeTargetIntake, type EditorialSmokeTarget } from './editorial-smoke-target';
+import { editorialOperatingWindow } from '../lib/dates';
 
 const STALE_BODY_GENERATION_MINIMUM_MS = 60 * 60 * 1_000;
 
@@ -190,11 +191,13 @@ export class GenerationService {
 				GENERATE_ARTICLE_BODY: this.limits.maxEstimatedCostMicrousd,
 			},
 			itemMaxMicrousd: 1_000_000,
+			batchMaxMicrousd: 1_000_000,
 			dailyMaxMicrousd: 1_000_000,
 		} : {
 			enabled: false,
 			operationMaxMicrousd: { NORMALIZE: 0, GENERATE_CANDIDATES: 0, GENERATE_ARTICLE_BODY: 0 },
 			itemMaxMicrousd: 0,
+			batchMaxMicrousd: 0,
 			dailyMaxMicrousd: 0,
 		});
 		this.generationEnabled = dependencies.generationEnabled ?? true;
@@ -710,7 +713,8 @@ export class GenerationService {
 		const configured = [this.budgetLimits.operationMaxMicrousd.NORMALIZE,
 			this.budgetLimits.operationMaxMicrousd.GENERATE_CANDIDATES,
 			this.budgetLimits.operationMaxMicrousd.GENERATE_ARTICLE_BODY,
-			this.budgetLimits.itemMaxMicrousd, this.budgetLimits.dailyMaxMicrousd];
+			this.budgetLimits.itemMaxMicrousd, this.budgetLimits.batchMaxMicrousd,
+			this.budgetLimits.dailyMaxMicrousd];
 		if (!this.budgetLimits.enabled || configured.some((value) => !Number.isSafeInteger(value) || value <= 0)) {
 			throw new EditorialValidationError('Model budget admission is disabled or invalid.', 'model-budget');
 		}
@@ -722,9 +726,11 @@ export class GenerationService {
 			|| estimatedCostMicrousd > this.budgetLimits.operationMaxMicrousd[operation]) {
 			throw new EditorialValidationError('The model request exceeds its configured cost limit.', 'model-budget');
 		}
+		const window = editorialOperatingWindow(requestedAt);
 		const result = await this.repository.admitModelBudget({
 			attemptKey, operation, sourceIntakeId, normalizedEventVersionId, candidateId,
-			owner: this.requestOwner, budgetDay: new Date(requestedAtMs).toISOString().slice(0, 10),
+			owner: this.requestOwner, budgetDay: window.operatingDate,
+			budgetDayStart: window.start, budgetDayEnd: window.end,
 			estimatedCostMicrousd, limits: this.budgetLimits, createdAt: requestedAt,
 			workflowFence: this.workflowFence,
 		});

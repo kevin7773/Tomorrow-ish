@@ -129,8 +129,9 @@ describe('governed candidate selection', () => {
 		const claim = async (candidateId: string, id: string) => {
 			await generation.admitModelBudget({ attemptKey: `key-${id}`, operation: 'GENERATE_ARTICLE_BODY',
 				sourceIntakeId: TARGET.intakeId, normalizedEventVersionId: VERSION, candidateId, owner: 'worker',
-				budgetDay: '2026-10-12', estimatedCostMicrousd: 1, createdAt: NOW,
-				limits: { enabled: true, operationMaxMicrousd: { NORMALIZE: 10, GENERATE_CANDIDATES: 10, GENERATE_ARTICLE_BODY: 10 }, itemMaxMicrousd: 10, dailyMaxMicrousd: 10 } });
+				budgetDay: '2026-10-11', estimatedCostMicrousd: 1, createdAt: NOW,
+				budgetDayStart: '2026-10-11T04:00:00.000Z', budgetDayEnd: '2026-10-12T04:00:00.000Z',
+				limits: { enabled: true, operationMaxMicrousd: { NORMALIZE: 10, GENERATE_CANDIDATES: 10, GENERATE_ARTICLE_BODY: 10 }, itemMaxMicrousd: 10, batchMaxMicrousd: 10, dailyMaxMicrousd: 10 } });
 			return generation.claimArticleBodyGeneration({
 			id, candidateId, sourceIntakeId: TARGET.intakeId, normalizedEventVersionId: VERSION,
 			provider: 'test', model: 'test', promptVersion: 'article-body-v2', inputHash: `hash-${id}`,

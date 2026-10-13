@@ -43,6 +43,7 @@ export interface RecordPendingImageGeneration {
 	provider: string;
 	model: string;
 	prompt: string;
+	visualDirection?: string | null;
 	promptVersion: string;
 	aspectRatio: string;
 	attemptKey: string;
@@ -52,6 +53,14 @@ export interface RecordPendingImageGeneration {
 	requestedByEmail: string;
 	requestedAt: string;
 	auditId: string;
+	routine?: {
+		batchId: string;
+		intakeId: string;
+		leaseOwner: string;
+		attemptMaxMicrousd: number;
+		batchMaxMicrousd: number;
+		dailyMaxMicrousd: number;
+	};
 }
 
 export interface MarkPendingImageAmbiguous {

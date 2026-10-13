@@ -37,7 +37,17 @@ const MODEL_BUDGET_VARIABLES = [
 	'MODEL_CANDIDATES_MAX_COST_MICRO_USD',
 	'MODEL_ARTICLE_BODY_MAX_COST_MICRO_USD',
 	'MODEL_ITEM_BUDGET_MICRO_USD',
+	'MODEL_BATCH_BUDGET_MICRO_USD',
 	'MODEL_DAILY_BUDGET_MICRO_USD',
+];
+
+const DISABLED_GATES = [
+	'MODEL_GENERATION_ENABLED',
+	'EDITORIAL_WORKFLOW_GENERATION_ENABLED',
+	'EDITORIAL_ROUTINE_IMAGE_PREPARATION_ENABLED',
+	'EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED',
+	'EDITORIAL_AUTOMATED_PUBLICATION_ENABLED',
+	'IMAGE_GENERATION_ENABLED',
 ];
 
 function reviewedBudgetValue(value) {
@@ -56,6 +66,7 @@ export function validateReviewedModelBudgetVariables(vars) {
 		check(errors, values[name] !== null, `${name} must be a canonical positive safe integer`);
 	}
 	const item = values.MODEL_ITEM_BUDGET_MICRO_USD;
+	const batch = values.MODEL_BATCH_BUDGET_MICRO_USD;
 	const daily = values.MODEL_DAILY_BUDGET_MICRO_USD;
 	for (const name of MODEL_BUDGET_VARIABLES.slice(0, 3)) {
 		check(errors, values[name] !== null && item !== null && values[name] <= item,
@@ -63,6 +74,8 @@ export function validateReviewedModelBudgetVariables(vars) {
 		check(errors, values[name] !== null && daily !== null && values[name] <= daily,
 			`${name} must not exceed MODEL_DAILY_BUDGET_MICRO_USD`);
 	}
+	check(errors, batch === 510000, 'MODEL_BATCH_BUDGET_MICRO_USD must equal 510000');
+	check(errors, daily === 510000, 'MODEL_DAILY_BUDGET_MICRO_USD must equal 510000');
 	if (errors.length) throw new ReleaseSafetyError('Reviewed model-budget configuration is not fail-closed.', errors);
 	return { mode: 'configured-disabled', values };
 }
@@ -92,6 +105,11 @@ export function validateBaselineTransition(previous, next, contract) {
 	}
 	for (const gate of ['MODEL_GENERATION_ENABLED', 'EDITORIAL_WORKFLOW_GENERATION_ENABLED', 'IMAGE_GENERATION_ENABLED']) {
 		check(errors, priorVars[gate] === 'false' && nextVars[gate] === 'false', `${gate} must remain false across transition`);
+	}
+	for (const gate of ['EDITORIAL_ROUTINE_IMAGE_PREPARATION_ENABLED', 'EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED',
+		'EDITORIAL_AUTOMATED_PUBLICATION_ENABLED']) {
+		check(errors, (priorVars[gate] === undefined || priorVars[gate] === 'false') && nextVars[gate] === 'false',
+			`${gate} must be introduced or retained as false across transition`);
 	}
 	check(errors, priorVars.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '' && nextVars.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '',
 		'image smoke attempt key must remain blank across transition');
@@ -132,6 +150,12 @@ export function validateGeneratedConfiguration(config, baseline, options = {}) {
 	check(errors, config.vars?.MODEL_GENERATION_ENABLED === 'false', 'model generation gate must be false');
 	check(errors, config.vars?.EDITORIAL_WORKFLOW_GENERATION_ENABLED === 'false', 'workflow generation gate must be false');
 	check(errors, config.vars?.IMAGE_GENERATION_ENABLED === 'false', 'image generation gate must be false');
+	check(errors, config.vars?.EDITORIAL_ROUTINE_IMAGE_PREPARATION_ENABLED === 'false', 'routine image gate must be false');
+	check(errors, config.vars?.EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED === 'false', 'external notification gate must be false');
+	check(errors, config.vars?.EDITORIAL_AUTOMATED_PUBLICATION_ENABLED === 'false', 'automated publication gate must be false');
+	check(errors, config.vars?.IMAGE_ATTEMPT_BUDGET_MICRO_USD === '50000', 'image attempt ceiling must equal 50000');
+	check(errors, config.vars?.IMAGE_BATCH_BUDGET_MICRO_USD === '150000', 'image batch ceiling must equal 150000');
+	check(errors, config.vars?.IMAGE_DAILY_BUDGET_MICRO_USD === '150000', 'image daily ceiling must equal 150000');
 	check(errors, config.vars?.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '', 'image smoke attempt key must be blank');
 	try {
 		validateReviewedModelBudgetVariables(config.vars ?? {});
@@ -267,7 +291,7 @@ export function validateLiveSnapshot(snapshot, baseline, options = {}) {
 		? 'live Cron schedules are not fully paused'
 		: 'live Cron schedules differ from baseline');
 	check(errors, same(snapshot.vars ?? {}, baseline.requiredVars), 'live Worker variables differ from baseline');
-	for (const gate of ['MODEL_GENERATION_ENABLED', 'EDITORIAL_WORKFLOW_GENERATION_ENABLED', 'IMAGE_GENERATION_ENABLED']) {
+	for (const gate of DISABLED_GATES) {
 		check(errors, snapshot.vars?.[gate] === 'false', `live ${gate} must be false`);
 	}
 	check(errors, snapshot.vars?.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '', 'live image smoke attempt key must be blank');
@@ -287,7 +311,7 @@ export function validateDisabledVersionSnapshot(snapshot, baseline) {
 	const errors = [];
 	if (snapshot.workerName !== undefined) check(errors, snapshot.workerName === baseline.workerName, 'version belongs to a different Worker');
 	if (snapshot.accountId !== undefined) check(errors, snapshot.accountId === baseline.accountId, 'version belongs to a different account');
-	for (const gate of ['MODEL_GENERATION_ENABLED', 'EDITORIAL_WORKFLOW_GENERATION_ENABLED', 'IMAGE_GENERATION_ENABLED']) {
+	for (const gate of DISABLED_GATES) {
 		check(errors, version.vars[gate] === 'false', `rollback version has ${gate} enabled`);
 	}
 	check(errors, version.vars.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '', 'rollback version has a nonblank image attempt key');

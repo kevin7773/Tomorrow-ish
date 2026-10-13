@@ -1,11 +1,18 @@
 {
-  "name": "phase-4b-model-budget-configuration",
+  "name": "phase-4e-governed-editorial-automation-disabled",
   "allowedVariableChanges": {
     "MODEL_BUDGET_ADMISSION_ENABLED": { "from": null, "to": "false" },
     "MODEL_NORMALIZE_MAX_COST_MICRO_USD": { "from": null, "to": "50000" },
     "MODEL_CANDIDATES_MAX_COST_MICRO_USD": { "from": null, "to": "50000" },
     "MODEL_ARTICLE_BODY_MAX_COST_MICRO_USD": { "from": null, "to": "60000" },
-    "MODEL_ITEM_BUDGET_MICRO_USD": { "from": null, "to": "150000" },
-    "MODEL_DAILY_BUDGET_MICRO_USD": { "from": "1000000", "to": "150000" }
+    "MODEL_ITEM_BUDGET_MICRO_USD": { "from": null, "to": "170000" },
+    "MODEL_BATCH_BUDGET_MICRO_USD": { "from": null, "to": "510000" },
+    "MODEL_DAILY_BUDGET_MICRO_USD": { "from": "1000000", "to": "510000" },
+    "EDITORIAL_ROUTINE_IMAGE_PREPARATION_ENABLED": { "from": null, "to": "false" },
+    "EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED": { "from": null, "to": "false" },
+    "EDITORIAL_AUTOMATED_PUBLICATION_ENABLED": { "from": null, "to": "false" },
+    "IMAGE_ATTEMPT_BUDGET_MICRO_USD": { "from": null, "to": "50000" },
+    "IMAGE_BATCH_BUDGET_MICRO_USD": { "from": null, "to": "150000" },
+    "IMAGE_DAILY_BUDGET_MICRO_USD": { "from": null, "to": "150000" }
   }
 }

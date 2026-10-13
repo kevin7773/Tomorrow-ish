@@ -179,6 +179,7 @@ export interface ModelBudgetLimits {
 	enabled: boolean;
 	operationMaxMicrousd: Record<ModelRun['operation'], number>;
 	itemMaxMicrousd: number;
+	batchMaxMicrousd: number;
 	dailyMaxMicrousd: number;
 }
 
@@ -203,6 +204,8 @@ export interface AdmitModelBudgetRecord {
 	candidateId: string | null;
 	owner: string;
 	budgetDay: string;
+	budgetDayStart: string;
+	budgetDayEnd: string;
 	estimatedCostMicrousd: number;
 	limits: ModelBudgetLimits;
 	createdAt: string;

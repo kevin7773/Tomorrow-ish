@@ -18,6 +18,7 @@ interface ArticleImageRow {
 	provider: string;
 	model: string;
 	prompt: string;
+	visual_direction: string | null;
 	aspect_ratio: string;
 	provider_request_id: string | null;
 	attempt_key: string | null;
@@ -26,6 +27,10 @@ interface ArticleImageRow {
 	pricing_basis_json: string;
 	provider_reported_usage_json: string | null;
 	verified_billed_cost_microusd: number | null;
+	workflow_batch_id: string | null;
+	workflow_intake_id: string | null;
+	budget_operating_date: string | null;
+	automation_scope: ArticleImage['automationScope'];
 	asset_key: string | null;
 	content_type: string | null;
 	byte_size: number | null;
@@ -59,6 +64,7 @@ function mapImage(row: ArticleImageRow): ArticleImage {
 		provider: row.provider,
 		model: row.model,
 		prompt: row.prompt,
+		visualDirection: row.visual_direction,
 		aspectRatio: row.aspect_ratio,
 		providerRequestId: row.provider_request_id,
 		attemptKey: row.attempt_key,
@@ -69,6 +75,10 @@ function mapImage(row: ArticleImageRow): ArticleImage {
 			? parseMetadata(row.provider_reported_usage_json) as Record<string, number>
 			: null,
 		verifiedBilledCostMicrousd: row.verified_billed_cost_microusd,
+		workflowBatchId: row.workflow_batch_id,
+		workflowIntakeId: row.workflow_intake_id,
+		budgetOperatingDate: row.budget_operating_date,
+		automationScope: row.automation_scope,
 		assetKey: row.asset_key,
 		contentType: row.content_type,
 		byteSize: row.byte_size,
@@ -174,26 +184,68 @@ export class D1ArticleImageRepository implements ArticleImageRepository {
 	}
 
 	async recordPending(record: RecordPendingImageGeneration): Promise<boolean> {
-		const results = await this.db.batch([
-			this.db.prepare(`
+		const routine = record.routine;
+		const insertion = routine
+			? this.db.prepare(`
 				INSERT OR IGNORE INTO article_images (
-					id, story_id, provider, model, prompt, prompt_version, aspect_ratio,
+					id, story_id, provider, model, prompt, visual_direction, prompt_version, aspect_ratio,
+					status, alt_text, metadata_json, requested_by_email, requested_at,
+					attempt_key, attempt_state, estimated_cost_microusd, pricing_basis_json,
+					workflow_batch_id, workflow_intake_id, budget_operating_date, automation_scope
+				)
+				SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, '{}', ?, ?, ?, 'RESERVED', ?, ?,
+					?, ?, admission.operating_date, 'ROUTINE_IMAGE_PREPARATION_V1'
+				FROM routine_generation_batch_admissions AS admission
+				JOIN editorial_batch_items AS item
+					ON item.batch_id = admission.batch_id AND item.source_intake_id = ?
+				WHERE admission.batch_id = ?
+				  AND item.batch_id = ? AND item.story_id = ? AND item.workflow_state = 'GENERATING'
+				  AND item.lease_owner = ? AND item.lease_expires_at > ?
+				  AND EXISTS (SELECT 1 FROM stories WHERE id = ? AND status = 'REVIEW')
+				  AND EXISTS (SELECT 1 FROM editorial_workflow_events WHERE batch_id = item.batch_id
+					AND source_intake_id = item.source_intake_id AND event_kind = 'INTAKE_SELECTED'
+					AND detail = 'routine-generation:v1')
+				  AND NOT EXISTS (SELECT 1 FROM article_images WHERE story_id = ? AND status = 'PENDING')
+				  AND NOT EXISTS (SELECT 1 FROM article_images WHERE story_id = ?
+					AND automation_scope = 'ROUTINE_IMAGE_PREPARATION_V1')
+				  AND ? > 0 AND ? <= ? AND ? > 0 AND ? > 0
+				  AND ? + (SELECT COALESCE(SUM(estimated_cost_microusd), 0) FROM article_images
+					WHERE automation_scope = 'ROUTINE_IMAGE_PREPARATION_V1' AND workflow_batch_id = ?) <= ?
+				  AND ? + (SELECT COALESCE(SUM(estimated_cost_microusd), 0) FROM article_images
+					WHERE automation_scope = 'ROUTINE_IMAGE_PREPARATION_V1'
+					AND budget_operating_date = admission.operating_date) <= ?
+			`).bind(
+				record.id, record.storyId, record.provider, record.model, record.prompt,
+				record.visualDirection ?? null, record.promptVersion, record.aspectRatio, record.altText,
+				record.requestedByEmail, record.requestedAt, record.attemptKey,
+				record.estimatedCostMicrousd, JSON.stringify(record.pricingBasis),
+				routine.batchId, routine.intakeId, routine.intakeId,
+				routine.batchId, routine.batchId, record.storyId, routine.leaseOwner, record.requestedAt,
+				record.storyId, record.storyId, record.storyId,
+				routine.attemptMaxMicrousd, record.estimatedCostMicrousd, routine.attemptMaxMicrousd,
+				routine.batchMaxMicrousd, routine.dailyMaxMicrousd,
+				record.estimatedCostMicrousd, routine.batchId, routine.batchMaxMicrousd,
+				record.estimatedCostMicrousd, routine.dailyMaxMicrousd,
+			)
+			: this.db.prepare(`
+				INSERT OR IGNORE INTO article_images (
+					id, story_id, provider, model, prompt, visual_direction, prompt_version, aspect_ratio,
 					status, alt_text, metadata_json, requested_by_email, requested_at,
 					attempt_key, attempt_state, estimated_cost_microusd, pricing_basis_json
 				)
-				SELECT ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, '{}', ?, ?, ?, 'RESERVED', ?, ?
+				SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, '{}', ?, ?, ?, 'RESERVED', ?, ?
 				WHERE EXISTS (SELECT 1 FROM stories WHERE id = ? AND status IN ('REVIEW', 'APPROVED'))
-				  AND NOT EXISTS (
-					SELECT 1 FROM article_images WHERE story_id = ? AND status = 'PENDING'
-				  )
+				  AND NOT EXISTS (SELECT 1 FROM article_images WHERE story_id = ? AND status = 'PENDING')
 			`).bind(
 				record.id, record.storyId, record.provider, record.model, record.prompt,
-				record.promptVersion, record.aspectRatio, record.altText,
+				record.visualDirection ?? null, record.promptVersion, record.aspectRatio, record.altText,
 				record.requestedByEmail, record.requestedAt, record.attemptKey,
 				record.estimatedCostMicrousd, JSON.stringify(record.pricingBasis), record.storyId, record.storyId,
-			),
+			);
+		const results = await this.db.batch([
+			insertion,
 			this.db.prepare(`
-				INSERT INTO editorial_audit_log (id, actor_email, entity_type, entity_id, action, reason, created_at)
+				INSERT OR IGNORE INTO editorial_audit_log (id, actor_email, entity_type, entity_id, action, reason, created_at)
 				SELECT ?, ?, 'STORY', ?, 'IMAGE_GENERATION_REQUESTED', ?, ?
 				WHERE EXISTS (SELECT 1 FROM article_images WHERE id = ? AND status = 'PENDING')
 			`).bind(record.auditId, record.requestedByEmail, record.storyId, record.id, record.requestedAt, record.id),

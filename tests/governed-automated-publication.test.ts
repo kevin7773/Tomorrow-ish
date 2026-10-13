@@ -4,7 +4,10 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it, vi } from 'vitest';
 import { D1GovernedPublicationRepository } from '../src/data/d1-governed-publication-repository';
 import { D1EditorialWorkflowRepository } from '../src/data/d1-editorial-workflow-repository';
+import { D1AutomatedPublicationAuthorizationRepository } from '../src/data/d1-automated-publication-authorization-repository';
 import type { GovernedPublicationRepository } from '../src/data/governed-publication-repository';
+import type { AutomatedPublicationAuthorizationRepository } from '../src/data/automated-publication-authorization-repository';
+import { AutomatedPublicationAuthorizationService } from '../src/services/automated-publication-authorization-service';
 import { GovernedAutomatedPublicationService, automatedPublicationEnabled } from '../src/services/governed-automated-publication-service';
 
 const NOW = '2026-10-13T12:00:00.000Z';
@@ -27,8 +30,8 @@ function d1Database(sqlite: DatabaseSync): D1Database {
 	} } as unknown as D1Database;
 }
 
-function database(options: { image?: boolean; routine?: boolean; storyStatus?: 'APPROVED' | 'REJECTED'; activeLease?: boolean; readyNotice?: boolean } = {}): DatabaseSync {
-	const { image = true, routine = true, storyStatus = 'APPROVED', activeLease = false, readyNotice = true } = options;
+function database(options: { image?: boolean; routine?: boolean; authority?: boolean; storyStatus?: 'APPROVED' | 'REJECTED'; activeLease?: boolean; readyNotice?: boolean } = {}): DatabaseSync {
+	const { image = true, routine = true, authority = true, storyStatus = 'APPROVED', activeLease = false, readyNotice = true } = options;
 	const sqlite = new DatabaseSync(':memory:');
 	for (const filename of readdirSync(join(process.cwd(), 'migrations')).filter((name) => /^\d+.*\.sql$/.test(name)).sort()) {
 		sqlite.exec(readFileSync(join(process.cwd(), 'migrations', filename), 'utf8'));
@@ -56,6 +59,12 @@ function database(options: { image?: boolean; routine?: boolean; storyStatus?: '
 	`);
 	if (image) sqlite.exec(`INSERT INTO article_images (id,story_id,provider,model,prompt,prompt_version,aspect_ratio,provider_request_id,asset_key,content_type,byte_size,status,alt_text,requested_by_email,requested_at,generated_at,reviewed_by_email,reviewed_at)
 		VALUES ('image-1','story-1','provider','model','prompt','v1','3:2','request-1','images/story-1.webp','image/webp',100,'APPROVED','Alt text','editor@example.com','${NOW}','${NOW}','editor@example.com','${NOW}');`);
+	if (routine) sqlite.exec(`INSERT INTO routine_generation_batch_admissions
+		(operating_date,time_zone,batch_id,actor_email,admitted_at)
+		VALUES ('2026-10-13','America/New_York','batch-1','automation@tomorrow-ish.news','${NOW}');`);
+	if (authority && image && routine && storyStatus === 'APPROVED') sqlite.exec(`INSERT INTO story_automated_publication_authorizations
+		(id,story_id,image_id,batch_id,source_intake_id,candidate_id,authorization_scope,story_updated_at,image_reviewed_at,image_asset_key,image_alt_text,actor_email,authorized_at)
+		VALUES ('authority-1','story-1','image-1','batch-1','intake-1','candidate-1','SCHEDULED_PUBLICATION_V1','${NOW}','${NOW}','images/story-1.webp','Alt text','editor@example.com','${NOW}');`);
 	return sqlite;
 }
 
@@ -66,6 +75,24 @@ function service(repository: GovernedPublicationRepository, enabled = true) {
 }
 
 describe('governed automated publication', () => {
+	it('requires an authenticated, explicit per-story authorization decision', async () => {
+		const repository: AutomatedPublicationAuthorizationRepository = {
+			authorize: vi.fn().mockResolvedValue(true), findValid: vi.fn().mockResolvedValue(null),
+		};
+		let id = 0;
+		const authorization = new AutomatedPublicationAuthorizationService(repository, () => NOW, () => `auth-${++id}`);
+		await expect(authorization.authorize(undefined, { storyId: 'story-1', imageId: 'image-1',
+			batchId: 'batch-1', intakeId: 'intake-1', confirmation: 'AUTHORIZE' })).rejects.toThrow(/authenticated/);
+		await expect(authorization.authorize({ email: 'editor@example.com' }, { storyId: 'story-1', imageId: 'image-1',
+			batchId: 'batch-1', intakeId: 'intake-1', confirmation: 'yes' })).rejects.toThrow(/AUTHORIZE/);
+		await authorization.authorize({ email: 'EDITOR@EXAMPLE.COM' }, { storyId: 'story-1', imageId: 'image-1',
+			batchId: 'batch-1', intakeId: 'intake-1', confirmation: 'AUTHORIZE' });
+		expect(repository.authorize).toHaveBeenCalledWith(expect.objectContaining({
+			storyId: 'story-1', imageId: 'image-1', batchId: 'batch-1', intakeId: 'intake-1',
+			actorEmail: 'editor@example.com', authorizedAt: NOW,
+		}));
+	});
+
 	it('is disabled by default and rejects malformed configuration', async () => {
 		expect(automatedPublicationEnabled(undefined)).toBe(false);
 		expect(automatedPublicationEnabled('false')).toBe(false);
@@ -90,7 +117,55 @@ describe('governed automated publication', () => {
 		sqlite.close();
 	});
 
+	it('preserves immutable authority evidence while invalidating it after a story edit', async () => {
+		const sqlite = database();
+		const authorizations = new D1AutomatedPublicationAuthorizationRepository(d1Database(sqlite));
+		expect(await authorizations.findValid('story-1')).toMatchObject({ id: 'authority-1', imageId: 'image-1' });
+		sqlite.prepare(`UPDATE stories SET headline='Changed', updated_at='2026-10-13T12:01:00.000Z'
+			WHERE id='story-1'`).run();
+		expect(await authorizations.findValid('story-1')).toBeNull();
+		expect(sqlite.prepare('SELECT COUNT(*) AS count FROM story_automated_publication_authorizations').get())
+			.toEqual({ count: 1 });
+		expect(() => sqlite.prepare("UPDATE story_automated_publication_authorizations SET actor_email='other@test' WHERE id='authority-1'").run())
+			.toThrow(/immutable/);
+		expect(await service(new D1GovernedPublicationRepository(d1Database(sqlite))).process())
+			.toEqual({ disabled: false, claimed: 0, published: 0, failed: 0 });
+		sqlite.close();
+	});
+
+	it('invalidates publication authority if the approved image alt evidence changes', async () => {
+		const sqlite = database();
+		const authorizations = new D1AutomatedPublicationAuthorizationRepository(d1Database(sqlite));
+		expect(await authorizations.findValid('story-1')).not.toBeNull();
+		sqlite.prepare("UPDATE article_images SET alt_text='Changed alt text' WHERE id='image-1'").run();
+		expect(await authorizations.findValid('story-1')).toBeNull();
+		expect(await service(new D1GovernedPublicationRepository(d1Database(sqlite))).process())
+			.toEqual({ disabled: false, claimed: 0, published: 0, failed: 0 });
+		sqlite.close();
+	});
+
+	it('atomically records one exact authorization and its linked audit evidence', async () => {
+		const sqlite = database({ authority: false });
+		const repository = new D1AutomatedPublicationAuthorizationRepository(d1Database(sqlite));
+		expect(await repository.authorize({ id: 'authority-new', auditId: 'authority-audit',
+			storyId: 'story-1', imageId: 'image-1', batchId: 'batch-1', intakeId: 'intake-1',
+			actorEmail: 'editor@example.com', authorizedAt: NOW })).toBe(true);
+		expect(sqlite.prepare(`SELECT authorization_scope,actor_email FROM story_automated_publication_authorizations
+			WHERE id='authority-new'`).get()).toEqual({
+			authorization_scope: 'SCHEDULED_PUBLICATION_V1', actor_email: 'editor@example.com',
+		});
+		expect(sqlite.prepare("SELECT action,reason FROM editorial_audit_log WHERE id='authority-audit'").get())
+			.toEqual({ action: 'AUTOMATED_PUBLICATION_AUTHORIZED', reason: 'authority-new' });
+		expect(await repository.authorize({ id: 'wrong', auditId: 'wrong-audit',
+			storyId: 'story-1', imageId: 'image-1', batchId: 'batch-1', intakeId: 'wrong-intake',
+			actorEmail: 'editor@example.com', authorizedAt: NOW })).toBe(false);
+		expect(sqlite.prepare("SELECT COUNT(*) AS count FROM editorial_audit_log WHERE id='wrong-audit'").get())
+			.toEqual({ count: 0 });
+		sqlite.close();
+	});
+
 	it.each([
+		['missing per-story publication authority', { authority: false }],
 		['missing approved image', { image: false }],
 		['rejected article', { storyStatus: 'REJECTED' as const }],
 		['historical or manual record', { routine: false }],

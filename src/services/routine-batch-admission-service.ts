@@ -1,4 +1,5 @@
 import type { RoutineBatchAdmissionRepository } from '../data/routine-batch-admission-repository';
+import { editorialDateFromTimestamp } from '../lib/dates';
 import { ROUTINE_AUTOMATION_ACTOR } from './routine-generation-policy';
 
 export const ROUTINE_OPERATING_TIME_ZONE = 'America/New_York' as const;
@@ -8,13 +9,11 @@ export interface RoutineBatchAdmissionPort {
 }
 
 export function routineOperatingDate(at: string): string {
-	const parsed = new Date(at);
-	if (Number.isNaN(parsed.getTime())) throw new Error('Routine admission timestamp is invalid.');
-	const parts = new Intl.DateTimeFormat('en-CA', {
-		timeZone: ROUTINE_OPERATING_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit',
-	}).formatToParts(parsed);
-	const value = Object.fromEntries(parts.map(({ type, value: part }) => [type, part]));
-	return `${value.year}-${value.month}-${value.day}`;
+	try {
+		return editorialDateFromTimestamp(at);
+	} catch {
+		throw new Error('Routine admission timestamp is invalid.');
+	}
 }
 
 function activationBoundary(value: string | undefined): string {

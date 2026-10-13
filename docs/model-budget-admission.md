@@ -18,9 +18,10 @@ Budget admission is fail-closed and disabled by default. Routine model generatio
 - `MODEL_CANDIDATES_MAX_COST_MICRO_USD`
 - `MODEL_ARTICLE_BODY_MAX_COST_MICRO_USD`
 - `MODEL_ITEM_BUDGET_MICRO_USD`
+- `MODEL_BATCH_BUDGET_MICRO_USD`
 - `MODEL_DAILY_BUDGET_MICRO_USD`
 
-The daily boundary is UTC. A per-item ceiling accumulates all three model operations for one source intake. Unresolved historical attempts without a budget row make admission fail closed for that intake; they require investigation rather than inferred cost or automatic replay.
+The daily boundary is the `America/New_York` operating day, converted to exact UTC bounds for daylight-saving transitions. A per-item ceiling accumulates all three model operations for one source intake. A separate batch ceiling accumulates all reservations bearing the admitted workflow batch identity. Unresolved historical attempts without a budget row make admission fail closed for that intake; they require investigation rather than inferred cost or automatic replay.
 
 The reviewed initial production values are strings containing canonical positive integer microusd amounts:
 
@@ -30,8 +31,9 @@ The reviewed initial production values are strings containing canonical positive
 | `MODEL_NORMALIZE_MAX_COST_MICRO_USD` | `50000` | One normalization attempt. |
 | `MODEL_CANDIDATES_MAX_COST_MICRO_USD` | `50000` | One candidate-generation attempt. The name is operation-scoped; routine workflow configuration currently requests one candidate. |
 | `MODEL_ARTICLE_BODY_MAX_COST_MICRO_USD` | `60000` | One article-body attempt. |
-| `MODEL_ITEM_BUDGET_MICRO_USD` | `150000` | All model operations sharing one `source_intake_id`, including attempts from different batches. |
-| `MODEL_DAILY_BUDGET_MICRO_USD` | `150000` | All model operations admitted during one UTC day. |
+| `MODEL_ITEM_BUDGET_MICRO_USD` | `170000` | All model operations sharing one `source_intake_id`, including attempts from different batches. |
+| `MODEL_BATCH_BUDGET_MICRO_USD` | `510000` | All model operations associated with one admitted three-item workflow batch. |
+| `MODEL_DAILY_BUDGET_MICRO_USD` | `510000` | All model operations admitted during one New York operating day. |
 
 The current `gpt-5.6-terra` estimator reserves 2 microusd per conservative input token, 12 microusd per maximum output token, and a 6,000-character prompt overhead. These ceilings admit at most 1,000 persisted input characters for normalization, 4,000 for candidate generation, and 6,000 for article-body generation. The next character exceeds the corresponding ceiling. The estimator deliberately treats every input character as a token; a request that exceeds a ceiling stops before provider construction.
 
@@ -53,7 +55,7 @@ The current Phase 4A release contract compares live variables to a frozen baseli
 
 ## Reviewed configuration transition
 
-`release/production-baseline.pre-model-budget.json` freezes the prior fully disabled configuration. `release/production-baseline.json` is the proposed configuration, and `release/model-budget-baseline-transition.json` permits exactly the five additions and one daily-ceiling replacement above. Transition validation compares every non-variable baseline field exactly and rejects any unlisted variable difference.
+`release/production-baseline.pre-model-budget.json` freezes the prior fully disabled configuration. `release/production-baseline.json` is the proposed Phase 4E disabled configuration, and `release/model-budget-baseline-transition.json` permits only the reviewed budget, routine-image, image-ceiling, and publication-gate changes. Transition validation compares every non-variable baseline field exactly and rejects any unlisted variable difference.
 
 Before activation, validate the freshly captured live state as `previous`; after activation, validate it as `target`. Both validations still require the generated artifact to match the proposed target baseline exactly:
 

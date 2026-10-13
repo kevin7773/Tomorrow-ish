@@ -7,6 +7,7 @@ export interface ModelBudgetEnvironment {
 	MODEL_CANDIDATES_MAX_COST_MICRO_USD?: string;
 	MODEL_ARTICLE_BODY_MAX_COST_MICRO_USD?: string;
 	MODEL_ITEM_BUDGET_MICRO_USD?: string;
+	MODEL_BATCH_BUDGET_MICRO_USD?: string;
 	MODEL_DAILY_BUDGET_MICRO_USD?: string;
 }
 
@@ -34,12 +35,13 @@ export function parseModelBudgetLimits(environment: ModelBudgetEnvironment): Mod
 			GENERATE_ARTICLE_BODY: positiveBudget(environment.MODEL_ARTICLE_BODY_MAX_COST_MICRO_USD, 'MODEL_ARTICLE_BODY_MAX_COST_MICRO_USD'),
 		},
 		itemMaxMicrousd: positiveBudget(environment.MODEL_ITEM_BUDGET_MICRO_USD, 'MODEL_ITEM_BUDGET_MICRO_USD'),
+		batchMaxMicrousd: positiveBudget(environment.MODEL_BATCH_BUDGET_MICRO_USD, 'MODEL_BATCH_BUDGET_MICRO_USD'),
 		dailyMaxMicrousd: positiveBudget(environment.MODEL_DAILY_BUDGET_MICRO_USD, 'MODEL_DAILY_BUDGET_MICRO_USD'),
 	};
 	if (limits.enabled && [limits.operationMaxMicrousd.NORMALIZE,
 		limits.operationMaxMicrousd.GENERATE_CANDIDATES,
 		limits.operationMaxMicrousd.GENERATE_ARTICLE_BODY,
-		limits.itemMaxMicrousd, limits.dailyMaxMicrousd].some((value) => value <= 0)) {
+		limits.itemMaxMicrousd, limits.batchMaxMicrousd, limits.dailyMaxMicrousd].some((value) => value <= 0)) {
 		throw new ModelProviderError('PROVIDER_CONFIGURATION', false,
 			'Every model budget ceiling is required when budget admission is enabled.');
 	}

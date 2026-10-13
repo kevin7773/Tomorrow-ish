@@ -279,7 +279,7 @@ describe('governed article body generation', () => {
 			budgetLimits: {
 				enabled: false,
 				operationMaxMicrousd: { NORMALIZE: 0, GENERATE_CANDIDATES: 0, GENERATE_ARTICLE_BODY: 0 },
-				itemMaxMicrousd: 0, dailyMaxMicrousd: 0,
+				itemMaxMicrousd: 0, batchMaxMicrousd: 0, dailyMaxMicrousd: 0,
 			},
 		});
 		await expect(generation.generateArticleBody(identity, {

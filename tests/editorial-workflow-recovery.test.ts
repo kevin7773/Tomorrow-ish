@@ -153,7 +153,8 @@ describe('editorial workflow recovery primitives', () => {
 			estimatedCostMicrousd: 1,
 			workflowFence: { batchId: 'batch', intakeId: 'intake-1', leaseOwner: 'worker-a' } };
 		expect(await generation.admitModelBudget({ ...record, candidateId: null, budgetDay: '2026-10-11',
-			limits: { enabled: true, operationMaxMicrousd: { NORMALIZE: 10, GENERATE_CANDIDATES: 10, GENERATE_ARTICLE_BODY: 10 }, itemMaxMicrousd: 10, dailyMaxMicrousd: 10 } })).toBe('ADMITTED');
+			budgetDayStart: '2026-10-11T04:00:00.000Z', budgetDayEnd: '2026-10-12T04:00:00.000Z',
+			limits: { enabled: true, operationMaxMicrousd: { NORMALIZE: 10, GENERATE_CANDIDATES: 10, GENERATE_ARTICLE_BODY: 10 }, itemMaxMicrousd: 10, batchMaxMicrousd: 10, dailyMaxMicrousd: 10 } })).toBe('ADMITTED');
 		expect(await generation.claimModelRequest(record)).toBe('CLAIMED');
 		expect(await generation.markModelRequestStarted(record.idempotencyKey, 'worker-a', NOW)).toBe(true);
 		expect(await generation.markModelBudgetStarted(record.attemptKey, 'worker-a', NOW)).toBe(true);
@@ -182,7 +183,8 @@ describe('editorial workflow recovery primitives', () => {
 			sourceIntakeId: 'intake-1', normalizedEventVersionId: null, createdAt: NOW, estimatedCostMicrousd: 1,
 			workflowFence: { batchId: 'batch', intakeId: 'intake-1', leaseOwner: 'worker' } };
 		expect(await generation.admitModelBudget({ ...base, candidateId: null, owner: 'worker', budgetDay: '2026-10-11',
-			limits: { enabled: true, operationMaxMicrousd: { NORMALIZE: 10, GENERATE_CANDIDATES: 10, GENERATE_ARTICLE_BODY: 10 }, itemMaxMicrousd: 10, dailyMaxMicrousd: 10 } })).toBe('ADMITTED');
+			budgetDayStart: '2026-10-11T04:00:00.000Z', budgetDayEnd: '2026-10-12T04:00:00.000Z',
+			limits: { enabled: true, operationMaxMicrousd: { NORMALIZE: 10, GENERATE_CANDIDATES: 10, GENERATE_ARTICLE_BODY: 10 }, itemMaxMicrousd: 10, batchMaxMicrousd: 10, dailyMaxMicrousd: 10 } })).toBe('ADMITTED');
 		const results = await Promise.all([
 			generation.claimModelRequest({ ...base, owner: 'worker' }),
 			generation.claimModelRequest({ ...base, owner: 'worker' }),

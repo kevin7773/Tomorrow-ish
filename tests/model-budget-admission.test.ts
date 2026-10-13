@@ -35,13 +35,14 @@ function database(): DatabaseSync {
 	return sqlite;
 }
 
-const limits = (daily = 100, item = 100): ModelBudgetLimits => ({ enabled: true,
+const limits = (daily = 100, item = 100, batch = daily): ModelBudgetLimits => ({ enabled: true,
 	operationMaxMicrousd: { NORMALIZE: 100, GENERATE_CANDIDATES: 100, GENERATE_ARTICLE_BODY: 100 },
-	itemMaxMicrousd: item, dailyMaxMicrousd: daily });
+	itemMaxMicrousd: item, batchMaxMicrousd: batch, dailyMaxMicrousd: daily });
 
 function request(overrides: Partial<AdmitModelBudgetRecord> = {}): AdmitModelBudgetRecord {
 	return { attemptKey: 'attempt-a', operation: 'NORMALIZE', sourceIntakeId: 'intake-a',
 		normalizedEventVersionId: null, candidateId: null, owner: 'manual:editor', budgetDay: '2026-10-12',
+		budgetDayStart: '2026-10-12T04:00:00.000Z', budgetDayEnd: '2026-10-13T04:00:00.000Z',
 		estimatedCostMicrousd: 6, limits: limits(), createdAt: NOW, ...overrides };
 }
 
@@ -65,6 +66,29 @@ describe('atomic model budget admission', () => {
 		sqlite.close();
 	});
 
+	it('atomically enforces a separate workflow-batch ceiling across different stories', async () => {
+		const sqlite = database(); const repository = new D1GenerationRepository(d1(sqlite));
+		sqlite.exec(`INSERT INTO categories (id,slug,name,created_at) VALUES ('cat','cat','Category','${NOW}');
+			INSERT INTO automation_runs (id,trigger_kind,status,started_at,completed_at)
+			VALUES ('batch','SCHEDULED','SUCCEEDED','${NOW}','${NOW}');
+			INSERT INTO editorial_batches (id,item_count,created_at) VALUES ('batch',3,'${NOW}');
+			INSERT INTO editorial_batch_items (batch_id,source_intake_id,ordinal,category_id,workflow_state,
+			selected_by_email,selected_at,lease_owner,lease_acquired_at,lease_expires_at,created_at,updated_at) VALUES
+			('batch','intake-a',1,'cat','GENERATING','editor@test','${NOW}','cron','${NOW}','2026-10-12T12:10:00.000Z','${NOW}','${NOW}'),
+			('batch','intake-b',2,'cat','GENERATING','editor@test','${NOW}','cron','${NOW}','2026-10-12T12:10:00.000Z','${NOW}','${NOW}');`);
+		const outcomes = await Promise.all([
+			repository.admitModelBudget(request({ attemptKey: 'batch-a', owner: 'cron', estimatedCostMicrousd: 6,
+				limits: limits(100, 100, 10), workflowFence: { batchId: 'batch', intakeId: 'intake-a', leaseOwner: 'cron' } })),
+			repository.admitModelBudget(request({ attemptKey: 'batch-b', sourceIntakeId: 'intake-b', owner: 'cron',
+				estimatedCostMicrousd: 6, limits: limits(100, 100, 10),
+				workflowFence: { batchId: 'batch', intakeId: 'intake-b', leaseOwner: 'cron' } })),
+		]);
+		expect(outcomes.sort()).toEqual(['ADMITTED', 'EXHAUSTED']);
+		expect(sqlite.prepare("SELECT SUM(estimated_cost_microusd) AS total FROM model_budget_reservations WHERE workflow_batch_id='batch'").get())
+			.toEqual({ total: 6 });
+		sqlite.close();
+	});
+
 	it('reuses an identical attempt without double-counting it', async () => {
 		const sqlite = database(); const repository = new D1GenerationRepository(d1(sqlite)); const record = request();
 		expect(await repository.admitModelBudget(record)).toBe('ADMITTED');
@@ -78,6 +102,15 @@ describe('atomic model budget admission', () => {
 		const operationLimits = limits(); operationLimits.operationMaxMicrousd.NORMALIZE = 5;
 		expect(await repository.admitModelBudget(request({ estimatedCostMicrousd: 6, limits: operationLimits }))).toBe('EXHAUSTED');
 		expect(sqlite.prepare('SELECT COUNT(*) count FROM model_budget_reservations').get()).toEqual({ count: 0 });
+		sqlite.close();
+	});
+
+	it('fails closed when the supplied budget date or UTC window does not match New York time', async () => {
+		const sqlite = database(); const repository = new D1GenerationRepository(d1(sqlite));
+		expect(await repository.admitModelBudget(request({ budgetDay: '2026-10-13' }))).toBe('INCONSISTENT');
+		expect(await repository.admitModelBudget(request({ budgetDayStart: '2026-10-12T00:00:00.000Z' })))
+			.toBe('INCONSISTENT');
+		expect(sqlite.prepare('SELECT COUNT(*) AS count FROM model_budget_reservations').get()).toEqual({ count: 0 });
 		sqlite.close();
 	});
 
@@ -172,11 +205,12 @@ describe('atomic model budget admission', () => {
 		sqlite.close();
 	});
 
-	it('resets the daily ceiling only at the UTC budget-day boundary', async () => {
+	it('resets the daily ceiling only at the America/New_York operating-day boundary', async () => {
 		const sqlite = database(); const repository = new D1GenerationRepository(d1(sqlite));
 		expect(await repository.admitModelBudget(request({ attemptKey: 'day-one', estimatedCostMicrousd: 8, limits: limits(10) }))).toBe('ADMITTED');
 		expect(await repository.admitModelBudget(request({ attemptKey: 'day-two', budgetDay: '2026-10-13',
-			createdAt: '2026-10-13T00:00:00.000Z', estimatedCostMicrousd: 8, limits: limits(10) }))).toBe('ADMITTED');
+			budgetDayStart: '2026-10-13T04:00:00.000Z', budgetDayEnd: '2026-10-14T04:00:00.000Z',
+			createdAt: '2026-10-13T04:00:00.000Z', estimatedCostMicrousd: 8, limits: limits(10) }))).toBe('ADMITTED');
 		sqlite.close();
 	});
 

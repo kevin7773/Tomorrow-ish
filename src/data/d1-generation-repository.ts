@@ -27,6 +27,7 @@ import type {
 	ReviewNormalizationRecord,
 	SettleModelBudgetRecord,
 } from './generation-repository';
+import { editorialOperatingWindow } from '../lib/dates';
 
 interface IntakeRow {
 	id: string; title: string; neutral_brief: string; significance_score: number;
@@ -164,16 +165,22 @@ export class D1GenerationRepository implements GenerationRepository {
 
 	async admitModelBudget(record: AdmitModelBudgetRecord): Promise<'ADMITTED' | 'REUSED' | 'EXHAUSTED' | 'INCONSISTENT' | 'DISABLED'> {
 		if (!record.limits.enabled) return 'DISABLED';
+		let window;
+		try {
+			window = editorialOperatingWindow(record.createdAt);
+		} catch {
+			return 'INCONSISTENT';
+		}
+		if (record.budgetDay !== window.operatingDate || record.budgetDayStart !== window.start
+			|| record.budgetDayEnd !== window.end) return 'INCONSISTENT';
 		const operationLimit = record.limits.operationMaxMicrousd[record.operation];
-		const dayStart = `${record.budgetDay}T00:00:00.000Z`;
-		const dayEnd = new Date(Date.parse(dayStart) + 86_400_000).toISOString();
 		const fence = record.workflowFence;
 		const result = await this.db.prepare(`INSERT INTO model_budget_reservations (
 			attempt_key, operation, source_intake_id, normalized_event_version_id, candidate_id,
 			owner, budget_day, status, estimated_cost_microusd, workflow_batch_id,
 			workflow_intake_id, created_at
 		) SELECT ?, ?, ?, ?, ?, ?, ?, 'RESERVED', ?, ?, ?, ?
-		WHERE ? > 0 AND ? <= ? AND ? <= ? AND ? <= ?
+		WHERE ? > 0 AND ? <= ? AND ? <= ? AND ? <= ? AND ? <= ?
 		AND (? IS NULL OR EXISTS (
 			SELECT 1 FROM editorial_batch_items WHERE batch_id = ? AND source_intake_id = ?
 			AND lease_owner = ? AND lease_expires_at > ? AND workflow_state = 'GENERATING'
@@ -203,6 +210,13 @@ export class D1GenerationRepository implements GenerationRepository {
 			+ (SELECT COALESCE(SUM(run.estimated_cost_microusd), 0) FROM candidate_body_generation_runs AS run
 				WHERE run.source_intake_id = ? AND NOT EXISTS (SELECT 1 FROM model_budget_reservations AS budget
 					WHERE budget.attempt_key = run.idempotency_key)) <= ?
+		AND (? IS NULL OR ? +
+			(SELECT COALESCE(SUM(CASE budget.status
+				WHEN 'RELEASED' THEN 0
+				WHEN 'FINALIZED' THEN COALESCE(budget.verified_billed_cost_microusd,
+					budget.usage_recorded_cost_microusd, budget.estimated_cost_microusd)
+				ELSE budget.estimated_cost_microusd END), 0)
+			 FROM model_budget_reservations AS budget WHERE budget.workflow_batch_id = ?) <= ?)
 		AND ? +
 			(SELECT COALESCE(SUM(CASE budget.status
 				WHEN 'RELEASED' THEN 0
@@ -225,11 +239,16 @@ export class D1GenerationRepository implements GenerationRepository {
 			operationLimit, record.estimatedCostMicrousd, operationLimit,
 			record.estimatedCostMicrousd, record.limits.itemMaxMicrousd,
 			record.estimatedCostMicrousd, record.limits.dailyMaxMicrousd,
+			record.estimatedCostMicrousd, record.limits.batchMaxMicrousd,
 			fence?.batchId ?? null, fence?.batchId ?? '', fence?.intakeId ?? '', fence?.leaseOwner ?? '', record.createdAt,
 			record.sourceIntakeId, record.sourceIntakeId,
 			record.estimatedCostMicrousd, record.sourceIntakeId, record.sourceIntakeId,
 			record.sourceIntakeId, record.limits.itemMaxMicrousd,
-			record.estimatedCostMicrousd, record.budgetDay, dayStart, dayEnd, dayStart, dayEnd,
+			fence?.batchId ?? null, record.estimatedCostMicrousd,
+			fence?.batchId ?? '', record.limits.batchMaxMicrousd,
+			record.estimatedCostMicrousd, record.budgetDay,
+			record.budgetDayStart, record.budgetDayEnd,
+			record.budgetDayStart, record.budgetDayEnd,
 			record.limits.dailyMaxMicrousd,
 		).run();
 		if (result.meta.changes === 1) return 'ADMITTED';

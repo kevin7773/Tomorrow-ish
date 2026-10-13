@@ -20,6 +20,14 @@ export interface ArticleImageServiceDependencies {
 	attemptKey?: string;
 	authorizeSmokeTarget?: (target: EditorialSmokeTarget) => Promise<boolean>;
 	estimateCost?: (provider: Pick<ImageProvider, 'provider' | 'model' | 'generationProfile'>, prompt: string, aspectRatio: string) => ImageCostEstimate;
+	routine?: {
+		batchId: string;
+		intakeId: string;
+		leaseOwner: string;
+		attemptMaxMicrousd: number;
+		batchMaxMicrousd: number;
+		dailyMaxMicrousd: number;
+	};
 }
 
 export interface ArticleImageGenerationResult {
@@ -76,6 +84,7 @@ export class ArticleImageService {
 	private readonly attemptKey: string | undefined;
 	private readonly authorizeSmokeTarget?: (target: EditorialSmokeTarget) => Promise<boolean>;
 	private readonly estimateCost: NonNullable<ArticleImageServiceDependencies['estimateCost']>;
+	private readonly routine: ArticleImageServiceDependencies['routine'];
 
 	constructor(
 		private readonly editorialRepository: EditorialRepository,
@@ -92,6 +101,7 @@ export class ArticleImageService {
 		this.attemptKey = dependencies.attemptKey;
 		this.authorizeSmokeTarget = dependencies.authorizeSmokeTarget;
 		this.estimateCost = dependencies.estimateCost ?? estimateSmokeImageCost;
+		this.routine = dependencies.routine;
 	}
 
 	async generate(
@@ -116,9 +126,12 @@ export class ArticleImageService {
 				throw new EditorialValidationError('Image generation is outside the configured smoke target.', 'conflict');
 			}
 		}
-		const visualDirection = this.smokeTarget !== undefined
+		const visualDirection = this.smokeTarget !== undefined || this.routine !== undefined
 			? governedImageVisualDirection(input.visualDirection)
 			: undefined;
+		if (this.routine !== undefined && story.status !== 'REVIEW') {
+			throw new EditorialValidationError('Routine image preparation requires a completed story in final review.', 'conflict');
+		}
 		if (story.status !== 'REVIEW' && story.status !== 'APPROVED') {
 			throw new EditorialValidationError('Only a story in final review can request paid image generation.');
 		}
@@ -148,6 +161,12 @@ export class ArticleImageService {
 			throw new ImageProviderError('The image attempt key is missing or invalid.', 'PROVIDER_CONFIGURATION');
 		}
 		const cost = this.estimateCost(this.provider, prompt.prompt, aspectRatio);
+		if (this.routine !== undefined && this.provider.lifecycle !== 'asynchronous') {
+			throw new ImageProviderError(
+				'Routine image preparation requires reservation-first asynchronous submission.',
+				'PROVIDER_CONFIGURATION',
+			);
+		}
 		if (this.provider.lifecycle === 'asynchronous') {
 			if (!this.createWebhookUrl) {
 				throw new ImageProviderError('Asynchronous image callbacks are not configured.', 'PROVIDER_CONFIGURATION');
@@ -167,6 +186,7 @@ export class ArticleImageService {
 				provider: this.provider.provider,
 				model: this.provider.model,
 				prompt: prompt.prompt,
+				visualDirection: visualDirection ?? null,
 				promptVersion: prompt.promptVersion,
 				aspectRatio,
 				attemptKey: this.attemptKey,
@@ -176,6 +196,7 @@ export class ArticleImageService {
 				requestedByEmail,
 				requestedAt,
 				auditId: this.createId(),
+				...(this.routine === undefined ? {} : { routine: this.routine }),
 			});
 			if (!pending) {
 				throw new EditorialValidationError('The story changed or an image generation is already pending.', 'conflict');
