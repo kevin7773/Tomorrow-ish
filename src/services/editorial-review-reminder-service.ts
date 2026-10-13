@@ -56,6 +56,8 @@ export class EditorialReviewReminderService {
 				}
 				continue;
 			}
+			if (batch.stage === 'FINAL_REVIEW' && !batch.initialSentAt
+				&& (batch.itemCount !== 3 || pendingCount !== 3)) continue;
 			const kind = dueKind(batch, now.getTime());
 			if (!kind) continue;
 			const claim = await this.repository.claim(

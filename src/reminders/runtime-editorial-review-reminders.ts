@@ -4,6 +4,9 @@ import {
 	D1ReviewNotificationRepository,
 } from '../data/d1-review-notification-repository';
 import { InternalReviewNotifier } from '../notifications/review-notifier';
+import { WebhookReviewNotifier } from '../notifications/review-notifier';
+import { CompositeReviewNotifier, DurableExternalReviewNotifier } from '../notifications/durable-external-review-notifier';
+import { D1ExternalReviewNotificationRepository } from '../data/external-review-notification-repository';
 import { EditorialReviewReminderService } from '../services/editorial-review-reminder-service';
 import { ReviewNotificationReceiverService } from '../services/review-notification-receiver-service';
 
@@ -11,8 +14,15 @@ export interface ReviewReminderEnvironment {
 	DB: D1Database;
 	// Retained for the compatible HTTP adapter; scheduled delivery is in-process.
 	REVIEW_NOTIFICATION_WEBHOOK_URL?: string;
+	EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED?: string;
 	REVIEW_NOTIFICATION_REVIEW_URL?: string;
 	IMAGE_WEBHOOK_ORIGIN?: string;
+}
+
+function externalEnabled(value: string | undefined): boolean {
+	if (value === undefined || value === '' || value === 'false') return false;
+	if (value === 'true') return true;
+	throw new Error('EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED must be true or false');
 }
 
 function configuredReviewUrl(environment: ReviewReminderEnvironment): string | null {
@@ -35,9 +45,19 @@ export function runEditorialReviewReminders(environment: ReviewReminderEnvironme
 		receipts,
 		new D1EditorialNotificationDelivery(environment.DB),
 	);
+	const internal = new InternalReviewNotifier(receiver, new URL(reviewUrl).origin);
+	const notifier = externalEnabled(environment.EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED)
+		? new CompositeReviewNotifier([
+			internal,
+			new DurableExternalReviewNotifier(
+				new D1ExternalReviewNotificationRepository(environment.DB),
+				new WebhookReviewNotifier(environment.REVIEW_NOTIFICATION_WEBHOOK_URL?.trim() ?? ''),
+			),
+		])
+		: internal;
 	return new EditorialReviewReminderService(
 		new D1EditorialReviewReminderRepository(environment.DB),
-		new InternalReviewNotifier(receiver, new URL(reviewUrl).origin),
+		notifier,
 		reviewUrl,
 	).process();
 }

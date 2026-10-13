@@ -151,7 +151,7 @@ describe('two-phase editorial reminders', () => {
 		const released: string[] = [];
 		const repository: ReviewReminderRepository = {
 			listUnresolved: vi.fn(async () => batches),
-			countPending: vi.fn(async () => 1),
+			countPending: vi.fn(async () => 3),
 			resolve: vi.fn(async () => false),
 			claim: vi.fn(async (batchId, stage, kind, claimToken) => ({ batchId, stage, kind, claimToken })),
 			complete: vi.fn(async (claim) => { completed.push(claim.batchId); return true; }),
@@ -203,7 +203,15 @@ describe('two-phase editorial reminders', () => {
 			expect(source).not.toContain('rejectFinal');
 		}
 		expect(runtime).toContain('InternalReviewNotifier');
-		expect(runtime).not.toContain('WebhookReviewNotifier');
+		expect(runtime).toContain('EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED');
+		expect(runtime).toContain('DurableExternalReviewNotifier');
 		expect(runtime).not.toContain('fetch(');
+	});
+
+	it('does not announce an incomplete three-article final-review batch', async () => {
+		const test = harness('FINAL_REVIEW', 2);
+		expect(await test.service.process()).toEqual({ resolved: 0, sent: 0, failed: 0 });
+		expect(test.sent).toHaveLength(0);
+		expect(test.repository.claim).not.toHaveBeenCalled();
 	});
 });

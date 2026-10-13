@@ -17,21 +17,39 @@ export interface ReviewNotifier {
 }
 
 export class ReviewNotificationError extends Error {
-	constructor(readonly classification: 'NOT_CONFIGURED' | 'NETWORK' | 'REJECTED') {
+	constructor(
+		readonly classification: 'NOT_CONFIGURED' | 'NETWORK' | 'REJECTED' | 'AMBIGUOUS' | 'CONFLICT',
+		readonly responseStatus: number | null = null,
+		readonly requestId: string | null = null,
+	) {
 		super(`Review notification failed: ${classification}`);
 	}
 }
 
-export class WebhookReviewNotifier implements ReviewNotifier {
-	constructor(private readonly webhookUrl: string, private readonly fetcher: typeof fetch = fetch) {}
+export interface ReviewNotificationTransportResult {
+	status: number;
+	requestId: string | null;
+}
 
-	async send(notification: ReviewNotification): Promise<void> {
+export interface ReviewNotificationTransport {
+	send(notification: ReviewNotification): Promise<ReviewNotificationTransportResult>;
+}
+
+export class WebhookReviewNotifier implements ReviewNotificationTransport {
+	constructor(
+		private readonly webhookUrl: string,
+		private readonly fetcher: typeof fetch = fetch,
+		private readonly timeoutMs = 8_000,
+	) {}
+
+	async send(notification: ReviewNotification): Promise<ReviewNotificationTransportResult> {
 		if (!this.webhookUrl.trim()) throw new ReviewNotificationError('NOT_CONFIGURED');
 		let response: Response;
 		try {
 			response = await this.fetcher(this.webhookUrl, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json', 'idempotency-key': notification.idempotencyKey },
+				signal: AbortSignal.timeout(this.timeoutMs),
 				body: JSON.stringify({
 					text: notification.message, reviewUrl: notification.reviewUrl,
 					batchId: notification.batchId, reminderStage: notification.stage,
@@ -41,7 +59,11 @@ export class WebhookReviewNotifier implements ReviewNotifier {
 		} catch {
 			throw new ReviewNotificationError('NETWORK');
 		}
-		if (!response.ok) throw new ReviewNotificationError('REJECTED');
+		const requestId = response.headers.get('cf-ray') ?? response.headers.get('x-request-id');
+		if (!response.ok) throw new ReviewNotificationError(
+			response.status >= 500 ? 'AMBIGUOUS' : 'REJECTED', response.status, requestId,
+		);
+		return { status: response.status, requestId };
 	}
 }
 

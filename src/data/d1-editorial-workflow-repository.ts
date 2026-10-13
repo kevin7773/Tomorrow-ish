@@ -434,8 +434,11 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 	async publishFinal(record: { batchId: string; intakeId: string; storyId: string; actorEmail: string; at: string; eventId: string; auditId: string }): Promise<boolean> {
 		const results = await this.db.batch([
 			this.db.prepare(`UPDATE stories SET status = 'PUBLISHED', published_at = ?, updated_at = ?
-				WHERE id = ? AND ${PUBLISHABLE_STORY_PREDICATE}`)
-				.bind(record.at, record.at, record.storyId),
+				WHERE id = ? AND ${PUBLISHABLE_STORY_PREDICATE}
+				AND NOT EXISTS (SELECT 1 FROM editorial_publication_attempts AS attempt
+					WHERE attempt.story_id = stories.id AND attempt.status = 'CLAIMED'
+					AND attempt.lease_expires_at > ?)`)
+				.bind(record.at, record.at, record.storyId, record.at),
 			this.db.prepare(`UPDATE editorial_batch_items SET workflow_state = 'PUBLISHED', updated_at = ?
 				WHERE batch_id = ? AND source_intake_id = ? AND story_id = ?
 				AND workflow_state = 'READY_FOR_REVIEW' AND EXISTS

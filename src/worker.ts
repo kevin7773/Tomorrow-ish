@@ -4,6 +4,7 @@ import { runEditorialReviewReminders, type ReviewReminderEnvironment } from './r
 import { runEditorialWorkflow } from './services/runtime-editorial-workflow';
 import { D1EditorialCronWindowRepository } from './data/d1-editorial-cron-window-repository';
 import { runDeduplicatedCronWindow } from './services/editorial-cron-window';
+import { runGovernedAutomatedPublication, type AutomatedPublicationEnvironment } from './services/runtime-governed-publication';
 
 const REVIEW_REMINDER_CRON = '*/5 * * * *';
 
@@ -20,6 +21,7 @@ export default {
 			}, async () => {
 				await runEditorialWorkflow();
 				await runEditorialReviewReminders(environment as ReviewReminderEnvironment);
+				await runGovernedAutomatedPublication(environment as AutomatedPublicationEnvironment);
 			});
 			return;
 		}

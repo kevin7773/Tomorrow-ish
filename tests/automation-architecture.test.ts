@@ -5,15 +5,18 @@ import { describe, expect, it } from 'vitest';
 const read = (path: string) => readFileSync(join(process.cwd(), path), 'utf8');
 
 describe('automation architecture boundaries', () => {
-	it('contains no publication or ad authority', () => {
+	it('keeps intake acquisition free of publication and ad authority', () => {
 		for (const path of [
 			'src/automation/automation-service.ts',
 			'src/automation/runtime-automation.ts',
-			'src/worker.ts',
 		]) {
 			const source = read(path);
 			expect(source, path).not.toMatch(/publishStory|publishApprovedStory|AdSense|ADS_ENABLED/);
 		}
+		const worker = read('src/worker.ts');
+		expect(worker).toContain('runGovernedAutomatedPublication');
+		expect(read('src/services/runtime-governed-publication.ts'))
+			.toContain('EDITORIAL_AUTOMATED_PUBLICATION_ENABLED');
 	});
 
 	it('keeps the approved intake schedule and adds only the reminder polling schedule', () => {
