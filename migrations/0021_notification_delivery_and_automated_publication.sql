@@ -151,7 +151,7 @@ BEGIN
       AND EXISTS (SELECT 1 FROM editorial_audit_log WHERE id = audit_id)
       AND EXISTS (SELECT 1 FROM editorial_workflow_events WHERE id = workflow_event_id);
 
-    SELECT CASE WHEN NOT EXISTS (
+    SELECT (CASE WHEN NOT EXISTS (
         SELECT 1 FROM editorial_publication_attempts AS attempt
         JOIN editorial_batch_items AS item
           ON item.batch_id = attempt.batch_id AND item.source_intake_id = attempt.source_intake_id
@@ -159,7 +159,7 @@ BEGIN
           AND attempt.published_at = NEW.updated_at AND item.workflow_state = 'PUBLISHED'
           AND EXISTS (SELECT 1 FROM editorial_audit_log WHERE id = attempt.audit_id)
           AND EXISTS (SELECT 1 FROM editorial_workflow_events WHERE id = attempt.workflow_event_id)
-    ) THEN RAISE(ABORT, 'automated publication invariants were not committed atomically') END;
+    ) THEN RAISE(ABORT, 'automated publication invariants were not committed atomically') END);
 END;
 
 PRAGMA optimize;

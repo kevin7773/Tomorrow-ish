@@ -100,8 +100,8 @@ BEGIN
         OR (status = 'FAILED' AND NEW.decision = 'CONFIRMED_FAILED')
         OR (status = 'FAILED' AND NEW.decision = 'MANUALLY_DELIVERED'));
 
-    SELECT CASE WHEN changes() <> 1
-        THEN RAISE(ABORT, 'notification reconciliation is incompatible with current delivery state') END;
+    SELECT (CASE WHEN changes() <> 1
+        THEN RAISE(ABORT, 'notification reconciliation is incompatible with current delivery state') END);
 END;
 
 PRAGMA optimize;
