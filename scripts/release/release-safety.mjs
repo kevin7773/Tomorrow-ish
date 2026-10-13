@@ -113,8 +113,10 @@ export function validateBaselineTransition(previous, next, contract) {
 	}
 	check(errors, priorVars.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '' && nextVars.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '',
 		'image smoke attempt key must remain blank across transition');
-	check(errors, priorVars.MODEL_BUDGET_ADMISSION_ENABLED === undefined,
-		'previous baseline must not already contain MODEL_BUDGET_ADMISSION_ENABLED');
+	if (Object.hasOwn(changes ?? {}, 'MODEL_BUDGET_ADMISSION_ENABLED')) {
+		check(errors, priorVars.MODEL_BUDGET_ADMISSION_ENABLED === undefined,
+			'previous baseline must not already contain MODEL_BUDGET_ADMISSION_ENABLED');
+	}
 	try {
 		validateReviewedModelBudgetVariables(nextVars);
 	} catch (error) {

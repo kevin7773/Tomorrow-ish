@@ -55,13 +55,13 @@ The current Phase 4A release contract compares live variables to a frozen baseli
 
 ## Reviewed configuration transition
 
-`release/production-baseline.pre-model-budget.json` freezes the prior fully disabled configuration. `release/production-baseline.json` is the proposed Phase 4E disabled configuration, and `release/model-budget-baseline-transition.json` permits only the reviewed budget, routine-image, image-ceiling, and publication-gate changes. Transition validation compares every non-variable baseline field exactly and rejects any unlisted variable difference.
+`release/production-baseline.pre-model-budget.json` freezes the configuration before the budget transition. `release/production-baseline.pre-resend.json` freezes the resulting Phase 4E disabled configuration, and `release/model-budget-baseline-transition.json` permits only the reviewed budget, routine-image, image-ceiling, and publication-gate changes. Transition validation compares every non-variable baseline field exactly and rejects any unlisted variable difference. The current target baseline may advance through later separately reviewed transitions and must not be substituted into this historical contract.
 
 Before activation, validate the freshly captured live state as `previous`; after activation, validate it as `target`. Both validations still require the generated artifact to match the proposed target baseline exactly:
 
 ```powershell
-npm run release:validate -- --transition-from-baseline release/production-baseline.pre-model-budget.json --transition-contract release/model-budget-baseline-transition.json --live-state previous --live-snapshot .release/live-before.json
-npm run release:validate -- --transition-from-baseline release/production-baseline.pre-model-budget.json --transition-contract release/model-budget-baseline-transition.json --live-state target --live-snapshot .release/live-after.json
+npm run release:validate -- --baseline release/production-baseline.pre-resend.json --transition-from-baseline release/production-baseline.pre-model-budget.json --transition-contract release/model-budget-baseline-transition.json --live-state previous --live-snapshot .release/live-before.json
+npm run release:validate -- --baseline release/production-baseline.pre-resend.json --transition-from-baseline release/production-baseline.pre-model-budget.json --transition-contract release/model-budget-baseline-transition.json --live-state target --live-snapshot .release/live-after.json
 ```
 
 Rollback activates the pre-verified Worker version `9227db60-0cf8-436c-a626-61e25e80844a` with `--rollback-to-previous`, then validates a fresh live snapshot in `previous` mode. The additive migration remains installed. Do not edit variables piecemeal or infer a mixed state as successful.

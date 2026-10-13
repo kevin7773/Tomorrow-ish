@@ -179,12 +179,12 @@ Populate it from authenticated `wrangler whoami --account ... --json`, Worker se
 npm run release:validate -- --live-snapshot .release/live-before.json
 ```
 
-For the one-time Phase 4B budget-baseline transition, production initially matches the exact previous baseline while the generated artifact matches the exact proposed baseline. Validate both through the reviewed transition contract; never edit the baseline or omit exact comparison to make a mixed state pass:
+For the one-time Phase 4H disabled Resend-routing transition, production initially matches the exact pre-Resend baseline while the generated artifact matches the exact proposed baseline. Validate both through the reviewed transition contract; never edit the baseline or omit exact comparison to make a mixed state pass:
 
 ```powershell
 $transition = @(
-  '--transition-from-baseline', 'release/production-baseline.pre-model-budget.json',
-  '--transition-contract', 'release/model-budget-baseline-transition.json'
+  '--transition-from-baseline', 'release/production-baseline.pre-resend.json',
+  '--transition-contract', 'release/resend-email-baseline-transition.json'
 )
 npm run release:validate -- @transition --live-state previous --live-snapshot .release/live-before.json
 ```
@@ -192,9 +192,9 @@ npm run release:validate -- @transition --live-state previous --live-snapshot .r
 Use the same transition arguments and `--live-state previous` for Cron pause, upload, inspection, and activation while the observed live version is still the previous configuration. For example:
 
 ```powershell
-npm run release:operator -- cron-pause --execute --commit <approved-commit-sha> --live-snapshot .release/live-before.json --live-state previous --transition-from-baseline release/production-baseline.pre-model-budget.json --transition-contract release/model-budget-baseline-transition.json
-npm run release:operator -- upload --execute --commit <approved-commit-sha> --live-snapshot .release/live-paused.json --live-state previous --transition-from-baseline release/production-baseline.pre-model-budget.json --transition-contract release/model-budget-baseline-transition.json --tag <reviewed-tag> --message "<reviewed-message>"
-npm run release:operator -- activate --execute --commit <approved-commit-sha> --live-snapshot .release/live-paused.json --live-state previous --transition-from-baseline release/production-baseline.pre-model-budget.json --transition-contract release/model-budget-baseline-transition.json --version <new-version-id> --version-snapshot .release/version.json --module-inventory .release/module-inventory.json --message "<reviewed-activation-message>"
+npm run release:operator -- cron-pause --execute --commit <approved-commit-sha> --live-snapshot .release/live-before.json --live-state previous --transition-from-baseline release/production-baseline.pre-resend.json --transition-contract release/resend-email-baseline-transition.json
+npm run release:operator -- upload --execute --commit <approved-commit-sha> --live-snapshot .release/live-paused.json --live-state previous --transition-from-baseline release/production-baseline.pre-resend.json --transition-contract release/resend-email-baseline-transition.json --tag <reviewed-tag> --message "<reviewed-message>"
+npm run release:operator -- activate --execute --commit <approved-commit-sha> --live-snapshot .release/live-paused.json --live-state previous --transition-from-baseline release/production-baseline.pre-resend.json --transition-contract release/resend-email-baseline-transition.json --version <new-version-id> --version-snapshot .release/version.json --module-inventory .release/module-inventory.json --message "<reviewed-activation-message>"
 ```
 
 Immediately after activation, capture a fresh snapshot and switch to `--live-state target`. The operator validates the proposed uploaded version regardless of which exact live state is selected. Restore Cron only after the target snapshot validates exactly.
@@ -261,13 +261,13 @@ npm run release:operator -- rollback --execute --commit <approved-commit-sha> --
 
 After rollback, repeat effective-configuration, routes/domain, health, schedules, Cron-ownership, and provider-activity verification. If an additive migration was already applied, leave it in place unless a separately reviewed data recovery procedure says otherwise.
 
-During the Phase 4B configuration transition, the reviewed rollback target is Worker version `9227db60-0cf8-436c-a626-61e25e80844a`. Supply both transition files and `--rollback-to-previous`; this makes the operator validate the rollback version against the frozen previous baseline rather than the proposed target baseline:
+During the Phase 4H configuration transition, retain and inspect the active pre-Resend, all-disabled Worker before activation. Supply both transition files and `--rollback-to-previous`; this makes the operator validate that rollback version against the frozen previous baseline rather than the proposed target baseline:
 
 ```powershell
-npm run release:operator -- rollback --execute --commit <approved-commit-sha> --live-snapshot .release/live-after.json --transition-from-baseline release/production-baseline.pre-model-budget.json --transition-contract release/model-budget-baseline-transition.json --rollback-to-previous --version 9227db60-0cf8-436c-a626-61e25e80844a --version-snapshot .release/previous-version.json --message "Restore pre-budget fully disabled Worker"
+npm run release:operator -- rollback --execute --commit <approved-commit-sha> --live-snapshot .release/live-after.json --transition-from-baseline release/production-baseline.pre-resend.json --transition-contract release/resend-email-baseline-transition.json --rollback-to-previous --version <pre-resend-disabled-version-id> --version-snapshot .release/previous-version.json --message "Restore pre-Resend fully disabled Worker"
 ```
 
-After activation, capture a fresh live snapshot and validate it with `--live-state previous`. All generation gates remain false in both baselines, and model-budget admission is absent in the previous baseline and explicitly false in the target baseline.
+After activation, capture a fresh live snapshot and validate it with `--live-state target`. All seven capability gates remain explicitly false in both baselines. The only target variable additions are the reviewed sender address and internal adapter URL; Resend and recipient secrets remain absent.
 
 The configured Custom Domain sends all paths on `tomorrow-ish.news` to this Worker. Cloudflare creates the required DNS record and managed certificate when the Custom Domain is attached. If the first deployment cannot attach the domain, use **Workers & Pages → tomorrow-ish → Settings → Domains & Routes → Add → Custom Domain**, enter `tomorrow-ish.news`, and resolve any conflicting DNS record before retrying.
 

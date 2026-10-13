@@ -42,6 +42,8 @@
     "CLOUDFLARE_AI_GATEWAY_ID": "tomorrow-ish",
     "IMAGE_WEBHOOK_ORIGIN": "https://tomorrow-ish.news",
     "REVIEW_NOTIFICATION_WEBHOOK_URL": "https://tomorrow-ish.news/api/internal/review-notifications",
+    "EDITORIAL_NOTIFICATION_FROM_EMAIL": "editorial@tomorrow-ish.news",
+    "REVIEW_NOTIFICATION_EXTERNAL_URL": "https://tomorrow-ish.news/api/internal/editorial-email-delivery",
     "ADS_ENABLED": "false",
     "ADSENSE_ARTICLE_INLINE_1_SLOT": "",
     "ADSENSE_ARTICLE_INLINE_2_SLOT": "",

@@ -1,0 +1,13 @@
+{
+  "name": "phase-4h-resend-email-disabled",
+  "allowedVariableChanges": {
+    "EDITORIAL_NOTIFICATION_FROM_EMAIL": {
+      "from": null,
+      "to": "editorial@tomorrow-ish.news"
+    },
+    "REVIEW_NOTIFICATION_EXTERNAL_URL": {
+      "from": null,
+      "to": "https://tomorrow-ish.news/api/internal/editorial-email-delivery"
+    }
+  }
+}

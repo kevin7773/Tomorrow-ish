@@ -53,7 +53,14 @@ Worker secrets:
 - `EDITORIAL_NOTIFICATION_TO_EMAIL`
 - `REVIEW_NOTIFICATION_EXTERNAL_BEARER_TOKEN`
 
-The destination email is treated as a secret binding so the address is not copied into source-controlled Wrangler configuration or release evidence. `EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED` must remain explicitly `false` for disabled deployment.
+The destination email is treated as a secret binding so the address is not copied into source-controlled Wrangler configuration or release evidence. `EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED` must remain explicitly `false` for disabled deployment. The disabled Phase 4H transition intentionally adds only the two plain-text variables above. All four Resend/destination secrets remain absent; with the external gate false, an absent bearer token rejects adapter requests before provider submission, and an absent signing secret rejects callbacks.
+
+The exact disabled transition is frozen by `release/production-baseline.pre-resend.json`, `release/production-baseline.json`, and `release/resend-email-baseline-transition.json`. Validate the observed previous and target states with:
+
+```powershell
+npm run release:validate -- --transition-from-baseline release/production-baseline.pre-resend.json --transition-contract release/resend-email-baseline-transition.json --live-state previous --live-snapshot .release/live-before.json
+npm run release:validate -- --transition-from-baseline release/production-baseline.pre-resend.json --transition-contract release/resend-email-baseline-transition.json --live-state target --live-snapshot .release/live-after.json
+```
 
 ## Resend setup, not performed locally
 
@@ -66,6 +73,8 @@ The destination email is treated as a secret binding so the address is not copie
 7. Ensure Cloudflare routing permits this signed callback route without an interactive Access redirect. Do not weaken Access protection for `/editorial`.
 8. Add the external adapter URL and secrets through a separately reviewed frozen-baseline transition while the capability gate remains false.
 9. Use Resend's test-mode destination and mocked/non-production environment for acceptance before any real Gmail delivery is authorized.
+
+The application middleware applies Cloudflare Access identity checks only to `/editorial` and `/editorial/*`. Both machine endpoints live under `/api/internal/*`; the adapter requires its independent bearer secret and the callback requires a valid Resend signature. This permits machine delivery without weakening the protected editorial routes. Before activation, verify the account-level Zero Trust application is likewise scoped to the editorial paths. If it currently covers the whole hostname, add only the narrowly scoped machine-route policy needed for the signed callback; do not create a hostname-wide Access bypass.
 
 ## Investigation and recovery
 

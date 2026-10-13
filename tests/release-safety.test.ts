@@ -102,7 +102,7 @@ describe('production release safety', () => {
 		const read = (path: string) => JSON.parse(readFileSync(path, 'utf8'));
 		expect(validateBaselineTransition(
 			read('release/production-baseline.pre-model-budget.json'),
-			read('release/production-baseline.json'),
+			read('release/production-baseline.pre-resend.json'),
 			read('release/model-budget-baseline-transition.json'),
 		)).toMatchObject({ name: 'phase-4e-governed-editorial-automation-disabled' });
 	});
@@ -110,7 +110,7 @@ describe('production release safety', () => {
 	it('accepts genuinely absent legacy automation gates only in an explicitly reviewed previous state', () => {
 		const read = (path: string) => JSON.parse(readFileSync(path, 'utf8'));
 		const previous = read('release/production-baseline.pre-model-budget.json');
-		const target = read('release/production-baseline.json');
+		const target = read('release/production-baseline.pre-resend.json');
 		const transition = validateBaselineTransition(
 			previous,
 			target,
@@ -133,11 +133,42 @@ describe('production release safety', () => {
 	it('requires exact contract authorization for every legacy-disabled gate introduction', () => {
 		const read = (path: string) => JSON.parse(readFileSync(path, 'utf8'));
 		const previous = read('release/production-baseline.pre-model-budget.json');
-		const target = read('release/production-baseline.json');
+		const target = read('release/production-baseline.pre-resend.json');
 		const contract = read('release/model-budget-baseline-transition.json');
 		delete contract.allowedVariableChanges.EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED;
 		expect(() => validateBaselineTransition(previous, target, contract))
 			.toThrow(/actual variable changes differ/);
+	});
+
+	it('validates only the two reviewed disabled Resend routing variables', () => {
+		const read = (path: string) => JSON.parse(readFileSync(path, 'utf8'));
+		const previous = read('release/production-baseline.pre-resend.json');
+		const target = read('release/production-baseline.json');
+		const contract = read('release/resend-email-baseline-transition.json');
+		expect(validateBaselineTransition(previous, target, contract)).toMatchObject({
+			name: 'phase-4h-resend-email-disabled',
+			changedVariables: ['EDITORIAL_NOTIFICATION_FROM_EMAIL', 'REVIEW_NOTIFICATION_EXTERNAL_URL'],
+		});
+		expect(target.requiredSecrets).toEqual(previous.requiredSecrets);
+		for (const secret of ['RESEND_API_KEY', 'RESEND_WEBHOOK_SIGNING_SECRET',
+			'EDITORIAL_NOTIFICATION_TO_EMAIL', 'REVIEW_NOTIFICATION_EXTERNAL_BEARER_TOKEN']) {
+			expect(target.requiredSecrets).not.toContain(secret);
+		}
+		const previousSnapshot = {
+			capturedAt: '2026-10-12T21:55:00.000Z', accountId: previous.accountId,
+			workerName: previous.workerName, d1: previous.d1, r2: previous.r2, assets: previous.assets,
+			workersDev: false, previewUrls: false, routes: previous.routes, crons: previous.crons,
+			secretNames: previous.requiredSecrets, vars: previous.requiredVars,
+		};
+		expect(() => validateLiveSnapshot(previousSnapshot, previous, {
+			now: snapshotNow, liveState: 'previous',
+			transition: validateBaselineTransition(previous, target, contract),
+		})).not.toThrow();
+		expect(() => validateBaselineTransition(previous, target, {
+			...contract, allowedVariableChanges: {
+				...contract.allowedVariableChanges, UNREVIEWED: { from: null, to: 'false' },
+			},
+		})).toThrow(/actual variable changes differ/);
 	});
 
 	it('requires every capability gate to be explicitly false in target mode', () => {
