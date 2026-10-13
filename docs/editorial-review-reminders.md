@@ -26,7 +26,7 @@ Initial wording is count-aware:
 
 The scheduled Worker uses `InternalReviewNotifier` to pass the same logical contract directly to the receiver service in-process. It does not fetch the Worker's own public hostname. Durable acceptance or an exact previously delivered duplicate is success. Any other result is reported to the reminder service, which releases only that reminder claim; the next five-minute poll may try the same idempotency key again.
 
-`WebhookReviewNotifier` remains available for external adapters. It makes one `POST` request with no explicit application timeout and no transport-level retry. It sends `Content-Type: application/json` and the idempotency header above, and treats any HTTP 2xx response as success.
+`WebhookReviewNotifier` is the external adapter. It makes one `POST` request with an eight-second timeout and no transport-level retry. It requires an HTTPS destination and a bearer secret of at least 32 characters. It sends `Authorization: Bearer <secret>`, `Content-Type: application/json`, and the idempotency header above.
 
 The exact JSON body is:
 
@@ -40,14 +40,37 @@ The exact JSON body is:
 }
 ```
 
+HTTP 200 is confirmed delivery only when the JSON acknowledgement is exactly compatible with:
+
+```json
+{
+  "deliveryState": "DELIVERED",
+  "idempotencyKey": "editorial-review:<batch-id>:<phase>:<kind>",
+  "deliveryId": "optional-destination-reference"
+}
+```
+
+HTTP 202, other successful statuses, malformed or mismatched acknowledgements, timeouts, network loss, and HTTP 5xx responses are ambiguous. HTTP 4xx is a definitive rejection. No uncertain or failed delivery is retried automatically.
+
 `reminderStage` is `TRIAGE` or `FINAL_REVIEW`; `reminderKind` is `INITIAL`, `SIX_HOUR`, or `FINAL`; and `reviewUrl` may be `null` only when no review origin is configured.
 
 ## Internal receiver and delivery
 
-The checked-in receiver is `POST /api/internal/review-notifications`. The endpoint and scheduled internal sender share the same validation, receipt, and inbox-delivery services. `REVIEW_NOTIFICATION_WEBHOOK_URL` remains as a non-secret compatibility value for the HTTP adapter, but scheduled delivery does not read or depend on it. `REVIEW_NOTIFICATION_REVIEW_URL` remains optional; the review origin defaults to `IMAGE_WEBHOOK_ORIGIN`.
+The checked-in receiver is `POST /api/internal/review-notifications`. The endpoint and scheduled internal sender share the same validation, receipt, and inbox-delivery services. `REVIEW_NOTIFICATION_WEBHOOK_URL` remains a non-secret compatibility value for that internal endpoint and is not an external notification destination. External delivery uses the separately reviewed `REVIEW_NOTIFICATION_EXTERNAL_URL` and secret `REVIEW_NOTIFICATION_EXTERNAL_BEARER_TOKEN`. `REVIEW_NOTIFICATION_REVIEW_URL` remains optional; the review origin defaults to `IMAGE_WEBHOOK_ORIGIN`.
 
 The endpoint accepts only the exact sender schema, exact same-origin review route, and exact idempotency key. A new receipt is authorized only while the matching `editorial_stage_reminders` row owns an active claim for that phase and reminder kind. Previously delivered exact duplicates return HTTP 200 without producing another notification; conflicting payload reuse is rejected.
 
 `review_notification_receipts` records bounded delivery state, attempts, timestamps, and failure classifications. `editorial_notifications` is the first-party human-visible destination and contains at most one row per idempotency key. Kevin can view the durable inbox at `/editorial/notifications` inside the existing protected editorial workspace. No additional provider, account, or secret is required.
 
-Migration `0014_editorial_review_reminders.sql` creates the batch, batch-item, phase-reminder, append-only event, receipt, and internal-notification tables. No additional migration is required for the in-process transport.
+Migration `0014_editorial_review_reminders.sql` creates the batch, batch-item, phase-reminder, append-only event, receipt, and internal-notification tables. Migration `0021_notification_delivery_and_automated_publication.sql` adds durable external delivery attempts. Migration `0022_operational_admission_and_notification_reconciliation.sql` adds append-only operator reconciliation evidence.
+
+## Operator reconciliation
+
+The protected notification inbox lists `FAILED` and `AMBIGUOUS` external attempts. An operator first searches the actual destination by the persisted idempotency key:
+
+- If a matching delivered message exists, record `CONFIRMED_DELIVERED` with the destination evidence reference.
+- If the destination can definitively prove it did not accept or deliver the request, record `CONFIRMED_FAILED`.
+- A definitively failed message may be sent manually using the original idempotency key, then recorded as `MANUALLY_DELIVERED`; the evidence must include that key.
+- If the destination cannot establish the outcome, leave the row `AMBIGUOUS`. Do not send again.
+
+Reconciliation never invokes the webhook. Its actor, timestamp, decision, and evidence reference are immutable. Secrets are Worker secrets, never D1 fields, request payload fields, logs, or UI values.

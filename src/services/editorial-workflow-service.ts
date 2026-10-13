@@ -4,6 +4,7 @@ import type { EditorialIdentity } from '../domain/editorial';
 import { EditorialValidationError, requiredText } from './validation';
 import { isSmokeTargetPair, type EditorialSmokeTarget } from './editorial-smoke-target';
 import { requirePublicationReady } from './publication-integrity';
+import type { RoutineBatchAdmissionPort } from './routine-batch-admission-service';
 
 export interface WorkflowPipelinePort {
 	advance(item: EditorialBatchItem, guard?: { renew(): Promise<void> }): Promise<{ storyId: string; ready: boolean; allowMissingImage?: boolean }>;
@@ -31,12 +32,13 @@ export class EditorialWorkflowService {
 	private readonly owner: () => string;
 	private readonly smokeTarget: EditorialSmokeTarget | null;
 	private readonly imageGenerationEnabled: boolean;
+	private readonly batchAdmission: RoutineBatchAdmissionPort | null;
 
 	constructor(
 		private readonly repository: EditorialWorkflowRepository,
 		private readonly pipeline?: WorkflowPipelinePort,
 		private readonly images?: FinalReviewImagePort,
-		dependencies: { now?: () => string; createId?: () => string; leaseMs?: number; generationEnabled?: boolean; owner?: () => string; smokeTarget?: EditorialSmokeTarget | null; imageGenerationEnabled?: boolean } = {},
+		dependencies: { now?: () => string; createId?: () => string; leaseMs?: number; generationEnabled?: boolean; owner?: () => string; smokeTarget?: EditorialSmokeTarget | null; imageGenerationEnabled?: boolean; batchAdmission?: RoutineBatchAdmissionPort } = {},
 	) {
 		this.now = dependencies.now ?? (() => new Date().toISOString());
 		this.createId = dependencies.createId ?? (() => crypto.randomUUID());
@@ -45,6 +47,7 @@ export class EditorialWorkflowService {
 		this.owner = dependencies.owner ?? (() => `workflow:${crypto.randomUUID()}`);
 		this.smokeTarget = dependencies.smokeTarget ?? null;
 		this.imageGenerationEnabled = dependencies.imageGenerationEnabled ?? true;
+		this.batchAdmission = dependencies.batchAdmission ?? null;
 	}
 
 	async triage(identity: EditorialIdentity, batchIdValue: unknown, intakeIds: unknown[], decision: 'SELECT' | 'REJECT'): Promise<number> {
@@ -72,11 +75,15 @@ export class EditorialWorkflowService {
 		}), ready: 0, pending: 0, failed: 0 };
 		if (!this.generationEnabled) return report;
 		if (!this.pipeline) throw new Error('Workflow pipeline is not configured.');
+		if (!this.batchAdmission) throw new Error('Routine batch admission is not configured.');
+		const admittedBatchId = await this.batchAdmission.admit(at);
+		if (!admittedBatchId) return report;
 		const touchedBatches = new Set<string>();
 		const owner = this.owner();
 		const leaseExpiresAt = new Date(new Date(at).getTime() + this.leaseMs).toISOString();
 		for (const item of await this.repository.claimProcessable({
-			limit: Math.max(1, limit), owner, at, leaseExpiresAt, createEventId: this.createId, routineOnly: true,
+			limit: Math.max(1, limit), owner, at, leaseExpiresAt, createEventId: this.createId,
+			routineOnly: true, admittedBatchId,
 		})) {
 			touchedBatches.add(item.batchId);
 			try {

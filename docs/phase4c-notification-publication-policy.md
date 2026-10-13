@@ -4,15 +4,15 @@ Phase 4C adds two opt-in automation services. Both are disabled when their confi
 
 ## External editorial reminders
 
-`EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED=true` enables external delivery after the existing D1-backed internal inbox accepts the same initial, six-hour, or 24-hour reminder. `REVIEW_NOTIFICATION_WEBHOOK_URL` must then identify the separately reviewed external webhook integration.
+`EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED=true` enables external delivery after the existing D1-backed internal inbox accepts the same initial, six-hour, or 24-hour reminder. `REVIEW_NOTIFICATION_EXTERNAL_URL` must identify the reviewed HTTPS destination and `REVIEW_NOTIFICATION_EXTERNAL_BEARER_TOKEN` must be supplied as a Worker secret. The existing `REVIEW_NOTIFICATION_WEBHOOK_URL` points to the Worker's internal compatibility receiver and must not be treated as an external destination.
 
-D1 remains authoritative. A unique operation record is inserted as `PENDING` before transport construction. Only a successful HTTP response becomes `DELIVERED`. Network loss, timeouts, HTTP 5xx responses, and completion-persistence uncertainty become `AMBIGUOUS`; they are not automatically submitted again. Definitive configuration, validation, or HTTP 4xx rejections become `FAILED`. A terminal or uncertain operation blocks another send for the same reminder key until a future governed recovery mechanism is separately authorized.
+D1 remains authoritative. A unique operation record is inserted as `PENDING` before transport construction. Only HTTP 200 with an explicit matching delivered acknowledgement becomes `DELIVERED`. Queued responses, network loss, timeouts, HTTP 5xx responses, acknowledgement mismatch, and completion-persistence uncertainty become `AMBIGUOUS`; they are not automatically submitted again. Definitive configuration, validation, or HTTP 4xx rejections become `FAILED`. Authenticated operators may append governed reconciliation evidence after checking the destination by idempotency key; reconciliation itself never resends.
 
 The internal inbox remains active when external delivery is disabled. An incomplete three-article final-review batch cannot emit its initial ready-for-review notification.
 
 ## Governed scheduled publication
 
-`EDITORIAL_AUTOMATED_PUBLICATION_ENABLED=true` is the explicit automation authorization policy that adapts the manual `PUBLISH` confirmation. It may be enabled only after separate production review. It is not implied by article or image approval.
+`EDITORIAL_AUTOMATED_PUBLICATION_ENABLED=true` is the existing global automation authorization policy that adapts the manual `PUBLISH` confirmation. It may be enabled only after separate production review. It is not implied by article or image approval. Phase 4D recommends adding a separate immutable per-story automation opt-in before production activation; the global switch alone is too broad for the initial rollout.
 
 The scheduled publisher considers only records created under `routine-generation:v1`. Eligibility requires all of the following at the instant of the database transition:
 

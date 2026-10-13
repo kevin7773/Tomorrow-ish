@@ -2,6 +2,27 @@ import type { ReviewNotification } from '../notifications/review-notifier';
 
 export type ExternalDeliveryState = 'PENDING' | 'DELIVERED' | 'FAILED' | 'AMBIGUOUS';
 export type ExternalDeliveryReservation = 'ACQUIRED' | 'DELIVERED' | 'BLOCKED' | 'CONFLICT';
+export type ExternalDeliveryReconciliationDecision = 'CONFIRMED_DELIVERED' | 'CONFIRMED_FAILED' | 'MANUALLY_DELIVERED';
+
+export interface ExternalDeliveryRecord {
+	operationKey: string;
+	idempotencyKey: string;
+	batchId: string;
+	stage: string;
+	kind: string;
+	status: ExternalDeliveryState;
+	responseStatus: number | null;
+	providerRequestId: string | null;
+	failureClassification: string | null;
+	updatedAt: string;
+}
+
+export interface ExternalNotificationReconciliationRepository {
+	find(operationKey: string): Promise<ExternalDeliveryRecord | null>;
+	listForInvestigation(limit: number): Promise<ExternalDeliveryRecord[]>;
+	reconcile(record: { id: string; operationKey: string; decision: ExternalDeliveryReconciliationDecision;
+		evidenceReference: string; actorEmail: string; createdAt: string }): Promise<boolean>;
+}
 
 export interface ExternalReviewNotificationRepository {
 	reserve(notification: ReviewNotification, operationKey: string, owner: string, at: string): Promise<ExternalDeliveryReservation>;
@@ -55,5 +76,40 @@ export class D1ExternalReviewNotificationRepository implements ExternalReviewNot
 	}
 	markAmbiguous(operationKey: string, owner: string, at: string, classification: string, responseStatus: number | null, requestId: string | null) {
 		return this.finish(operationKey, owner, at, 'AMBIGUOUS', classification, responseStatus, requestId);
+	}
+
+	private static record(row: {
+		operation_key: string; idempotency_key: string; batch_id: string; stage: string; kind: string;
+		status: ExternalDeliveryState; response_status: number | null; provider_request_id: string | null;
+		failure_classification: string | null; updated_at: string;
+	}): ExternalDeliveryRecord {
+		return { operationKey: row.operation_key, idempotencyKey: row.idempotency_key, batchId: row.batch_id,
+			stage: row.stage, kind: row.kind, status: row.status, responseStatus: row.response_status,
+			providerRequestId: row.provider_request_id, failureClassification: row.failure_classification,
+			updatedAt: row.updated_at };
+	}
+
+	async find(operationKey: string): Promise<ExternalDeliveryRecord | null> {
+		const row = await this.db.prepare(`SELECT operation_key, idempotency_key, batch_id, stage, kind, status,
+			response_status, provider_request_id, failure_classification, updated_at
+			FROM external_review_notification_deliveries WHERE operation_key = ?`).bind(operationKey).first<any>();
+		return row ? D1ExternalReviewNotificationRepository.record(row) : null;
+	}
+
+	async listForInvestigation(limit: number): Promise<ExternalDeliveryRecord[]> {
+		const rows = await this.db.prepare(`SELECT operation_key, idempotency_key, batch_id, stage, kind, status,
+			response_status, provider_request_id, failure_classification, updated_at
+			FROM external_review_notification_deliveries WHERE status IN ('FAILED','AMBIGUOUS')
+			ORDER BY updated_at, operation_key LIMIT ?`).bind(Math.max(1, Math.min(limit, 100))).all<any>();
+		return rows.results.map(D1ExternalReviewNotificationRepository.record);
+	}
+
+	async reconcile(record: { id: string; operationKey: string; decision: ExternalDeliveryReconciliationDecision;
+		evidenceReference: string; actorEmail: string; createdAt: string }): Promise<boolean> {
+		const result = await this.db.prepare(`INSERT INTO external_review_notification_reconciliations
+			(id, operation_key, decision, evidence_reference, actor_email, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)`).bind(record.id, record.operationKey, record.decision,
+				record.evidenceReference, record.actorEmail, record.createdAt).run();
+		return result.meta.changes === 1;
 	}
 }

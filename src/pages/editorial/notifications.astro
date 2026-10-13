@@ -1,8 +1,12 @@
 ---
+import { env } from 'cloudflare:workers';
+import { D1ExternalReviewNotificationRepository } from '../../data/external-review-notification-repository';
 import { getReviewNotificationRepository } from '../../data/runtime-review-notification-repository';
 import EditorialLayout from '../../layouts/EditorialLayout.astro';
 
 const notifications = await getReviewNotificationRepository().listDelivered(100);
+const externalDeliveries = await new D1ExternalReviewNotificationRepository(env.DB).listForInvestigation(100);
+const csrfToken = Astro.locals.csrfToken;
 ---
 
 <EditorialLayout title="Editorial notifications">
@@ -14,6 +18,31 @@ const notifications = await getReviewNotificationRepository().listDelivered(100)
 			{notifications.map((notification) => <article class="editorial-list__item">
 				<div><strong>{notification.message}</strong><p>{new Date(notification.createdAt).toLocaleString('en-US')} · {notification.stage} · {notification.kind}</p></div>
 				{notification.reviewUrl && <a class="editorial-button" href={notification.reviewUrl}>Open review</a>}
+			</article>)}
+		</div>}
+	</section>
+	<section class="editorial-panel">
+		<h2>External delivery investigation</h2>
+		<p>Resolve a delivery only after checking the destination by idempotency key. Ambiguous delivery is never retried automatically.</p>
+		{externalDeliveries.length === 0 ? <p>No failed or ambiguous external deliveries require investigation.</p> : <div class="editorial-list">
+			{externalDeliveries.map((delivery) => <article class="editorial-list__item">
+				<div><strong>{delivery.kind} · {delivery.stage} · {delivery.status}</strong>
+					<p>{delivery.idempotencyKey}<br />Updated {new Date(delivery.updatedAt).toLocaleString('en-US')}</p>
+				</div>
+				<form method="post" action="/editorial/actions/notifications">
+					<input type="hidden" name="csrf_token" value={csrfToken} />
+					<input type="hidden" name="action" value="reconcile-external" />
+					<input type="hidden" name="operationKey" value={delivery.operationKey} />
+					<input type="hidden" name="returnPath" value="/editorial/notifications" />
+					<label>Evidence reference <input required maxlength="500" name="evidenceReference" /></label>
+					<label>Decision <select required name="decision">
+						{delivery.status === 'AMBIGUOUS' && <option value="CONFIRMED_DELIVERED">Destination confirms delivery</option>}
+						<option value="CONFIRMED_FAILED">Destination confirms not delivered</option>
+						{delivery.status === 'FAILED' && <option value="MANUALLY_DELIVERED">Manually delivered with same key</option>}
+					</select></label>
+					<label>Typed confirmation <input required name="confirmation" placeholder="CONFIRM DELIVERED / FAILED" /></label>
+					<button class="editorial-button" type="submit">Record reconciliation</button>
+				</form>
 			</article>)}
 		</div>}
 	</section>

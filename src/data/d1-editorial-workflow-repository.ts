@@ -173,11 +173,12 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 			&& found.normalizedEventVersionId === record.normalizedEventVersionId ? found : null;
 	}
 
-	async claimProcessable(record: { limit: number; owner: string; at: string; leaseExpiresAt: string; createEventId: () => string; target?: { batchId: string; intakeId: string }; routineOnly?: boolean }): Promise<EditorialBatchItem[]> {
+	async claimProcessable(record: { limit: number; owner: string; at: string; leaseExpiresAt: string; createEventId: () => string; target?: { batchId: string; intakeId: string }; routineOnly?: boolean; admittedBatchId?: string }): Promise<EditorialBatchItem[]> {
 		const candidates = await this.db.prepare(`SELECT * FROM editorial_batch_items
 			WHERE workflow_state IN ('SELECTED', 'GENERATING')
 			AND (lease_owner IS NULL OR lease_expires_at <= ?)
 			AND (? IS NULL OR (batch_id = ? AND source_intake_id = ?))
+			AND (? IS NULL OR batch_id = ?)
 			AND (? = 0 OR EXISTS (SELECT 1 FROM editorial_workflow_events AS eligible
 				WHERE eligible.batch_id = editorial_batch_items.batch_id
 				AND eligible.source_intake_id = editorial_batch_items.source_intake_id
@@ -185,7 +186,8 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 			ORDER BY CASE workflow_state WHEN 'SELECTED' THEN 0 ELSE 1 END,
 				COALESCE(lease_expires_at, selected_at), ordinal LIMIT ?`)
 			.bind(record.at, record.target?.batchId ?? null, record.target?.batchId ?? '',
-				record.target?.intakeId ?? '', record.routineOnly ? 1 : 0, ROUTINE_GENERATION_POLICY,
+				record.target?.intakeId ?? '', record.admittedBatchId ?? null, record.admittedBatchId ?? '',
+				record.routineOnly ? 1 : 0, ROUTINE_GENERATION_POLICY,
 				Math.max(record.limit * 8, record.limit)).all<ItemRow>();
 		const claimed: EditorialBatchItem[] = [];
 		for (const candidate of candidates.results) {
@@ -426,7 +428,10 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 					WHERE batch_id = ? AND workflow_state = 'READY_FOR_REVIEW') = 3
 				AND (SELECT COUNT(*) FROM editorial_batch_items WHERE batch_id = ?) = 3`)
 				.bind(batchId, at, batchId, batchId, batchId),
-			this.event(eventId, batchId, null, null, 'FINAL_REVIEW_PHASE_CREATED', null, at),
+			this.db.prepare(`INSERT INTO editorial_workflow_events
+				(id, batch_id, event_kind, created_at)
+				SELECT ?, ?, 'FINAL_REVIEW_PHASE_CREATED', ? WHERE changes() > 0`)
+				.bind(eventId, batchId, at),
 		]);
 		return results[0].meta.changes === 1;
 	}

@@ -50,7 +50,7 @@ function setup(initial = workflowItem()) {
 	const images: FinalReviewImagePort = { regenerate: vi.fn(async () => undefined) };
 	let id = 0;
 	const service = new EditorialWorkflowService(repository, pipeline, images, { now: () => now, createId: () => `id-${++id}`, generationEnabled: true,
-		smokeTarget: { batchId: 'batch-1', intakeId: 'intake-1' } });
+		smokeTarget: { batchId: 'batch-1', intakeId: 'intake-1' }, batchAdmission: { admit: vi.fn(async () => 'batch-1') } });
 	return { service, repository, pipeline, images, events, getItem: () => item };
 }
 
@@ -96,7 +96,7 @@ describe('two-gate editorial workflow', () => {
 		const images: FinalReviewImagePort = { regenerate: vi.fn(async () => undefined) };
 		let id = 0;
 		const service = new EditorialWorkflowService(repository, pipeline, images, { now: () => now, createId: () => `demo-${++id}`, generationEnabled: true,
-			smokeTarget: { batchId: 'batch-1', intakeId: 'intake-1' } });
+			smokeTarget: { batchId: 'batch-1', intakeId: 'intake-1' }, batchAdmission: { admit: vi.fn(async () => 'batch-1') } });
 
 		await service.triage(identity, 'batch-1', ['intake-1', 'intake-2', 'intake-3'], 'SELECT');
 		expect(await service.process()).toEqual({ reconciled: 0, ready: 3, pending: 0, failed: 0 });
@@ -137,11 +137,33 @@ describe('two-gate editorial workflow', () => {
 		expect(test.repository.ensureFinalReminder).toHaveBeenCalledWith('batch-1', now, expect.any(String));
 	});
 
+	it('fails closed without routine batch admission before claiming provider work', async () => {
+		const test = setup(workflowItem('SELECTED'));
+		const unadmitted = new EditorialWorkflowService(test.repository, test.pipeline, test.images, {
+			now: () => now, generationEnabled: true,
+		});
+		await expect(unadmitted.process()).rejects.toThrow(/batch admission is not configured/i);
+		expect(test.repository.claimProcessable).not.toHaveBeenCalled();
+		expect(test.pipeline.advance).not.toHaveBeenCalled();
+	});
+
+	it('does no generation work when the daily admission policy finds no eligible batch', async () => {
+		const test = setup(workflowItem('SELECTED'));
+		const unadmitted = new EditorialWorkflowService(test.repository, test.pipeline, test.images, {
+			now: () => now, generationEnabled: true,
+			batchAdmission: { admit: vi.fn(async () => null) },
+		});
+		expect(await unadmitted.process()).toEqual({ reconciled: 0, ready: 0, pending: 0, failed: 0 });
+		expect(test.repository.claimProcessable).not.toHaveBeenCalled();
+		expect(test.pipeline.advance).not.toHaveBeenCalled();
+	});
+
 	it('scopes image-free readiness to an image-disabled exact smoke target', async () => {
 		const exact = setup(workflowItem('SELECTED'));
 		const imageDisabled = new EditorialWorkflowService(exact.repository, exact.pipeline, exact.images, {
 			now: () => now, createId: () => 'image-free-ready', generationEnabled: true,
 			smokeTarget: { batchId: 'batch-1', intakeId: 'intake-1' }, imageGenerationEnabled: false,
+			batchAdmission: { admit: vi.fn(async () => 'batch-1') },
 		});
 		await imageDisabled.process();
 		expect(exact.repository.markReady).toHaveBeenCalledWith(

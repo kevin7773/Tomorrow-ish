@@ -8,6 +8,7 @@ import { DurableExternalReviewNotifier } from '../src/notifications/durable-exte
 import { ReviewNotificationError, WebhookReviewNotifier, type ReviewNotification } from '../src/notifications/review-notifier';
 
 const NOW = '2026-10-13T12:00:00.000Z';
+const TOKEN = 'test-secret-token-with-at-least-32-characters';
 const execute = Symbol('execute');
 const notification: ReviewNotification = {
 	batchId: 'batch-1', stage: 'TRIAGE', kind: 'INITIAL',
@@ -42,10 +43,11 @@ describe('durable external review notification delivery', () => {
 	it('admits one concurrent send and records delivery only after a successful response', async () => {
 		const sqlite = database();
 		const repository = new D1ExternalReviewNotificationRepository(d1Database(sqlite));
-		const fetcher = vi.fn(async () => new Response(null, { status: 200, headers: { 'x-request-id': 'request-1' } }));
+		const fetcher = vi.fn(async () => Response.json({ deliveryState: 'DELIVERED', idempotencyKey: notification.idempotencyKey,
+			deliveryId: 'delivery-1' }, { status: 200, headers: { 'x-request-id': 'request-1' } }));
 		let sequence = 0;
 		const notifier = new DurableExternalReviewNotifier(repository,
-			new WebhookReviewNotifier('https://notify.example/hooks/editorial', fetcher),
+			new WebhookReviewNotifier('https://notify.example/hooks/editorial', TOKEN, fetcher),
 			() => NOW, () => `owner-${++sequence}`);
 
 		const results = await Promise.allSettled([notifier.send(notification), notifier.send(notification)]);
@@ -53,8 +55,11 @@ describe('durable external review notification delivery', () => {
 		expect(results.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
 		expect(sqlite.prepare(`SELECT status, attempt_count, response_status, provider_request_id
 			FROM external_review_notification_deliveries`).get()).toEqual({
-			status: 'DELIVERED', attempt_count: 1, response_status: 200, provider_request_id: 'request-1',
+			status: 'DELIVERED', attempt_count: 1, response_status: 200, provider_request_id: 'delivery-1',
 		});
+		expect(fetcher).toHaveBeenCalledWith(expect.any(URL), expect.objectContaining({ headers: expect.objectContaining({
+			authorization: `Bearer ${TOKEN}`, 'idempotency-key': notification.idempotencyKey,
+		}) }));
 		sqlite.close();
 	});
 
@@ -63,7 +68,7 @@ describe('durable external review notification delivery', () => {
 		const repository = new D1ExternalReviewNotificationRepository(d1Database(sqlite));
 		const fetcher = vi.fn(async () => new Response(null, { status: 202, headers: { 'x-request-id': 'queued-1' } }));
 		const notifier = new DurableExternalReviewNotifier(repository,
-			new WebhookReviewNotifier('https://notify.example/hooks/editorial', fetcher), () => NOW, () => 'owner-1');
+			new WebhookReviewNotifier('https://notify.example/hooks/editorial', TOKEN, fetcher), () => NOW, () => 'owner-1');
 		await expect(notifier.send(notification)).rejects.toMatchObject({ classification: 'AMBIGUOUS' });
 		expect(sqlite.prepare(`SELECT status, delivered_at, response_status, failure_classification
 			FROM external_review_notification_deliveries`).get()).toEqual({
@@ -81,7 +86,7 @@ describe('durable external review notification delivery', () => {
 			const sqlite = database();
 			const repository = new D1ExternalReviewNotificationRepository(d1Database(sqlite));
 			const notifier = new DurableExternalReviewNotifier(repository,
-				new WebhookReviewNotifier('https://notify.example/hooks/editorial', fetcher), () => NOW, () => 'owner-1');
+				new WebhookReviewNotifier('https://notify.example/hooks/editorial', TOKEN, fetcher), () => NOW, () => 'owner-1');
 			await expect(notifier.send(notification)).rejects.toMatchObject({ classification: 'AMBIGUOUS' });
 			await expect(notifier.send(notification)).rejects.toMatchObject({ classification: 'AMBIGUOUS' });
 			expect(fetcher).toHaveBeenCalledTimes(1);
@@ -96,7 +101,7 @@ describe('durable external review notification delivery', () => {
 		const repository = new D1ExternalReviewNotificationRepository(d1Database(sqlite));
 		const fetcher = vi.fn(async () => new Response(null, { status: 400, headers: { 'x-request-id': 'bad-1' } }));
 		const notifier = new DurableExternalReviewNotifier(repository,
-			new WebhookReviewNotifier('https://notify.example/hooks/editorial', fetcher), () => NOW, () => 'owner-1');
+			new WebhookReviewNotifier('https://notify.example/hooks/editorial', TOKEN, fetcher), () => NOW, () => 'owner-1');
 		await expect(notifier.send(notification)).rejects.toBeInstanceOf(ReviewNotificationError);
 		await expect(notifier.send(notification)).rejects.toMatchObject({ classification: 'AMBIGUOUS' });
 		expect(fetcher).toHaveBeenCalledTimes(1);
@@ -105,6 +110,24 @@ describe('durable external review notification delivery', () => {
 			status: 'FAILED', failure_classification: 'REJECTED', response_status: 400,
 		});
 		sqlite.close();
+	});
+
+	it('requires HTTPS, authentication, and an explicit matching delivered acknowledgement', async () => {
+		for (const notifier of [
+			new WebhookReviewNotifier('', TOKEN, vi.fn()),
+			new WebhookReviewNotifier('http://notify.example/hook', TOKEN, vi.fn()),
+			new WebhookReviewNotifier('https://notify.example/hook', 'short', vi.fn()),
+		]) await expect(notifier.send(notification)).rejects.toMatchObject({ classification: 'NOT_CONFIGURED' });
+
+		for (const body of [
+			{},
+			{ deliveryState: 'QUEUED', idempotencyKey: notification.idempotencyKey },
+			{ deliveryState: 'DELIVERED', idempotencyKey: 'another-operation' },
+		]) {
+			const fetcher = vi.fn(async () => Response.json(body));
+			await expect(new WebhookReviewNotifier('https://notify.example/hook', TOKEN, fetcher).send(notification))
+				.rejects.toMatchObject({ classification: 'AMBIGUOUS', responseStatus: 200 });
+		}
 	});
 
 	it('keeps a possibly accepted request protected when completion persistence fails', async () => {

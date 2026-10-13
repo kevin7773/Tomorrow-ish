@@ -18,6 +18,8 @@ import { smokeTarget, type EditorialSmokeTarget } from './editorial-smoke-target
 import { generateWorkflowImageIfEnabled } from './workflow-image-generation';
 import { authorizeImageSmokeTarget } from './image-smoke-authorization';
 import { EditorialValidationError } from './validation';
+import { D1RoutineBatchAdmissionRepository } from '../data/d1-routine-batch-admission-repository';
+import { RoutineBatchAdmissionService } from './routine-batch-admission-service';
 import {
 	evaluateRoutineNormalization,
 	ROUTINE_AUTOMATION_ACTOR,
@@ -213,6 +215,10 @@ export function getEditorialWorkflowService(): EditorialWorkflowService {
 		generationEnabled: enabled(env.EDITORIAL_WORKFLOW_GENERATION_ENABLED),
 		smokeTarget: target,
 		imageGenerationEnabled: isImageGenerationEnabled(env),
+		batchAdmission: new RoutineBatchAdmissionService(
+			new D1RoutineBatchAdmissionRepository(env.DB),
+			env.EDITORIAL_ROUTINE_GENERATION_NOT_BEFORE,
+		),
 	});
 }
 

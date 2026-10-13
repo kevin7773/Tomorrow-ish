@@ -14,6 +14,8 @@ export interface ReviewReminderEnvironment {
 	DB: D1Database;
 	// Retained for the compatible HTTP adapter; scheduled delivery is in-process.
 	REVIEW_NOTIFICATION_WEBHOOK_URL?: string;
+	REVIEW_NOTIFICATION_EXTERNAL_URL?: string;
+	REVIEW_NOTIFICATION_EXTERNAL_BEARER_TOKEN?: string;
 	EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED?: string;
 	REVIEW_NOTIFICATION_REVIEW_URL?: string;
 	IMAGE_WEBHOOK_ORIGIN?: string;
@@ -51,7 +53,10 @@ export function runEditorialReviewReminders(environment: ReviewReminderEnvironme
 			internal,
 			new DurableExternalReviewNotifier(
 				new D1ExternalReviewNotificationRepository(environment.DB),
-				new WebhookReviewNotifier(environment.REVIEW_NOTIFICATION_WEBHOOK_URL?.trim() ?? ''),
+				new WebhookReviewNotifier(
+					environment.REVIEW_NOTIFICATION_EXTERNAL_URL?.trim() ?? '',
+					environment.REVIEW_NOTIFICATION_EXTERNAL_BEARER_TOKEN?.trim() ?? '',
+				),
 			),
 		])
 		: internal;
