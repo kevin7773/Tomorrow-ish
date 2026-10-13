@@ -64,7 +64,7 @@ describe('two-gate editorial workflow', () => {
 		expect(smokeTarget(`${SMOKE_BATCH_ID}-other`, SMOKE_INTAKE_ID)).toBeNull();
 		expect(smokeTarget(SMOKE_BATCH_ID, `${SMOKE_INTAKE_ID},another`)).toBeNull();
 	});
-	it('demonstrates a complete three-item session with no hidden intermediate human gate', async () => {
+	it('completes exactly three selected articles before creating final review readiness', async () => {
 		const items = new Map(['intake-1', 'intake-2', 'intake-3'].map((intakeId, index) => [intakeId, {
 			...workflowItem(), intakeId, ordinal: index + 1,
 		}]));
@@ -98,16 +98,18 @@ describe('two-gate editorial workflow', () => {
 		const service = new EditorialWorkflowService(repository, pipeline, images, { now: () => now, createId: () => `demo-${++id}`, generationEnabled: true,
 			smokeTarget: { batchId: 'batch-1', intakeId: 'intake-1' } });
 
-		await service.triage(identity, 'batch-1', ['intake-1', 'intake-2'], 'SELECT');
-		await service.triage(identity, 'batch-1', ['intake-3'], 'REJECT');
-		expect(await service.process()).toEqual({ reconciled: 0, ready: 1, pending: 0, failed: 0 });
-		expect(pipeline.advance).toHaveBeenCalledTimes(1);
-		expect([...items.values()].map((item) => item.state)).toEqual(['READY_FOR_REVIEW', 'SELECTED', 'REJECTED']);
+		await service.triage(identity, 'batch-1', ['intake-1', 'intake-2', 'intake-3'], 'SELECT');
+		expect(await service.process()).toEqual({ reconciled: 0, ready: 3, pending: 0, failed: 0 });
+		expect(pipeline.advance).toHaveBeenCalledTimes(3);
+		expect([...items.values()].map((item) => item.state)).toEqual([
+			'READY_FOR_REVIEW', 'READY_FOR_REVIEW', 'READY_FOR_REVIEW',
+		]);
+		expect(repository.ensureFinalReminder).toHaveBeenCalledTimes(1);
 
 		await service.recordEdit(identity, 'batch-1', 'intake-1', 'story-1');
 		await service.publish(identity, 'batch-1', 'intake-1', 'PUBLISH');
-		expect([...items.values()].map((item) => item.state)).toEqual(['PUBLISHED', 'SELECTED', 'REJECTED']);
-		expect([...items.values()].filter((item) => item.state === 'READY_FOR_REVIEW')).toHaveLength(0);
+		expect([...items.values()].map((item) => item.state)).toEqual(['PUBLISHED', 'READY_FOR_REVIEW', 'READY_FOR_REVIEW']);
+		expect([...items.values()].filter((item) => item.state === 'READY_FOR_REVIEW')).toHaveLength(2);
 		expect(events).toContain('ARTICLE_EDITED');
 		expect(events).not.toContain('IMAGE_REGENERATED');
 	});
@@ -238,11 +240,14 @@ describe('two-gate editorial workflow', () => {
 		expect(messages).toContain("'operation-failed': 'The editorial operation could not be completed.'");
 	});
 
-	it('requires an audited candidate selection before automatic body generation and disables model-level retries', () => {
+	it('uses governed automatic normalization and sole-candidate selection before body generation', () => {
 		const runtime = readFileSync(join(process.cwd(), 'src/services/runtime-editorial-workflow.ts'), 'utf8');
-		expect(runtime).toContain("throw new Error('NORMALIZATION_REVIEW_REQUIRED')");
-		expect(runtime).toContain("throw new Error('CANDIDATE_SELECTION_REQUIRED')");
-		expect(runtime).not.toContain('generation.generateCandidates');
+		expect(runtime).toContain('generation.proposeNormalization');
+		expect(runtime).toContain('generation.reviewNormalization');
+		expect(runtime).toContain('defaultCandidateCount: 1');
+		expect(runtime).toContain('generation.generateCandidates');
+		expect(runtime).toContain('workflow.selectCandidate');
+		expect(runtime).toContain("stop('CANDIDATE_SELECTION_REQUIRED')");
 		expect(runtime).toContain('workflow:body:v2:${item.batchId}:${item.intakeId}:attempt:${item.retryAttempt}');
 		expect(runtime).toContain('maxAttempts: 1');
 	});

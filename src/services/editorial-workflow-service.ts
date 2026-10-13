@@ -6,7 +6,7 @@ import { isSmokeTargetPair, type EditorialSmokeTarget } from './editorial-smoke-
 import { requirePublicationReady } from './publication-integrity';
 
 export interface WorkflowPipelinePort {
-	advance(item: EditorialBatchItem, guard?: { renew(): Promise<void> }): Promise<{ storyId: string; ready: boolean }>;
+	advance(item: EditorialBatchItem, guard?: { renew(): Promise<void> }): Promise<{ storyId: string; ready: boolean; allowMissingImage?: boolean }>;
 }
 
 export interface FinalReviewImagePort {
@@ -70,12 +70,14 @@ export class EditorialWorkflowService {
 			limit: Math.max(limit * 10, 50), actorEmail: 'automation@tomorrow-ish.news', at,
 			createEventId: this.createId, createAuditId: this.createId,
 		}), ready: 0, pending: 0, failed: 0 };
-		if (!this.generationEnabled || !this.smokeTarget) return report;
+		if (!this.generationEnabled) return report;
 		if (!this.pipeline) throw new Error('Workflow pipeline is not configured.');
 		const touchedBatches = new Set<string>();
 		const owner = this.owner();
 		const leaseExpiresAt = new Date(new Date(at).getTime() + this.leaseMs).toISOString();
-		for (const item of await this.repository.claimProcessable({ limit: 1, owner, at, leaseExpiresAt, createEventId: this.createId, target: this.smokeTarget })) {
+		for (const item of await this.repository.claimProcessable({
+			limit: Math.max(1, limit), owner, at, leaseExpiresAt, createEventId: this.createId, routineOnly: true,
+		})) {
 			touchedBatches.add(item.batchId);
 			try {
 				const renew = async () => {
@@ -87,10 +89,11 @@ export class EditorialWorkflowService {
 				};
 				const result = await this.pipeline.advance(item, { renew });
 				if (result.ready) {
-					const allowMissingImage = !this.imageGenerationEnabled
-						&& isSmokeTargetPair(this.smokeTarget, item.batchId, item.intakeId);
-					if (await this.repository.markReady(item.batchId, item.intakeId, result.storyId, owner,
-						this.now(), this.createId(), allowMissingImage)) report.ready += 1;
+					const allowMissingImage = result.allowMissingImage === true
+						|| (!this.imageGenerationEnabled && isSmokeTargetPair(this.smokeTarget, item.batchId, item.intakeId));
+					if (!(await this.repository.markReady(item.batchId, item.intakeId, result.storyId, owner,
+						this.now(), this.createId(), allowMissingImage))) throw new Error('WORKFLOW_LEASE_LOST');
+					report.ready += 1;
 				} else {
 					await this.repository.releaseLease(item.batchId, item.intakeId, owner, this.now());
 					report.pending += 1;

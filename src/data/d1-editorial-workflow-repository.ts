@@ -1,7 +1,7 @@
 import type { CandidateSelection, CandidateSelectionContext, EditorialWorkflowRepository } from './editorial-workflow-repository';
 import type { EditorialBatch, EditorialBatchItem, EditorialWorkflowState } from '../domain/editorial-workflow';
 import type { PublicationReadiness } from '../domain/publication-integrity';
-import { SMOKE_BATCH_ID, SMOKE_INTAKE_ID } from '../services/editorial-smoke-target';
+import { ROUTINE_GENERATION_POLICY } from '../services/routine-generation-policy';
 import { PUBLICATION_READINESS_SQL, PUBLISHABLE_STORY_PREDICATE } from './publication-integrity';
 
 interface ItemRow {
@@ -107,7 +107,7 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 			selectedAt: row.selected_at } : null;
 	}
 
-	async selectCandidate(record: { id: string; batchId: string; intakeId: string; normalizedEventVersionId: string; candidateId: string; actorEmail: string; at: string; reason: string | null }): Promise<CandidateSelection | null> {
+	async selectCandidate(record: { id: string; batchId: string; intakeId: string; normalizedEventVersionId: string; candidateId: string; actorEmail: string; at: string; reason: string | null; leaseOwner?: string }): Promise<CandidateSelection | null> {
 		await this.db.batch([
 			this.db.prepare(`INSERT OR IGNORE INTO editorial_candidate_selections (
 				batch_id, source_intake_id, normalized_event_version_id, candidate_id,
@@ -115,7 +115,8 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 			) SELECT ?, ?, ?, ?, NULL, ?, ?, 1
 			WHERE EXISTS (SELECT 1 FROM editorial_batch_items AS item
 				WHERE item.batch_id = ? AND item.source_intake_id = ?
-				AND item.workflow_state IN ('SELECTED', 'GENERATING') AND item.story_id IS NULL)
+				AND item.workflow_state IN ('SELECTED', 'GENERATING') AND item.story_id IS NULL
+				AND (? IS NULL OR (item.lease_owner = ? AND item.lease_expires_at > ?)))
 			AND EXISTS (SELECT 1 FROM normalized_event_versions AS version
 				WHERE version.id = ? AND version.source_intake_id = ? AND version.review_state = 'ACCEPTED')
 			AND EXISTS (SELECT 1 FROM satire_candidates AS candidate
@@ -126,6 +127,7 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 				AND NOT EXISTS (SELECT 1 FROM candidate_body_generation_runs AS run WHERE run.candidate_id = candidate.id))`)
 				.bind(record.batchId, record.intakeId, record.normalizedEventVersionId, record.candidateId,
 					record.actorEmail, record.at, record.batchId, record.intakeId,
+					record.leaseOwner ?? null, record.leaseOwner ?? '', record.at,
 					record.normalizedEventVersionId, record.intakeId, record.candidateId, record.intakeId,
 					record.normalizedEventVersionId),
 			this.db.prepare(`UPDATE editorial_candidate_selections
@@ -134,7 +136,8 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 				WHERE batch_id = ? AND source_intake_id = ? AND candidate_id <> ? AND ? IS NOT NULL
 				AND EXISTS (SELECT 1 FROM editorial_batch_items AS item
 					WHERE item.batch_id = ? AND item.source_intake_id = ?
-					AND item.workflow_state IN ('SELECTED', 'GENERATING') AND item.story_id IS NULL)
+					AND item.workflow_state IN ('SELECTED', 'GENERATING') AND item.story_id IS NULL
+					AND (? IS NULL OR (item.lease_owner = ? AND item.lease_expires_at > ?)))
 				AND EXISTS (SELECT 1 FROM normalized_event_versions AS version
 					WHERE version.id = ? AND version.source_intake_id = ? AND version.review_state = 'ACCEPTED')
 				AND EXISTS (SELECT 1 FROM satire_candidates AS candidate
@@ -149,6 +152,7 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 					AND NOT EXISTS (SELECT 1 FROM candidate_body_generation_runs AS run WHERE run.candidate_id = current.id))`)
 				.bind(record.candidateId, record.normalizedEventVersionId, record.intakeId, record.actorEmail,
 					record.at, record.batchId, record.intakeId, record.candidateId, record.reason, record.batchId, record.intakeId,
+					record.leaseOwner ?? null, record.leaseOwner ?? '', record.at,
 					record.normalizedEventVersionId, record.intakeId, record.candidateId, record.intakeId,
 					record.normalizedEventVersionId),
 			this.db.prepare(`INSERT OR IGNORE INTO editorial_candidate_selection_events (
@@ -169,15 +173,20 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 			&& found.normalizedEventVersionId === record.normalizedEventVersionId ? found : null;
 	}
 
-	async claimProcessable(record: { limit: number; owner: string; at: string; leaseExpiresAt: string; createEventId: () => string; target?: { batchId: string; intakeId: string } }): Promise<EditorialBatchItem[]> {
+	async claimProcessable(record: { limit: number; owner: string; at: string; leaseExpiresAt: string; createEventId: () => string; target?: { batchId: string; intakeId: string }; routineOnly?: boolean }): Promise<EditorialBatchItem[]> {
 		const candidates = await this.db.prepare(`SELECT * FROM editorial_batch_items
 			WHERE workflow_state IN ('SELECTED', 'GENERATING')
 			AND (lease_owner IS NULL OR lease_expires_at <= ?)
 			AND (? IS NULL OR (batch_id = ? AND source_intake_id = ?))
+			AND (? = 0 OR EXISTS (SELECT 1 FROM editorial_workflow_events AS eligible
+				WHERE eligible.batch_id = editorial_batch_items.batch_id
+				AND eligible.source_intake_id = editorial_batch_items.source_intake_id
+				AND eligible.event_kind = 'INTAKE_SELECTED' AND eligible.detail = ?))
 			ORDER BY CASE workflow_state WHEN 'SELECTED' THEN 0 ELSE 1 END,
 				COALESCE(lease_expires_at, selected_at), ordinal LIMIT ?`)
 			.bind(record.at, record.target?.batchId ?? null, record.target?.batchId ?? '',
-				record.target?.intakeId ?? '', Math.max(record.limit * 8, record.limit)).all<ItemRow>();
+				record.target?.intakeId ?? '', record.routineOnly ? 1 : 0, ROUTINE_GENERATION_POLICY,
+				Math.max(record.limit * 8, record.limit)).all<ItemRow>();
 		const claimed: EditorialBatchItem[] = [];
 		for (const candidate of candidates.results) {
 			if (claimed.length >= record.limit) break;
@@ -255,7 +264,7 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 			this.db.prepare(`UPDATE editorial_batch_items SET workflow_state = 'SELECTED', selected_by_email = ?,
 				selected_at = ?, updated_at = ? WHERE batch_id = ? AND source_intake_id = ? AND workflow_state = 'INGESTED'`)
 				.bind(actorEmail, at, at, batchId, intakeId),
-			this.event(eventId, batchId, intakeId, null, 'INTAKE_SELECTED', null, at),
+			this.event(eventId, batchId, intakeId, null, 'INTAKE_SELECTED', ROUTINE_GENERATION_POLICY, at),
 		]);
 		return results[0].meta.changes === 1;
 	}
@@ -363,10 +372,9 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 				lease_owner = NULL, lease_acquired_at = NULL, lease_expires_at = NULL
 				WHERE batch_id = ? AND source_intake_id = ? AND story_id = ? AND workflow_state = 'GENERATING'
 				AND lease_owner = ? AND lease_expires_at > ?
-				AND ((? = 1 AND batch_id = ? AND source_intake_id = ?)
-					OR EXISTS (SELECT 1 FROM article_images WHERE story_id = ? AND status IN ('GENERATED', 'APPROVED')))`)
-				.bind(at, batchId, intakeId, storyId, owner, at, allowMissingImage ? 1 : 0,
-					SMOKE_BATCH_ID, SMOKE_INTAKE_ID, storyId),
+				AND (? = 1 OR EXISTS (SELECT 1 FROM article_images
+					WHERE story_id = ? AND status IN ('GENERATED', 'APPROVED')))`)
+				.bind(at, batchId, intakeId, storyId, owner, at, allowMissingImage ? 1 : 0, storyId),
 			this.event(eventId, batchId, intakeId, storyId, 'ARTICLE_READY_FOR_REVIEW', null, at),
 		]);
 		return results[0].meta.changes === 1;
@@ -412,11 +420,12 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 	async ensureFinalReminder(batchId: string, at: string, eventId: string): Promise<boolean> {
 		const results = await this.db.batch([
 			this.db.prepare(`INSERT OR IGNORE INTO editorial_stage_reminders (batch_id, stage, created_at)
-				SELECT ?, 'FINAL_REVIEW', ? WHERE EXISTS (SELECT 1 FROM editorial_batch_items
-					WHERE batch_id = ? AND workflow_state = 'READY_FOR_REVIEW')
-				AND NOT EXISTS (SELECT 1 FROM editorial_batch_items WHERE batch_id = ?
-					AND workflow_state IN ('SELECTED', 'GENERATING'))`)
-				.bind(batchId, at, batchId, batchId),
+				SELECT ?, 'FINAL_REVIEW', ? WHERE EXISTS (SELECT 1 FROM editorial_batches
+					WHERE id = ? AND item_count = 3)
+				AND (SELECT COUNT(*) FROM editorial_batch_items
+					WHERE batch_id = ? AND workflow_state = 'READY_FOR_REVIEW') = 3
+				AND (SELECT COUNT(*) FROM editorial_batch_items WHERE batch_id = ?) = 3`)
+				.bind(batchId, at, batchId, batchId, batchId),
 			this.event(eventId, batchId, null, null, 'FINAL_REVIEW_PHASE_CREATED', null, at),
 		]);
 		return results[0].meta.changes === 1;

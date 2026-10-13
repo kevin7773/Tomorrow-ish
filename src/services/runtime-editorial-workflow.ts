@@ -17,10 +17,24 @@ import { EditorialWorkflowService, type FinalReviewImagePort, type WorkflowPipel
 import { smokeTarget, type EditorialSmokeTarget } from './editorial-smoke-target';
 import { generateWorkflowImageIfEnabled } from './workflow-image-generation';
 import { authorizeImageSmokeTarget } from './image-smoke-authorization';
+import { EditorialValidationError } from './validation';
+import {
+	evaluateRoutineNormalization,
+	ROUTINE_AUTOMATION_ACTOR,
+	ROUTINE_CANDIDATE_SELECTION_REASON,
+	ROUTINE_NORMALIZATION_ACCEPTANCE_REASON,
+} from './routine-generation-policy';
 
 function slug(headline: string, id: string): string {
 	const base = headline.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 70) || 'story';
 	return `${base}-${id.replace(/[^a-z0-9]/gi, '').slice(-8).toLowerCase()}`;
+}
+
+function stop(classification: string): never {
+	throw new EditorialValidationError(
+		`Routine generation stopped: ${classification}.`,
+		classification.toLowerCase().replaceAll('_', '-'),
+	);
 }
 
 function imageService(target: EditorialSmokeTarget | null): ArticleImageService {
@@ -56,15 +70,18 @@ function imageReviewService(target: EditorialSmokeTarget | null): ArticleImageSe
 }
 
 class RuntimePipeline implements WorkflowPipelinePort {
-	async advance(item: EditorialBatchItem, guard?: { renew(): Promise<void> }): Promise<{ storyId: string; ready: boolean }> {
+	async advance(item: EditorialBatchItem, guard?: { renew(): Promise<void> }): Promise<{ storyId: string; ready: boolean; allowMissingImage?: boolean }> {
 		const workflow = getEditorialWorkflowRepository();
 		const target = smokeTarget(env.EDITORIAL_WORKFLOW_SMOKE_BATCH_ID, env.EDITORIAL_WORKFLOW_SMOKE_INTAKE_ID);
+		const routine = !target || item.batchId !== target.batchId || item.intakeId !== target.intakeId;
+		const operationTarget = { batchId: item.batchId, intakeId: item.intakeId };
 		if (item.candidateId && !item.storyId) {
 			const existingStoryId = await workflow.findStoryIdByCandidate(item.candidateId);
 			if (existingStoryId) {
 				if (!item.leaseOwner || !(await workflow.attachExistingStory({ batchId: item.batchId, intakeId: item.intakeId,
 					candidateId: item.candidateId, storyId: existingStoryId, owner: item.leaseOwner,
 					at: new Date().toISOString(), eventId: crypto.randomUUID() }))) throw new Error('WORKFLOW_LEASE_LOST');
+				if (routine) return { storyId: existingStoryId, ready: true, allowMissingImage: true };
 				const existingImages = await getArticleImageRepository().listByStory(existingStoryId);
 				if (existingImages.some((image) => image.status === 'GENERATED' || image.status === 'APPROVED')) {
 					return { storyId: existingStoryId, ready: true };
@@ -77,20 +94,7 @@ class RuntimePipeline implements WorkflowPipelinePort {
 			}
 		}
 		const generationRepository = new D1GenerationRepository(env.DB);
-		const identity = { email: item.selectedByEmail ?? 'automation@tomorrow-ish.news' };
-		let version = await generationRepository.findAcceptedNormalizedVersion(item.intakeId);
-		if (!version) throw new Error('NORMALIZATION_REVIEW_REQUIRED');
-		if (version.proposedSuitability === 'UNSUITABLE') throw new Error('NORMALIZATION_INELIGIBLE');
-
-		const activeSelection = await workflow.findCandidateSelection(item.batchId, item.intakeId);
-		if (!activeSelection || activeSelection.intakeId !== item.intakeId
-			|| activeSelection.normalizedEventVersionId !== version.id) throw new Error('CANDIDATE_SELECTION_REQUIRED');
-		const candidateId = activeSelection.candidateId;
-		if (item.candidateId && item.candidateId !== candidateId) throw new Error('CANDIDATE_SELECTION_CONFLICT');
-		if (!item.candidateId && (!item.leaseOwner
-			|| !(await workflow.attachCandidate(item.batchId, item.intakeId, candidateId, item.leaseOwner, new Date().toISOString())))) {
-			throw new Error('WORKFLOW_LEASE_LOST');
-		}
+		const identity = { email: ROUTINE_AUTOMATION_ACTOR };
 		const model = getRuntimeModelConfiguration();
 		const generation = new GenerationService(generationRepository, model.providerAccess, {
 			budgetLimits: model.budgetLimits,
@@ -100,9 +104,57 @@ class RuntimePipeline implements WorkflowPipelinePort {
 			workflowFence: item.leaseOwner ? { batchId: item.batchId, intakeId: item.intakeId, leaseOwner: item.leaseOwner } : undefined,
 			beforeProviderCall: async () => guard?.renew(),
 			beforePersistResult: async () => guard?.renew(),
-			smokeTarget: target,
+			smokeTarget: operationTarget,
 		});
+		let version = await generationRepository.findAcceptedNormalizedVersion(item.intakeId);
+		if (!version) {
+			const normalizeKey = `workflow:normalize:v3:${item.batchId}:${item.intakeId}:attempt:${item.retryAttempt}`;
+			const existingRun = await generationRepository.findModelRunByIdempotencyKey(normalizeKey);
+			const versions = await generationRepository.listNormalizedVersions(item.intakeId);
+			if (!existingRun && versions.length > 0) stop('NORMALIZATION_HISTORY_REQUIRES_EDITORIAL_REVIEW');
+			const versionId = await generation.proposeNormalization(identity, item.intakeId, normalizeKey);
+			const proposed = await generationRepository.findNormalizedVersion(versionId);
+			if (!proposed) stop('NORMALIZATION_MISSING');
+			const policy = evaluateRoutineNormalization(proposed);
+			if (!policy.allowed) stop(policy.classification);
+			await guard?.renew();
+			await generation.reviewNormalization(identity, versionId, 'ACCEPTED', ROUTINE_NORMALIZATION_ACCEPTANCE_REASON);
+			version = await generationRepository.findAcceptedNormalizedVersion(item.intakeId);
+		}
+		if (!version) stop('NORMALIZATION_REVIEW_REQUIRED');
+		if (version.proposedSuitability === 'UNSUITABLE') stop('NORMALIZATION_INELIGIBLE');
 
+		let activeSelection = await workflow.findCandidateSelection(item.batchId, item.intakeId);
+		if (!activeSelection) {
+			const candidateKey = `workflow:candidates:v3:${item.batchId}:${item.intakeId}:attempt:${item.retryAttempt}`;
+			const runId = await generation.generateCandidates(identity, {
+				intakeId: item.intakeId,
+				normalizedEventVersionId: version.id,
+				categoryId: item.categoryId,
+				idempotencyKey: candidateKey,
+			});
+			if (await generationRepository.countGeneratedCandidates(runId) !== 1) {
+				stop('ROUTINE_CANDIDATE_CARDINALITY_INVALID');
+			}
+			const candidateId = await workflow.findGeneratedCandidateId(item.intakeId, runId);
+			if (!candidateId) stop('ROUTINE_CANDIDATE_MISSING');
+			await guard?.renew();
+			activeSelection = await workflow.selectCandidate({
+				id: crypto.randomUUID(), batchId: item.batchId, intakeId: item.intakeId,
+				normalizedEventVersionId: version.id, candidateId,
+				actorEmail: ROUTINE_AUTOMATION_ACTOR, at: new Date().toISOString(),
+				reason: ROUTINE_CANDIDATE_SELECTION_REASON,
+				leaseOwner: item.leaseOwner ?? '',
+			});
+		}
+		if (!activeSelection || activeSelection.intakeId !== item.intakeId
+			|| activeSelection.normalizedEventVersionId !== version.id) stop('CANDIDATE_SELECTION_REQUIRED');
+		const candidateId = activeSelection.candidateId;
+		if (item.candidateId && item.candidateId !== candidateId) stop('CANDIDATE_SELECTION_CONFLICT');
+		if (!item.candidateId && (!item.leaseOwner
+			|| !(await workflow.attachCandidate(item.batchId, item.intakeId, candidateId, item.leaseOwner, new Date().toISOString())))) {
+			throw new Error('WORKFLOW_LEASE_LOST');
+		}
 		let storyId = item.storyId;
 		if (!storyId) {
 			storyId = await workflow.findStoryIdByCandidate(candidateId);
@@ -127,6 +179,7 @@ class RuntimePipeline implements WorkflowPipelinePort {
 			storyId = attached;
 		}
 
+		if (routine) return { storyId, ready: true, allowMissingImage: true };
 		const images = await getArticleImageRepository().listByStory(storyId);
 		if (images.some((image) => image.status === 'GENERATED' || image.status === 'APPROVED')) return { storyId, ready: true };
 		if (images.some((image) => image.status === 'PENDING')) return { storyId, ready: false };

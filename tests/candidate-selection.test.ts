@@ -72,6 +72,22 @@ describe('governed candidate selection', () => {
 		sqlite.close();
 	});
 
+	it('fences automatic selection to the current workflow lease owner', async () => {
+		const { sqlite, repository } = fixture();
+		sqlite.prepare(`UPDATE editorial_batch_items SET workflow_state='GENERATING', lease_owner='current-owner',
+			lease_acquired_at=?, lease_expires_at='2026-10-11T20:10:00.000Z' WHERE batch_id=? AND source_intake_id=?`)
+			.run(NOW, TARGET.batchId, TARGET.intakeId);
+		const base = { id: 'automatic-selection', ...TARGET, normalizedEventVersionId: VERSION,
+			candidateId: 'candidate-1', actorEmail: 'automation@tomorrow-ish.news', at: NOW,
+			reason: 'routine-generation:v1' };
+		expect(await repository.selectCandidate({ ...base, leaseOwner: 'stale-owner' })).toBeNull();
+		expect(sqlite.prepare('SELECT COUNT(*) count FROM editorial_candidate_selections').get()).toEqual({ count: 0 });
+		expect(await repository.selectCandidate({ ...base, id: 'current-selection', leaseOwner: 'current-owner' }))
+			.toMatchObject({ candidateId: 'candidate-1', revision: 1 });
+		expect(sqlite.prepare('SELECT COUNT(*) count FROM editorial_candidate_selection_events').get()).toEqual({ count: 1 });
+		sqlite.close();
+	});
+
 	it('is idempotent for duplicate selection and preserves all candidate drafts', async () => {
 		const { sqlite, service } = fixture();
 		expect(await service.select({ email: 'editor@test' }, input())).toBe('SELECTED');

@@ -34,12 +34,15 @@ describe('automation architecture boundaries', () => {
 		expect(page).toContain("'Enabled — source not configured'");
 	});
 
-	it('keeps acquisition at Gate 1 and reuses generation only in the selected-item workflow', () => {
+	it('keeps acquisition at Gate 1 and runs governed generation only in the selected-item workflow', () => {
 		const acquisition = read('src/automation/runtime-automation.ts');
 		const workflow = read('src/services/runtime-editorial-workflow.ts');
 		expect(acquisition).not.toContain('GenerationService');
 		expect(workflow).toContain('new GenerationService');
-		expect(workflow).not.toContain('generation.generateCandidates');
+		expect(workflow).toContain('generation.proposeNormalization');
+		expect(workflow).toContain('generation.reviewNormalization');
+		expect(workflow).toContain('generation.generateCandidates');
+		expect(workflow).toContain('workflow.selectCandidate');
 		expect(workflow).toContain('findCandidateSelection');
 		expect(workflow).toContain('generation.generateArticleBody');
 	});

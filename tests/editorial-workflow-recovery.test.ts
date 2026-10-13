@@ -43,13 +43,16 @@ function intake(sqlite: DatabaseSync, id: string): void {
 		VALUES (?,?,'Neutral brief',2,3,'SUITABLE','','editor@test','editor@test',?,?)`).run(id, id, NOW, NOW);
 }
 
-function batchItem(sqlite: DatabaseSync, id: string, ordinal: number, state = 'SELECTED'): void {
+function batchItem(sqlite: DatabaseSync, id: string, ordinal: number, state = 'SELECTED', routineEligible = false): void {
 	intake(sqlite, id);
 	sqlite.prepare(`INSERT INTO editorial_batch_items (batch_id,source_intake_id,ordinal,category_id,workflow_state,
 		selected_by_email,selected_at,created_at,updated_at) VALUES ('batch',?,?,'cat',?,'editor@test',?,?,?)`)
 		.run(id, ordinal, state === 'FAILED' ? 'SELECTED' : state, NOW, NOW, NOW);
 	if (state === 'FAILED') sqlite.prepare(`UPDATE editorial_batch_items SET workflow_state='FAILED',
 		failure_stage='MODEL',failure_classification='MALFORMED_OUTPUT' WHERE source_intake_id=?`).run(id);
+	if (routineEligible) sqlite.prepare(`INSERT INTO editorial_workflow_events
+		(id,batch_id,source_intake_id,event_kind,detail,created_at)
+		VALUES (?,?,?,?,?,?)`).run(`eligible-${id}`, 'batch', id, 'INTAKE_SELECTED', 'routine-generation:v1', NOW);
 }
 
 function smokeBatchItem(sqlite: DatabaseSync, state = 'GENERATING'): void {
@@ -92,6 +95,35 @@ describe('editorial workflow recovery primitives', () => {
 		expect(claimed.map((item) => [item.batchId, item.intakeId])).toEqual([[SMOKE_BATCH_ID, SMOKE_INTAKE_ID]]);
 		expect(sqlite.prepare("SELECT workflow_state FROM editorial_batch_items WHERE source_intake_id='other-intake'").get())
 			.toEqual({ workflow_state: 'SELECTED' });
+		sqlite.close();
+	});
+
+	it('claims future routine selections and excludes historical selected or failed backlog rows', async () => {
+		const sqlite = database();
+		batchItem(sqlite, 'historical-selected', 1, 'SELECTED');
+		batchItem(sqlite, 'historical-failed', 2, 'FAILED');
+		batchItem(sqlite, 'future-selected', 3, 'SELECTED', true);
+		const repository = new D1EditorialWorkflowRepository(d1(sqlite));
+		const claimed = await repository.claimProcessable({ limit: 3, owner: 'routine', at: NOW,
+			leaseExpiresAt: '2026-10-11T12:10:00.000Z', createEventId: () => crypto.randomUUID(), routineOnly: true });
+		expect(claimed.map((item) => item.intakeId)).toEqual(['future-selected']);
+		expect(sqlite.prepare("SELECT workflow_state FROM editorial_batch_items WHERE source_intake_id='historical-selected'").get())
+			.toEqual({ workflow_state: 'SELECTED' });
+		expect(sqlite.prepare("SELECT workflow_state FROM editorial_batch_items WHERE source_intake_id='historical-failed'").get())
+			.toEqual({ workflow_state: 'FAILED' });
+		sqlite.close();
+	});
+
+	it('marks a newly triaged intake as routine-eligible before it can be claimed', async () => {
+		const sqlite = database();
+		batchItem(sqlite, 'new-selection', 1, 'INGESTED');
+		const repository = new D1EditorialWorkflowRepository(d1(sqlite));
+		expect(await repository.select('batch', 'new-selection', 'editor@test', NOW, 'selected-event')).toBe(true);
+		expect(sqlite.prepare("SELECT detail FROM editorial_workflow_events WHERE id='selected-event'").get())
+			.toEqual({ detail: 'routine-generation:v1' });
+		const claimed = await repository.claimProcessable({ limit: 1, owner: 'routine', at: NOW,
+			leaseExpiresAt: '2026-10-11T12:10:00.000Z', createEventId: () => 'claim-event', routineOnly: true });
+		expect(claimed.map((item) => item.intakeId)).toEqual(['new-selection']);
 		sqlite.close();
 	});
 
@@ -302,7 +334,7 @@ describe('editorial workflow recovery primitives', () => {
 		sqlite.close();
 	});
 
-	it('allows only an explicitly image-disabled smoke path to become review-ready without an image', async () => {
+	it('allows an explicitly authorized text-only review package without weakening publication', async () => {
 		const sqlite = database(); smokeBatchItem(sqlite);
 		sqlite.exec(`INSERT INTO satire_candidates (id,source_intake_id,proposed_headline,proposed_deck,draft_body_markdown,category_id,editorial_notes,status,created_by_email,updated_by_email,created_at,updated_at,body_generation_state)
 			VALUES ('candidate','${SMOKE_INTAKE_ID}','Headline','Deck','Body','cat','','DRAFT','editor@test','editor@test','${NOW}','${NOW}','SUCCEEDED');
@@ -319,6 +351,24 @@ describe('editorial workflow recovery primitives', () => {
 			actorEmail: 'editor@test', at: NOW, eventId: 'publish-event', auditId: 'publish-audit' })).toBe(false);
 		expect(sqlite.prepare('SELECT status,published_at,og_image_key FROM stories WHERE id=?').get('story'))
 			.toEqual({ status: 'REVIEW', published_at: null, og_image_key: null });
+		sqlite.close();
+	});
+
+	it('creates final-review readiness only when exactly three articles are complete', async () => {
+		const sqlite = database();
+		sqlite.prepare("UPDATE editorial_batches SET item_count=3 WHERE id='batch'").run();
+		batchItem(sqlite, 'ready-1', 1, 'READY_FOR_REVIEW');
+		batchItem(sqlite, 'ready-2', 2, 'READY_FOR_REVIEW');
+		batchItem(sqlite, 'ready-3', 3, 'SELECTED', true);
+		const repository = new D1EditorialWorkflowRepository(d1(sqlite));
+		expect(await repository.ensureFinalReminder('batch', NOW, 'not-yet')).toBe(false);
+		expect(sqlite.prepare("SELECT COUNT(*) count FROM editorial_stage_reminders WHERE stage='FINAL_REVIEW'").get())
+			.toEqual({ count: 0 });
+		sqlite.prepare("UPDATE editorial_batch_items SET workflow_state='READY_FOR_REVIEW' WHERE source_intake_id='ready-3'").run();
+		expect(await repository.ensureFinalReminder('batch', NOW, 'complete')).toBe(true);
+		expect(await repository.ensureFinalReminder('batch', NOW, 'duplicate')).toBe(false);
+		expect(sqlite.prepare("SELECT COUNT(*) count FROM editorial_stage_reminders WHERE stage='FINAL_REVIEW'").get())
+			.toEqual({ count: 1 });
 		sqlite.close();
 	});
 
