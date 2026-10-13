@@ -18,7 +18,7 @@ export interface ReviewNotifier {
 
 export class ReviewNotificationError extends Error {
 	constructor(
-		readonly classification: 'NOT_CONFIGURED' | 'NETWORK' | 'REJECTED' | 'AMBIGUOUS' | 'CONFLICT',
+		readonly classification: 'NOT_CONFIGURED' | 'NETWORK' | 'REJECTED' | 'PENDING' | 'AMBIGUOUS' | 'CONFLICT',
 		readonly responseStatus: number | null = null,
 		readonly requestId: string | null = null,
 	) {
@@ -29,6 +29,7 @@ export class ReviewNotificationError extends Error {
 export interface ReviewNotificationTransportResult {
 	status: number;
 	requestId: string | null;
+	deliveryState: 'PENDING' | 'DELIVERED' | 'AMBIGUOUS';
 }
 
 export interface ReviewNotificationTransport {
@@ -76,22 +77,32 @@ export class WebhookReviewNotifier implements ReviewNotificationTransport {
 		if (!response.ok) throw new ReviewNotificationError(
 			response.status >= 500 ? 'AMBIGUOUS' : 'REJECTED', response.status, requestId,
 		);
-		if (response.status === 202) return { status: response.status, requestId };
-		if (response.status !== 200) throw new ReviewNotificationError('AMBIGUOUS', response.status, requestId);
+		if (response.status !== 200 && response.status !== 202) {
+			throw new ReviewNotificationError('AMBIGUOUS', response.status, requestId);
+		}
 		let acknowledgement: unknown;
 		try {
 			acknowledgement = await response.json();
 		} catch {
 			throw new ReviewNotificationError('AMBIGUOUS', response.status, requestId);
 		}
+		const deliveryState = acknowledgement && typeof acknowledgement === 'object'
+			? (acknowledgement as { deliveryState?: unknown }).deliveryState : null;
 		if (!acknowledgement || typeof acknowledgement !== 'object'
-			|| (acknowledgement as { deliveryState?: unknown }).deliveryState !== 'DELIVERED'
+			|| !['PENDING', 'DELIVERED', 'AMBIGUOUS'].includes(String(deliveryState))
 			|| (acknowledgement as { idempotencyKey?: unknown }).idempotencyKey !== notification.idempotencyKey) {
+			throw new ReviewNotificationError('AMBIGUOUS', response.status, requestId);
+		}
+		if (response.status === 200 && deliveryState !== 'DELIVERED') {
+			throw new ReviewNotificationError('AMBIGUOUS', response.status, requestId);
+		}
+		if (response.status === 202 && deliveryState === 'DELIVERED') {
 			throw new ReviewNotificationError('AMBIGUOUS', response.status, requestId);
 		}
 		const deliveryId = (acknowledgement as { deliveryId?: unknown }).deliveryId;
 		if (typeof deliveryId === 'string' && deliveryId.trim()) requestId = deliveryId.trim().slice(0, 200);
-		return { status: response.status, requestId };
+		return { status: response.status, requestId,
+			deliveryState: deliveryState as ReviewNotificationTransportResult['deliveryState'] };
 	}
 }
 

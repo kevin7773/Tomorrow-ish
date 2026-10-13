@@ -1,0 +1,323 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { describe, expect, it, vi } from 'vitest';
+import { D1ExternalReviewNotificationRepository } from '../src/data/external-review-notification-repository';
+import { D1ResendEmailRepository } from '../src/data/resend-email-repository';
+import { handleResendEmailSubmissionRequest, handleResendWebhookRequest } from '../src/notifications/resend-email-endpoint';
+import {
+	ResendEmailProvider,
+	ResendSubmissionError,
+	renderEditorialEmail,
+	sha256Hex,
+	validateResendConfiguration,
+	type ResendEmailConfiguration,
+} from '../src/notifications/resend-email';
+import type { ReviewNotification } from '../src/notifications/review-notifier';
+import { ResendEditorialEmailService } from '../src/services/resend-editorial-email-service';
+
+const NOW = '2026-10-13T18:00:00.000Z';
+const BEARER = 'review-notification-bearer-token-32-characters';
+const SECRET_BYTES = '0123456789abcdef0123456789abcdef';
+const WEBHOOK_SECRET = `whsec_${btoa(SECRET_BYTES)}`;
+const configuration: ResendEmailConfiguration = {
+	apiKey: 're_test_key_with_at_least_twenty_characters',
+	webhookSigningSecret: WEBHOOK_SECRET,
+	toEmail: 'editor@gmail.com',
+	fromEmail: 'editorial@tomorrow-ish.news',
+};
+const notification: ReviewNotification = {
+	batchId: 'batch-email-1', stage: 'FINAL_REVIEW', kind: 'INITIAL',
+	message: '📰 Tomorrow-ish has 3 finished stories ready for final editorial review.',
+	reviewUrl: 'https://tomorrow-ish.news/editorial/batches/batch-email-1/review',
+	idempotencyKey: 'editorial-review:batch-email-1:FINAL_REVIEW:INITIAL',
+};
+const execute = Symbol('execute');
+type ExecutableStatement = D1PreparedStatement & { [execute]: () => D1Result };
+
+function d1Database(sqlite: DatabaseSync): D1Database {
+	return {
+		prepare(query: string) { let bindings: unknown[] = []; const statement = {
+			bind(...values: unknown[]) { bindings = values; return statement; },
+			async first<T>() { return (sqlite.prepare(query).get(...bindings as never[]) as T | undefined) ?? null; },
+			async all<T>() { return { success: true, results: sqlite.prepare(query).all(...bindings as never[]) as T[] } as D1Result<T>; },
+			async run<T>() { return statement[execute]() as D1Result<T>; },
+			[execute]() { const result = sqlite.prepare(query).run(...bindings as never[]); return {
+				success: true, results: [], meta: { changes: Number(result.changes) },
+			} as unknown as D1Result; },
+		}; return statement as unknown as D1PreparedStatement; },
+		async batch<T>(statements: D1PreparedStatement[]) {
+			sqlite.exec('BEGIN IMMEDIATE');
+			try {
+				const results = statements.map((statement) => (statement as ExecutableStatement)[execute]());
+				sqlite.exec('COMMIT');
+				return results as D1Result<T>[];
+			} catch (error) { sqlite.exec('ROLLBACK'); throw error; }
+		},
+	} as unknown as D1Database;
+}
+
+async function harness(kind: ReviewNotification['kind'] = 'INITIAL') {
+	const sqlite = new DatabaseSync(':memory:');
+	for (const filename of readdirSync(join(process.cwd(), 'migrations')).filter((name) => /^\d+.*\.sql$/.test(name)).sort()) {
+		sqlite.exec(readFileSync(join(process.cwd(), 'migrations', filename), 'utf8'));
+	}
+	sqlite.exec(`INSERT INTO automation_runs (id,trigger_kind,status,started_at,completed_at)
+		VALUES ('batch-email-1','SCHEDULED','SUCCEEDED','${NOW}','${NOW}');
+		INSERT INTO editorial_batches (id,item_count,created_at) VALUES ('batch-email-1',3,'${NOW}');
+		INSERT INTO categories (id,slug,name,created_at) VALUES ('cat','cat','Category','${NOW}');`);
+	for (let index = 1; index <= 3; index += 1) {
+		sqlite.exec(`INSERT INTO source_intakes (id,title,neutral_brief,significance_score,satire_potential_score,
+			satire_suitability,editorial_notes,created_by_email,updated_by_email,created_at,updated_at)
+			VALUES ('intake-${index}','Title','Brief',1,1,'UNREVIEWED','','editor@example.com','editor@example.com','${NOW}','${NOW}');
+			INSERT INTO editorial_batch_items (batch_id,source_intake_id,ordinal,category_id,workflow_state,selected_by_email,
+				selected_at,created_at,updated_at)
+			VALUES ('batch-email-1','intake-${index}',${index},'cat','READY_FOR_REVIEW','editor@example.com','${NOW}','${NOW}','${NOW}');`);
+	}
+	sqlite.exec(`INSERT INTO editorial_stage_reminders
+		(batch_id,stage,created_at,claim_kind,claim_token,claimed_at)
+		VALUES ('batch-email-1','FINAL_REVIEW','${NOW}','${kind}','claim-1','${NOW}')`);
+	const currentNotification = { ...notification, kind,
+		idempotencyKey: `editorial-review:batch-email-1:FINAL_REVIEW:${kind}` };
+	const db = d1Database(sqlite);
+	const external = new D1ExternalReviewNotificationRepository(db);
+	expect(await external.reserve(currentNotification, `external-review:v1:${currentNotification.idempotencyKey}`,
+		'outer-owner', NOW)).toBe('ACQUIRED');
+	return { sqlite, db, external, currentNotification };
+}
+
+async function signWebhook(body: string, eventId: string, timestamp: string): Promise<string> {
+	const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(SECRET_BYTES),
+		{ name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+	const signature = await crypto.subtle.sign('HMAC', key,
+		new TextEncoder().encode(`${eventId}.${timestamp}.${body}`));
+	let binary = '';
+	for (const byte of new Uint8Array(signature)) binary += String.fromCharCode(byte);
+	return `v1,${btoa(binary)}`;
+}
+
+async function webhookRequest(type: string, providerEmailId = 'email_12345678', eventId = 'msg_event_12345678',
+	recipient = configuration.toEmail) {
+	const timestamp = String(Math.floor(Date.parse(NOW) / 1000));
+	const body = JSON.stringify({ type, created_at: NOW, data: {
+		email_id: providerEmailId, to: [recipient], from: configuration.fromEmail,
+		subject: 'Tomorrow-ish reminder', created_at: NOW,
+		tags: { notification_key: await sha256Hex(notification.idempotencyKey) },
+	} });
+	return new Request('https://tomorrow-ish.news/api/internal/resend-delivery-webhook', {
+		method: 'POST', headers: {
+			'content-type': 'application/json', 'svix-id': eventId, 'svix-timestamp': timestamp,
+			'svix-signature': await signWebhook(body, eventId, timestamp),
+		}, body,
+	});
+}
+
+describe('governed Resend editorial email delivery', () => {
+	it('validates fail-closed configuration and renders all reminder subjects without draft content', () => {
+		expect(validateResendConfiguration(configuration)).toMatchObject({
+			toEmail: 'editor@gmail.com', fromEmail: 'editorial@tomorrow-ish.news',
+		});
+		for (const invalid of [
+			{ ...configuration, apiKey: '' },
+			{ ...configuration, webhookSigningSecret: '' },
+			{ ...configuration, toEmail: 'editor@example.com' },
+			{ ...configuration, fromEmail: 'someone@tomorrow-ish.news' },
+		]) expect(() => validateResendConfiguration(invalid)).toThrow();
+		expect(renderEditorialEmail(notification, 3).subject).toBe('Tomorrow-ish: 3 Articles Awaiting Review');
+		expect(renderEditorialEmail({ ...notification, kind: 'SIX_HOUR' }, 2).subject)
+			.toBe('Tomorrow-ish: Editorial Review Reminder — 6 Hours');
+		expect(renderEditorialEmail({ ...notification, kind: 'FINAL' }, 1).subject)
+			.toBe('Tomorrow-ish: Final Editorial Reminder — 24 Hours');
+		expect(renderEditorialEmail(notification, 3).text).not.toContain(notification.message);
+	});
+
+	it('submits exactly once, remains pending, and becomes delivered only after a signed callback', async () => {
+		const test = await harness();
+		const fetcher = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+			expect(init?.headers).toMatchObject({ Authorization: `Bearer ${configuration.apiKey}`,
+				'Idempotency-Key': notification.idempotencyKey });
+			const body = JSON.parse(String(init?.body));
+			expect(body).toMatchObject({ from: 'editorial@tomorrow-ish.news', to: ['editor@gmail.com'],
+				subject: 'Tomorrow-ish: 3 Articles Awaiting Review',
+				tags: [{ name: 'notification_key', value: expect.stringMatching(/^[a-f0-9]{64}$/) }],
+			});
+			expect(body.html).toContain('https://tomorrow-ish.news/editorial');
+			expect(body.html).not.toContain('finished stories ready');
+			return Response.json({ id: 'email_12345678' });
+		});
+		const repository = new D1ResendEmailRepository(test.db);
+		const service = new ResendEditorialEmailService(repository,
+			new ResendEmailProvider(configuration, fetcher), configuration, () => NOW);
+		expect(await service.submit(test.currentNotification)).toEqual({
+			deliveryState: 'PENDING', idempotencyKey: notification.idempotencyKey,
+			deliveryId: 'email_12345678', classification: null,
+		});
+		expect(await service.submit(test.currentNotification)).toMatchObject({ deliveryState: 'PENDING' });
+		expect(fetcher).toHaveBeenCalledTimes(1);
+		expect(test.sqlite.prepare('SELECT status,provider_email_id FROM resend_email_submissions').get())
+			.toEqual({ status: 'PENDING', provider_email_id: 'email_12345678' });
+
+		const response = await handleResendWebhookRequest(await webhookRequest('email.delivered'), service,
+			configuration, () => new Date(NOW));
+		expect(response.status).toBe(200);
+		expect(test.sqlite.prepare('SELECT status,delivered_at FROM resend_email_submissions').get())
+			.toEqual({ status: 'DELIVERED', delivered_at: NOW });
+		expect(test.sqlite.prepare(`SELECT status,provider_request_id,delivered_at
+			FROM external_review_notification_deliveries`).get()).toEqual({
+			status: 'DELIVERED', provider_request_id: 'email_12345678', delivered_at: NOW,
+		});
+		expect(test.sqlite.prepare('SELECT event_type,disposition,payload_hash FROM resend_email_delivery_events').get())
+			.toMatchObject({ event_type: 'email.delivered', disposition: 'DELIVERED',
+				payload_hash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+		expect(await test.external.reserve({ ...test.currentNotification,
+			message: '📰 Tomorrow-ish has 2 finished stories ready for final editorial review.' },
+			`external-review:v1:${notification.idempotencyKey}`, 'later-owner', NOW)).toBe('DELIVERED');
+		test.sqlite.close();
+	});
+
+	it('handles concurrent submissions with one provider call and fails closed on payload reuse', async () => {
+		const test = await harness();
+		const provider = { submit: vi.fn(async () => ({ providerEmailId: 'email_abcdefgh', responseStatus: 200 })) };
+		const repository = new D1ResendEmailRepository(test.db);
+		const service = new ResendEditorialEmailService(repository, provider, configuration, () => NOW);
+		const results = await Promise.all([
+			service.submit(test.currentNotification), service.submit(test.currentNotification),
+		]);
+		expect(provider.submit).toHaveBeenCalledTimes(1);
+		expect(results.map(({ deliveryState }) => deliveryState)).toEqual(['PENDING', 'PENDING']);
+		expect(await service.submit({ ...test.currentNotification, message: 'Tampered notification' }))
+			.toMatchObject({ deliveryState: 'FAILED', classification: 'IDEMPOTENCY_CONFLICT' });
+		expect(provider.submit).toHaveBeenCalledTimes(1);
+		test.sqlite.close();
+	});
+
+	it('never resubmits ambiguous outcomes and records definitive provider rejection', async () => {
+		for (const [classification, expected] of [
+			['PROVIDER_AMBIGUOUS', 'AMBIGUOUS'], ['PROVIDER_REJECTED', 'FAILED'],
+		] as const) {
+			const test = await harness();
+			const provider = { submit: vi.fn(async () => { throw new ResendSubmissionError(classification,
+				classification === 'PROVIDER_REJECTED' ? 422 : null); }) };
+			const service = new ResendEditorialEmailService(new D1ResendEmailRepository(test.db),
+				provider, configuration, () => NOW);
+			expect(await service.submit(test.currentNotification)).toMatchObject({ deliveryState: expected });
+			expect(await service.submit(test.currentNotification)).toMatchObject({ deliveryState: expected });
+			expect(provider.submit).toHaveBeenCalledTimes(1);
+			test.sqlite.close();
+		}
+	});
+
+	it('classifies concurrent Resend idempotency responses as ambiguous without retrying', async () => {
+		const provider = new ResendEmailProvider(configuration, vi.fn(async () => Response.json({
+			name: 'concurrent_idempotent_requests', message: 'request already in progress',
+		}, { status: 409 })));
+		await expect(provider.submit(notification.idempotencyKey,
+			await sha256Hex(notification.idempotencyKey), renderEditorialEmail(notification, 3)))
+			.rejects.toMatchObject({ classification: 'PROVIDER_AMBIGUOUS', responseStatus: 409 });
+	});
+
+	it('classifies a mismatched Resend idempotency payload as a definitive rejection', async () => {
+		const provider = new ResendEmailProvider(configuration, vi.fn(async () => Response.json({
+			name: 'invalid_idempotent_request', message: 'payload does not match',
+		}, { status: 409 })));
+		await expect(provider.submit(notification.idempotencyKey,
+			await sha256Hex(notification.idempotencyKey), renderEditorialEmail(notification, 3)))
+			.rejects.toMatchObject({ classification: 'PROVIDER_REJECTED', responseStatus: 409 });
+	});
+
+	it('fails closed before transport when provider configuration is missing', async () => {
+		const test = await harness();
+		const fetcher = vi.fn();
+		const invalid = { ...configuration, apiKey: '' };
+		const service = new ResendEditorialEmailService(new D1ResendEmailRepository(test.db),
+			new ResendEmailProvider(invalid, fetcher), invalid, () => NOW);
+		expect(await service.submit(test.currentNotification)).toMatchObject({
+			deliveryState: 'FAILED', classification: 'PROVIDER_CONFIGURATION',
+		});
+		expect(fetcher).not.toHaveBeenCalled();
+		test.sqlite.close();
+	});
+
+	it('uses the idempotency hash to resolve a signed callback after the submission response was lost', async () => {
+		const test = await harness();
+		const provider = { submit: vi.fn(async () => { throw new ResendSubmissionError('PROVIDER_AMBIGUOUS', null); }) };
+		const repository = new D1ResendEmailRepository(test.db);
+		const service = new ResendEditorialEmailService(repository, provider, configuration, () => NOW);
+		expect(await service.submit(test.currentNotification)).toMatchObject({ deliveryState: 'AMBIGUOUS', deliveryId: null });
+		expect((await repository.find(notification.idempotencyKey))?.providerEmailId).toBeNull();
+		const callback = await webhookRequest('email.delivered', 'email_recovered_1234', 'msg_recovered_1234');
+		expect((await handleResendWebhookRequest(callback, service, configuration, () => new Date(NOW))).status).toBe(200);
+		expect(await repository.find(notification.idempotencyKey)).toMatchObject({
+			status: 'DELIVERED', providerEmailId: 'email_recovered_1234',
+		});
+		expect(provider.submit).toHaveBeenCalledTimes(1);
+		test.sqlite.close();
+	});
+
+	it('records delayed and duplicate callbacks and ignores contradictory terminal events', async () => {
+		const test = await harness();
+		const repository = new D1ResendEmailRepository(test.db);
+		const service = new ResendEditorialEmailService(repository,
+			{ submit: vi.fn(async () => ({ providerEmailId: 'email_12345678', responseStatus: 200 })) },
+			configuration, () => NOW);
+		await service.submit(test.currentNotification);
+		const delayed = await webhookRequest('email.delivery_delayed', 'email_12345678', 'msg_delayed_12345678');
+		expect((await handleResendWebhookRequest(delayed, service, configuration, () => new Date(NOW))).status).toBe(200);
+		expect((await repository.find(notification.idempotencyKey))?.status).toBe('PENDING');
+		const duplicate = await webhookRequest('email.delivery_delayed', 'email_12345678', 'msg_delayed_12345678');
+		expect(await (await handleResendWebhookRequest(duplicate, service, configuration, () => new Date(NOW))).json())
+			.toMatchObject({ state: 'duplicate' });
+		await handleResendWebhookRequest(await webhookRequest('email.delivered'), service, configuration, () => new Date(NOW));
+		await handleResendWebhookRequest(await webhookRequest('email.bounced', 'email_12345678', 'msg_bounced_12345678'),
+			service, configuration, () => new Date(NOW));
+		expect((await repository.find(notification.idempotencyKey))?.status).toBe('DELIVERED');
+		expect(test.sqlite.prepare(`SELECT disposition FROM resend_email_delivery_events
+			WHERE event_id='msg_bounced_12345678'`).get()).toEqual({ disposition: 'IGNORED_TERMINAL' });
+		expect(() => test.sqlite.prepare("DELETE FROM resend_email_delivery_events WHERE event_id='msg_bounced_12345678'").run())
+			.toThrow(/cannot be deleted/);
+		test.sqlite.close();
+	});
+
+	it('rejects invalid signatures and recipient substitution without changing state', async () => {
+		const test = await harness();
+		const repository = new D1ResendEmailRepository(test.db);
+		const service = new ResendEditorialEmailService(repository,
+			{ submit: vi.fn(async () => ({ providerEmailId: 'email_12345678', responseStatus: 200 })) },
+			configuration, () => NOW);
+		await service.submit(test.currentNotification);
+		const invalid = await webhookRequest('email.delivered');
+		invalid.headers.set('svix-signature', 'v1,invalid');
+		expect((await handleResendWebhookRequest(invalid, service, configuration, () => new Date(NOW))).status).toBe(401);
+		const missing = await webhookRequest('email.delivered', 'email_12345678', 'msg_missing_signature');
+		missing.headers.delete('svix-signature');
+		expect((await handleResendWebhookRequest(missing, service, configuration, () => new Date(NOW))).status).toBe(401);
+		expect((await repository.find(notification.idempotencyKey))?.status).toBe('PENDING');
+		expect(test.sqlite.prepare('SELECT COUNT(*) AS count FROM resend_email_delivery_events').get()).toEqual({ count: 0 });
+		const wrongRecipient = await webhookRequest('email.delivered', 'email_12345678',
+			'msg_wrong_recipient', 'attacker@gmail.com');
+		expect((await handleResendWebhookRequest(wrongRecipient, service, configuration, () => new Date(NOW))).status).toBe(400);
+		expect(test.sqlite.prepare('SELECT COUNT(*) AS count FROM resend_email_delivery_events').get()).toEqual({ count: 0 });
+		test.sqlite.close();
+	});
+
+	it('requires authenticated HTTPS submission and preserves the exact asynchronous acknowledgement', async () => {
+		const test = await harness('SIX_HOUR');
+		const service = new ResendEditorialEmailService(new D1ResendEmailRepository(test.db),
+			{ submit: vi.fn(async () => ({ providerEmailId: 'email_six_hour', responseStatus: 200 })) },
+			configuration, () => NOW);
+		const body = JSON.stringify({ text: test.currentNotification.message,
+			reviewUrl: test.currentNotification.reviewUrl, batchId: test.currentNotification.batchId,
+			reminderStage: test.currentNotification.stage, reminderKind: test.currentNotification.kind });
+		const request = (token: string) => new Request('https://tomorrow-ish.news/api/internal/editorial-email-delivery', {
+			method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json',
+				'idempotency-key': test.currentNotification.idempotencyKey }, body,
+		});
+		expect((await handleResendEmailSubmissionRequest(request('wrong'), service, BEARER)).status).toBe(401);
+		const response = await handleResendEmailSubmissionRequest(request(BEARER), service, BEARER);
+		expect(response.status).toBe(202);
+		expect(await response.json()).toEqual({ deliveryState: 'PENDING',
+			idempotencyKey: test.currentNotification.idempotencyKey,
+			deliveryId: 'email_six_hour', classification: null });
+		test.sqlite.close();
+	});
+});

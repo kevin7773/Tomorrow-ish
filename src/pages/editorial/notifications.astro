@@ -23,13 +23,14 @@ const csrfToken = Astro.locals.csrfToken;
 	</section>
 	<section class="editorial-panel">
 		<h2>External delivery investigation</h2>
-		<p>Resolve a delivery only after checking the destination by idempotency key. Ambiguous delivery is never retried automatically.</p>
-		{externalDeliveries.length === 0 ? <p>No failed or ambiguous external deliveries require investigation.</p> : <div class="editorial-list">
+		<p>Pending delivery awaits signed provider evidence. Resolve failed or ambiguous delivery only after checking the destination by idempotency key. No unresolved submission is retried automatically.</p>
+		{externalDeliveries.length === 0 ? <p>No unresolved external deliveries require investigation.</p> : <div class="editorial-list">
 			{externalDeliveries.map((delivery) => <article class="editorial-list__item">
 				<div><strong>{delivery.kind} · {delivery.stage} · {delivery.status}</strong>
-					<p>{delivery.idempotencyKey}<br />Updated {new Date(delivery.updatedAt).toLocaleString('en-US')}</p>
+					<p>{delivery.idempotencyKey}<br />Provider reference: {delivery.providerRequestId ?? 'not yet recorded'}<br />
+						Classification: {delivery.failureClassification ?? 'none'}<br />Updated {new Date(delivery.updatedAt).toLocaleString('en-US')}</p>
 				</div>
-				<form method="post" action="/editorial/actions/notifications">
+				{delivery.status !== 'PENDING' && <form method="post" action="/editorial/actions/notifications">
 					<input type="hidden" name="csrf_token" value={csrfToken} />
 					<input type="hidden" name="action" value="reconcile-external" />
 					<input type="hidden" name="operationKey" value={delivery.operationKey} />
@@ -42,7 +43,7 @@ const csrfToken = Astro.locals.csrfToken;
 					</select></label>
 					<label>Typed confirmation <input required name="confirmation" placeholder="CONFIRM DELIVERED / FAILED" /></label>
 					<button class="editorial-button" type="submit">Record reconciliation</button>
-				</form>
+				</form>}
 			</article>)}
 		</div>}
 	</section>

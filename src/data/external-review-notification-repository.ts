@@ -26,6 +26,7 @@ export interface ExternalNotificationReconciliationRepository {
 
 export interface ExternalReviewNotificationRepository {
 	reserve(notification: ReviewNotification, operationKey: string, owner: string, at: string): Promise<ExternalDeliveryReservation>;
+	markSubmitted(operationKey: string, owner: string, at: string, responseStatus: number, requestId: string): Promise<boolean>;
 	markDelivered(operationKey: string, owner: string, at: string, responseStatus: number, requestId: string | null): Promise<boolean>;
 	markFailed(operationKey: string, owner: string, at: string, classification: string, responseStatus: number | null, requestId: string | null): Promise<boolean>;
 	markAmbiguous(operationKey: string, owner: string, at: string, classification: string, responseStatus: number | null, requestId: string | null): Promise<boolean>;
@@ -53,9 +54,12 @@ export class D1ExternalReviewNotificationRepository implements ExternalReviewNot
 		}>();
 		if (!existing) return 'BLOCKED';
 		if (existing.idempotency_key !== notification.idempotencyKey || existing.batch_id !== notification.batchId
-			|| existing.stage !== notification.stage || existing.kind !== notification.kind
-			|| existing.message_text !== notification.message || existing.review_url !== notification.reviewUrl) return 'CONFLICT';
-		return existing.status === 'DELIVERED' ? 'DELIVERED' : 'BLOCKED';
+			|| existing.stage !== notification.stage || existing.kind !== notification.kind) return 'CONFLICT';
+		// Once signed or governed evidence confirms this logical reminder, the scheduler may safely
+		// complete its durable claim even if the live pending count changed while delivery was in flight.
+		if (existing.status === 'DELIVERED') return 'DELIVERED';
+		if (existing.message_text !== notification.message || existing.review_url !== notification.reviewUrl) return 'CONFLICT';
+		return 'BLOCKED';
 	}
 
 	private async finish(operationKey: string, owner: string, at: string, status: ExternalDeliveryState,
@@ -70,6 +74,14 @@ export class D1ExternalReviewNotificationRepository implements ExternalReviewNot
 
 	markDelivered(operationKey: string, owner: string, at: string, responseStatus: number, requestId: string | null) {
 		return this.finish(operationKey, owner, at, 'DELIVERED', null, responseStatus, requestId);
+	}
+	async markSubmitted(operationKey: string, owner: string, at: string, responseStatus: number, requestId: string): Promise<boolean> {
+		const result = await this.db.prepare(`UPDATE external_review_notification_deliveries
+			SET response_status = ?, provider_request_id = ?, failure_classification = NULL, updated_at = ?
+			WHERE operation_key = ? AND owner_token = ? AND status = 'PENDING'
+			AND (provider_request_id IS NULL OR provider_request_id = ?)`)
+			.bind(responseStatus, requestId, at, operationKey, owner, requestId).run();
+		return result.meta.changes === 1;
 	}
 	markFailed(operationKey: string, owner: string, at: string, classification: string, responseStatus: number | null, requestId: string | null) {
 		return this.finish(operationKey, owner, at, 'FAILED', classification, responseStatus, requestId);
@@ -99,7 +111,7 @@ export class D1ExternalReviewNotificationRepository implements ExternalReviewNot
 	async listForInvestigation(limit: number): Promise<ExternalDeliveryRecord[]> {
 		const rows = await this.db.prepare(`SELECT operation_key, idempotency_key, batch_id, stage, kind, status,
 			response_status, provider_request_id, failure_classification, updated_at
-			FROM external_review_notification_deliveries WHERE status IN ('FAILED','AMBIGUOUS')
+			FROM external_review_notification_deliveries WHERE status <> 'DELIVERED'
 			ORDER BY updated_at, operation_key LIMIT ?`).bind(Math.max(1, Math.min(limit, 100))).all<any>();
 		return rows.results.map(D1ExternalReviewNotificationRepository.record);
 	}

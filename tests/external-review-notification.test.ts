@@ -73,8 +73,26 @@ describe('durable external review notification delivery', () => {
 		expect(sqlite.prepare(`SELECT status, delivered_at, response_status, failure_classification
 			FROM external_review_notification_deliveries`).get()).toEqual({
 			status: 'AMBIGUOUS', delivered_at: null, response_status: 202,
-			failure_classification: 'QUEUED_WITHOUT_DELIVERY_CONFIRMATION',
+			failure_classification: 'AMBIGUOUS',
 		});
+		sqlite.close();
+	});
+
+	it('keeps an explicit queued acknowledgement pending and correlated without marking delivery', async () => {
+		const sqlite = database();
+		const repository = new D1ExternalReviewNotificationRepository(d1Database(sqlite));
+		const fetcher = vi.fn(async () => Response.json({
+			deliveryState: 'PENDING', idempotencyKey: notification.idempotencyKey, deliveryId: 'email-pending-1',
+		}, { status: 202 }));
+		const notifier = new DurableExternalReviewNotifier(repository,
+			new WebhookReviewNotifier('https://notify.example/hooks/editorial', TOKEN, fetcher), () => NOW, () => 'owner-1');
+		await expect(notifier.send(notification)).rejects.toMatchObject({ classification: 'PENDING' });
+		expect(sqlite.prepare(`SELECT status, delivered_at, provider_request_id, response_status
+			FROM external_review_notification_deliveries`).get()).toEqual({
+			status: 'PENDING', delivered_at: null, provider_request_id: 'email-pending-1', response_status: 202,
+		});
+		await expect(notifier.send(notification)).rejects.toMatchObject({ classification: 'AMBIGUOUS' });
+		expect(fetcher).toHaveBeenCalledTimes(1);
 		sqlite.close();
 	});
 
@@ -134,11 +152,12 @@ describe('durable external review notification delivery', () => {
 		let state: 'empty' | 'pending' = 'empty';
 		const repository: ExternalReviewNotificationRepository = {
 			reserve: vi.fn(async () => { if (state === 'pending') return 'BLOCKED'; state = 'pending'; return 'ACQUIRED'; }),
+			markSubmitted: vi.fn(async () => true),
 			markDelivered: vi.fn(async () => false),
 			markFailed: vi.fn(async () => false),
 			markAmbiguous: vi.fn(async () => true),
 		};
-		const transport = { send: vi.fn(async () => ({ status: 200, requestId: 'accepted-1' })) };
+		const transport = { send: vi.fn(async () => ({ status: 200, requestId: 'accepted-1', deliveryState: 'DELIVERED' as const })) };
 		const notifier = new DurableExternalReviewNotifier(repository, transport, () => NOW, () => 'owner-1');
 		await expect(notifier.send(notification)).rejects.toMatchObject({ classification: 'AMBIGUOUS' });
 		await expect(notifier.send(notification)).rejects.toMatchObject({ classification: 'AMBIGUOUS' });

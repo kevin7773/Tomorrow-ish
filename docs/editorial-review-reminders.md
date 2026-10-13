@@ -50,7 +50,7 @@ HTTP 200 is confirmed delivery only when the JSON acknowledgement is exactly com
 }
 ```
 
-HTTP 202, other successful statuses, malformed or mismatched acknowledgements, timeouts, network loss, and HTTP 5xx responses are ambiguous. HTTP 4xx is a definitive rejection. No uncertain or failed delivery is retried automatically.
+HTTP 202 is accepted only for an exact `PENDING` or `AMBIGUOUS` acknowledgement containing the original idempotency key. A `PENDING` acknowledgement must also contain the provider email ID and does not complete the reminder; a signed provider callback must prove delivery. Other successful statuses, malformed or mismatched acknowledgements, timeouts, network loss, and HTTP 5xx responses are ambiguous. HTTP 4xx is a definitive rejection. No pending, uncertain, or failed delivery is retried automatically.
 
 `reminderStage` is `TRIAGE` or `FINAL_REVIEW`; `reminderKind` is `INITIAL`, `SIX_HOUR`, or `FINAL`; and `reviewUrl` may be `null` only when no review origin is configured.
 
@@ -63,6 +63,8 @@ The endpoint accepts only the exact sender schema, exact same-origin review rout
 `review_notification_receipts` records bounded delivery state, attempts, timestamps, and failure classifications. `editorial_notifications` is the first-party human-visible destination and contains at most one row per idempotency key. Kevin can view the durable inbox at `/editorial/notifications` inside the existing protected editorial workspace. No additional provider, account, or secret is required.
 
 Migration `0014_editorial_review_reminders.sql` creates the batch, batch-item, phase-reminder, append-only event, receipt, and internal-notification tables. Migration `0021_notification_delivery_and_automated_publication.sql` adds durable external delivery attempts. Migration `0022_operational_admission_and_notification_reconciliation.sql` adds append-only operator reconciliation evidence.
+
+Migration `0024_resend_editorial_notifications.sql` adds the destination-side Resend submission ledger and immutable signed callback evidence. The exact provider setup and acknowledgement behavior are documented in `docs/resend-editorial-email.md`.
 
 ## Operator reconciliation
 
