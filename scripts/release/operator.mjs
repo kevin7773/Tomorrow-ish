@@ -47,8 +47,9 @@ if (liveState === 'previous' && !transitionFromPath) {
 	throw new Error('--live-state previous requires an exact reviewed baseline transition.');
 }
 const previousBaseline = transitionFromPath ? await readJson(resolve(transitionFromPath)) : null;
+let transition = null;
 if (previousBaseline) {
-	validateBaselineTransition(previousBaseline, baseline, await readJson(resolve(transitionContractPath)));
+	transition = validateBaselineTransition(previousBaseline, baseline, await readJson(resolve(transitionContractPath)));
 }
 const config = await readJson(resolve('dist/server/wrangler.json'));
 validateGeneratedConfiguration(config, baseline);
@@ -60,7 +61,7 @@ const liveSnapshot = required('--live-snapshot');
 const expectPaused = ['upload', 'inspect', 'activate', 'cron-restore'].includes(action)
 	|| (action === 'rollback' && process.argv.includes('--cron-paused'));
 validateLiveSnapshot(await readJson(resolve(liveSnapshot)), liveState === 'previous' ? previousBaseline : baseline,
-	{ paused: expectPaused });
+	{ paused: expectPaused, liveState, transition });
 
 if (action === 'upload') {
 	await run(['versions', 'upload', '--config', 'dist/server/wrangler.json', '--strict',

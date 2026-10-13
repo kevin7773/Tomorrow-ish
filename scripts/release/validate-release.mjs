@@ -36,7 +36,7 @@ const modules = packageDirectory
 	? await validateDryRunPackage(resolve(configPath, '..'), resolve(packageDirectory), config)
 	: null;
 if (liveSnapshotPath) validateLiveSnapshot(await readJson(resolve(liveSnapshotPath)),
-	liveState === 'previous' ? previousBaseline : baseline, { paused });
+	liveState === 'previous' ? previousBaseline : baseline, { paused, liveState, transition });
 const version = versionSnapshotPath ? validateUploadedVersion(await readJson(resolve(versionSnapshotPath)), baseline) : null;
 const deployedModules = moduleInventoryPath
 	? await validateDeployedModuleInventory(resolve(configPath, '..'), await readJson(resolve(moduleInventoryPath)))

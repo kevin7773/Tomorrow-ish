@@ -107,6 +107,52 @@ describe('production release safety', () => {
 		)).toMatchObject({ name: 'phase-4e-governed-editorial-automation-disabled' });
 	});
 
+	it('accepts genuinely absent legacy automation gates only in an explicitly reviewed previous state', () => {
+		const read = (path: string) => JSON.parse(readFileSync(path, 'utf8'));
+		const previous = read('release/production-baseline.pre-model-budget.json');
+		const target = read('release/production-baseline.json');
+		const transition = validateBaselineTransition(
+			previous,
+			target,
+			read('release/model-budget-baseline-transition.json'),
+		);
+		const snapshot = {
+			capturedAt: '2026-10-12T21:55:00.000Z', accountId: previous.accountId,
+			workerName: previous.workerName, d1: previous.d1, r2: previous.r2, assets: previous.assets,
+			workersDev: false, previewUrls: false, routes: previous.routes, crons: previous.crons,
+			secretNames: previous.requiredSecrets, vars: previous.requiredVars,
+		};
+		expect(() => validateLiveSnapshot(snapshot, previous,
+			{ now: snapshotNow, liveState: 'previous', transition })).not.toThrow();
+		expect(() => validateLiveSnapshot(snapshot, previous,
+			{ now: snapshotNow, liveState: 'previous' })).toThrow(/ROUTINE_IMAGE_PREPARATION/);
+		expect(() => validateLiveSnapshot(snapshot, previous,
+			{ now: snapshotNow, liveState: 'target', transition })).toThrow(/ROUTINE_IMAGE_PREPARATION/);
+	});
+
+	it('requires exact contract authorization for every legacy-disabled gate introduction', () => {
+		const read = (path: string) => JSON.parse(readFileSync(path, 'utf8'));
+		const previous = read('release/production-baseline.pre-model-budget.json');
+		const target = read('release/production-baseline.json');
+		const contract = read('release/model-budget-baseline-transition.json');
+		delete contract.allowedVariableChanges.EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED;
+		expect(() => validateBaselineTransition(previous, target, contract))
+			.toThrow(/actual variable changes differ/);
+	});
+
+	it('requires every capability gate to be explicitly false in target mode', () => {
+		const { EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED: _omitted, ...missingGateVars } = baseline.requiredVars;
+		expect(() => validateLiveSnapshot(liveSnapshot({ vars: missingGateVars }), baseline,
+			{ now: snapshotNow, liveState: 'target' })).toThrow(/variables differ|EXTERNAL_NOTIFICATIONS/);
+		expect(() => validateLiveSnapshot(liveSnapshot({ vars: {
+			...baseline.requiredVars, EDITORIAL_AUTOMATED_PUBLICATION_ENABLED: 'true',
+		} }), baseline, { now: snapshotNow, liveState: 'target' }))
+			.toThrow(/variables differ|AUTOMATED_PUBLICATION/);
+		expect(() => validateLiveSnapshot(liveSnapshot({ vars: {
+			...baseline.requiredVars, UNREVIEWED: 'false',
+		} }), baseline, { now: snapshotNow, liveState: 'target' })).toThrow(/variables differ/);
+	});
+
 	it('detects a missing generated chunk in the Wrangler dry-run package', async () => {
 		const fixture = await packageFixture(false);
 		await expect(validateDryRunPackage(fixture.source, fixture.output, config())).rejects.toThrow(/dependency\.mjs/);

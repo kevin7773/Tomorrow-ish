@@ -121,7 +121,12 @@ export function validateBaselineTransition(previous, next, contract) {
 		errors.push(error instanceof Error ? error.message : String(error));
 	}
 	if (errors.length) throw new ReleaseSafetyError('Production baseline transition is not exact.', errors);
-	return { name: contract.name, changedVariables: actualChanged };
+	const introducedDisabledGates = DISABLED_GATES.filter((gate) =>
+		priorVars[gate] === undefined
+		&& nextVars[gate] === 'false'
+		&& changes[gate]?.from === null
+		&& changes[gate]?.to === 'false');
+	return { name: contract.name, changedVariables: actualChanged, introducedDisabledGates };
 }
 
 export function validateGeneratedConfiguration(config, baseline, options = {}) {
@@ -292,7 +297,11 @@ export function validateLiveSnapshot(snapshot, baseline, options = {}) {
 		: 'live Cron schedules differ from baseline');
 	check(errors, same(snapshot.vars ?? {}, baseline.requiredVars), 'live Worker variables differ from baseline');
 	for (const gate of DISABLED_GATES) {
-		check(errors, snapshot.vars?.[gate] === 'false', `live ${gate} must be false`);
+		const authorizedLegacyAbsence = options.liveState === 'previous'
+			&& options.transition?.introducedDisabledGates?.includes(gate)
+			&& !Object.hasOwn(baseline.requiredVars ?? {}, gate)
+			&& !Object.hasOwn(snapshot.vars ?? {}, gate);
+		check(errors, snapshot.vars?.[gate] === 'false' || authorizedLegacyAbsence, `live ${gate} must be false`);
 	}
 	check(errors, snapshot.vars?.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '', 'live image smoke attempt key must be blank');
 	try {
