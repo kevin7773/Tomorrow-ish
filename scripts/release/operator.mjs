@@ -61,9 +61,12 @@ if (previousBaseline) {
 }
 const targetAcceptance = transition?.notificationAcceptanceTest?.target;
 const liveAcceptance = transition?.notificationAcceptanceTest?.[liveState];
+const targetAutomation = transition?.automationCapabilities?.target;
+const liveAutomation = transition?.automationCapabilities?.[liveState];
 const config = await readJson(configPath);
 const cronConfigPrefix = configPath.endsWith('.json') ? configPath.slice(0, -'.json'.length) : configPath;
-validateGeneratedConfiguration(config, baseline, { notificationAcceptanceTest: targetAcceptance });
+validateGeneratedConfiguration(config, baseline,
+	{ notificationAcceptanceTest: targetAcceptance, automationCapabilities: targetAutomation });
 await validateDryRunPackage(dirname(configPath), resolve('.release/wrangler-dry-run'), config);
 if (process.env.CLOUDFLARE_ACCOUNT_ID !== baseline.accountId) {
 	throw new Error(`CLOUDFLARE_ACCOUNT_ID must explicitly equal ${baseline.accountId}`);
@@ -72,7 +75,8 @@ const liveSnapshot = required('--live-snapshot');
 const expectPaused = ['upload', 'inspect', 'activate', 'cron-restore'].includes(action)
 	|| (action === 'rollback' && process.argv.includes('--cron-paused'));
 validateLiveSnapshot(await readJson(resolve(liveSnapshot)), liveState === 'previous' ? previousBaseline : baseline,
-	{ paused: expectPaused, liveState, transition, notificationAcceptanceTest: liveAcceptance });
+	{ paused: expectPaused, liveState, transition, notificationAcceptanceTest: liveAcceptance,
+		automationCapabilities: liveAutomation });
 
 if (action === 'upload') {
 	await run(['versions', 'upload', '--config', configPath, '--strict',
@@ -82,7 +86,7 @@ if (action === 'upload') {
 } else if (action === 'activate') {
 	const versionId = required('--version');
 	const inspected = validateUploadedVersion(await readJson(resolve(required('--version-snapshot'))), baseline,
-		{ notificationAcceptanceTest: targetAcceptance });
+		{ notificationAcceptanceTest: targetAcceptance, automationCapabilities: targetAutomation });
 	validateActivationTarget(versionId, inspected.versionId);
 	await validateDeployedModuleInventory(dirname(configPath), await readJson(resolve(required('--module-inventory'))));
 	await run(['versions', 'deploy', `${versionId}@100%`, '--name', baseline.workerName,
@@ -91,13 +95,14 @@ if (action === 'upload') {
 	const cronConfigPath = `${cronConfigPrefix}.pause.json`;
 	const cronConfig = await readJson(cronConfigPath);
 	validateGeneratedConfiguration(cronConfig, baseline,
-		{ paused: true, notificationAcceptanceTest: targetAcceptance });
+		{ paused: true, notificationAcceptanceTest: targetAcceptance, automationCapabilities: targetAutomation });
 	assertOnlyCronDifference(config, cronConfig);
 	await run(['triggers', 'deploy', '--config', cronConfigPath]);
 } else if (action === 'cron-restore') {
 	const cronConfigPath = `${cronConfigPrefix}.restore.json`;
 	const cronConfig = await readJson(cronConfigPath);
-	validateGeneratedConfiguration(cronConfig, baseline, { notificationAcceptanceTest: targetAcceptance });
+	validateGeneratedConfiguration(cronConfig, baseline,
+		{ notificationAcceptanceTest: targetAcceptance, automationCapabilities: targetAutomation });
 	assertOnlyCronDifference(config, cronConfig);
 	await run(['triggers', 'deploy', '--config', cronConfigPath]);
 } else {
@@ -106,8 +111,10 @@ if (action === 'upload') {
 		? previousBaseline
 		: baseline;
 	if (!rollbackBaseline) throw new Error('--rollback-to-previous requires an exact reviewed baseline transition.');
+	const rollbackToPrevious = process.argv.includes('--rollback-to-previous');
 	validateUploadedVersion(versionSnapshot, rollbackBaseline,
-		{ notificationAcceptanceTest: transition?.notificationAcceptanceTest?.target });
+		{ notificationAcceptanceTest: transition?.notificationAcceptanceTest?.[rollbackToPrevious ? 'previous' : 'target'],
+			automationCapabilities: transition?.automationCapabilities?.[rollbackToPrevious ? 'previous' : 'target'] });
 	validateDisabledVersionSnapshot(versionSnapshot, rollbackBaseline);
 	await run(['versions', 'deploy', `${required('--version')}@100%`, '--name', baseline.workerName,
 		'--message', required('--message'), '--yes']);

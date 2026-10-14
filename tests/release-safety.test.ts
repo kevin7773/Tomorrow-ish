@@ -23,28 +23,6 @@ afterEach(async () => {
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-const baseline = {
-	accountId: 'account-1', workerName: 'worker-1', main: 'entry.mjs', workersDev: false, previewUrls: false,
-	compatibilityDate: '2026-09-10', compatibilityFlags: ['nodejs_compat'],
-	routes: [{ pattern: 'example.com', custom_domain: true }], crons: ['0 13 * * *', '0 21 * * *', '*/5 * * * *'],
-	assets: { binding: 'ASSETS', directory: '../client' },
-	d1: [{ binding: 'DB', database_name: 'production', database_id: 'db-1' }],
-	r2: [{ binding: 'IMAGES', bucket_name: 'images' }], requiredSecrets: ['SECRET_A'],
-	requiredVars: { MODEL_GENERATION_ENABLED: 'false', EDITORIAL_WORKFLOW_GENERATION_ENABLED: 'false',
-		EDITORIAL_ROUTINE_IMAGE_PREPARATION_ENABLED: 'false', EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED: 'false',
-		EDITORIAL_AUTOMATED_PUBLICATION_ENABLED: 'false',
-		IMAGE_GENERATION_ENABLED: 'false', EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY: '',
-		IMAGE_ATTEMPT_BUDGET_MICRO_USD: '50000', IMAGE_BATCH_BUDGET_MICRO_USD: '150000',
-		IMAGE_DAILY_BUDGET_MICRO_USD: '150000' },
-};
-
-const disabledVars = { MODEL_GENERATION_ENABLED: 'false', EDITORIAL_WORKFLOW_GENERATION_ENABLED: 'false',
-	EDITORIAL_ROUTINE_IMAGE_PREPARATION_ENABLED: 'false', EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED: 'false',
-	EDITORIAL_AUTOMATED_PUBLICATION_ENABLED: 'false',
-	IMAGE_GENERATION_ENABLED: 'false', EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY: '',
-	IMAGE_ATTEMPT_BUDGET_MICRO_USD: '50000', IMAGE_BATCH_BUDGET_MICRO_USD: '150000',
-	IMAGE_DAILY_BUDGET_MICRO_USD: '150000' };
-
 const budgetVars = {
 	MODEL_BUDGET_ADMISSION_ENABLED: 'false',
 	MODEL_NORMALIZE_MAX_COST_MICRO_USD: '50000',
@@ -54,6 +32,30 @@ const budgetVars = {
 	MODEL_BATCH_BUDGET_MICRO_USD: '510000',
 	MODEL_DAILY_BUDGET_MICRO_USD: '510000',
 };
+
+const baseline = {
+	accountId: 'account-1', workerName: 'worker-1', main: 'entry.mjs', workersDev: false, previewUrls: false,
+	compatibilityDate: '2026-09-10', compatibilityFlags: ['nodejs_compat'],
+	routes: [{ pattern: 'example.com', custom_domain: true }], crons: ['0 13 * * *', '0 21 * * *', '*/5 * * * *'],
+	assets: { binding: 'ASSETS', directory: '../client' },
+	d1: [{ binding: 'DB', database_name: 'production', database_id: 'db-1' }],
+	r2: [{ binding: 'IMAGES', bucket_name: 'images' }], requiredSecrets: ['SECRET_A'],
+	requiredVars: { MODEL_GENERATION_ENABLED: 'false', ...budgetVars,
+		EDITORIAL_WORKFLOW_GENERATION_ENABLED: 'false',
+		EDITORIAL_ROUTINE_IMAGE_PREPARATION_ENABLED: 'false', EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED: 'false',
+		EDITORIAL_AUTOMATED_PUBLICATION_ENABLED: 'false',
+		IMAGE_GENERATION_ENABLED: 'false', EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY: '',
+		IMAGE_ATTEMPT_BUDGET_MICRO_USD: '50000', IMAGE_BATCH_BUDGET_MICRO_USD: '150000',
+		IMAGE_DAILY_BUDGET_MICRO_USD: '150000' },
+};
+
+const disabledVars = { MODEL_GENERATION_ENABLED: 'false', ...budgetVars,
+	EDITORIAL_WORKFLOW_GENERATION_ENABLED: 'false',
+	EDITORIAL_ROUTINE_IMAGE_PREPARATION_ENABLED: 'false', EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED: 'false',
+	EDITORIAL_AUTOMATED_PUBLICATION_ENABLED: 'false',
+	IMAGE_GENERATION_ENABLED: 'false', EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY: '',
+	IMAGE_ATTEMPT_BUDGET_MICRO_USD: '50000', IMAGE_BATCH_BUDGET_MICRO_USD: '150000',
+	IMAGE_DAILY_BUDGET_MICRO_USD: '150000' };
 
 const transitionContract = { name: 'phase-4b-model-budget-configuration', allowedVariableChanges: {
 	MODEL_BUDGET_ADMISSION_ENABLED: { from: null, to: 'false' },
@@ -362,7 +364,7 @@ describe('production release safety', () => {
 	it('validates the exact old-to-new budget baseline without weakening unrelated fields', () => {
 		const previousRequiredVars: Record<string, string> = { ...baseline.requiredVars };
 		delete previousRequiredVars.EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED;
-		delete previousRequiredVars.MODEL_BUDGET_ADMISSION_ENABLED;
+		for (const name of Object.keys(budgetVars)) delete previousRequiredVars[name];
 		const previous = { ...structuredClone(baseline),
 			requiredVars: { ...previousRequiredVars, MODEL_DAILY_BUDGET_MICRO_USD: '1000000' } };
 		const next = { ...structuredClone(baseline), requiredVars: {

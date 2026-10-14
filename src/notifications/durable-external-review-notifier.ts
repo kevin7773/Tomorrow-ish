@@ -61,3 +61,12 @@ export class CompositeReviewNotifier implements ReviewNotifier {
 		for (const notifier of this.notifiers) await notifier.send(notification);
 	}
 }
+
+/** External email is intentionally limited to completed article batches. */
+export class FinalReviewExternalNotifier implements ReviewNotifier {
+	constructor(private readonly notifier: ReviewNotifier) {}
+	async send(notification: ReviewNotification): Promise<void> {
+		if (notification.stage !== 'FINAL_REVIEW') return;
+		await this.notifier.send(notification);
+	}
+}

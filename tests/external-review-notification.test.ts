@@ -4,7 +4,10 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it, vi } from 'vitest';
 import { D1ExternalReviewNotificationRepository } from '../src/data/external-review-notification-repository';
 import type { ExternalReviewNotificationRepository } from '../src/data/external-review-notification-repository';
-import { DurableExternalReviewNotifier } from '../src/notifications/durable-external-review-notifier';
+import {
+	DurableExternalReviewNotifier,
+	FinalReviewExternalNotifier,
+} from '../src/notifications/durable-external-review-notifier';
 import { ReviewNotificationError, WebhookReviewNotifier, type ReviewNotification } from '../src/notifications/review-notifier';
 import { ResendReviewNotificationTransport } from '../src/notifications/resend-review-notification-transport';
 
@@ -41,6 +44,16 @@ function database(): DatabaseSync {
 }
 
 describe('durable external review notification delivery', () => {
+	it('suppresses external TRIAGE delivery while permitting final-review email', async () => {
+		const delegate = { send: vi.fn(async () => {}) };
+		const notifier = new FinalReviewExternalNotifier(delegate);
+		await notifier.send(notification);
+		expect(delegate.send).not.toHaveBeenCalled();
+		await notifier.send({ ...notification, stage: 'FINAL_REVIEW',
+			idempotencyKey: 'editorial-review:batch-1:FINAL_REVIEW:INITIAL' });
+		expect(delegate.send).toHaveBeenCalledOnce();
+	});
+
 	it('detaches receiver-sensitive fetch in the compatible HTTP transport', async () => {
 		const fetcher = function (this: unknown) {
 			if (this !== undefined) return Promise.reject(new TypeError('Illegal invocation'));

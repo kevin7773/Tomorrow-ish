@@ -50,6 +50,35 @@ const DISABLED_GATES = [
 	'EDITORIAL_AUTOMATED_PUBLICATION_ENABLED',
 	'IMAGE_GENERATION_ENABLED',
 ];
+const CAPABILITY_GATES = ['MODEL_BUDGET_ADMISSION_ENABLED', ...DISABLED_GATES];
+
+const ROUTINE_GENERATION_NOT_BEFORE = 'EDITORIAL_ROUTINE_GENERATION_NOT_BEFORE';
+const GENERATION_GATES = [
+	'MODEL_BUDGET_ADMISSION_ENABLED',
+	'MODEL_GENERATION_ENABLED',
+	'EDITORIAL_WORKFLOW_GENERATION_ENABLED',
+	'EDITORIAL_ROUTINE_IMAGE_PREPARATION_ENABLED',
+	'IMAGE_GENERATION_ENABLED',
+];
+const AUTOMATION_STAGES = new Set([
+	'disabled', 'notifications', 'generation-acceptance', 'publication', 'routine',
+]);
+const AUTOMATION_TRANSITIONS = new Set([
+	'disabled>notifications',
+	'notifications>disabled',
+	'notifications>generation-acceptance',
+	'generation-acceptance>notifications',
+	'generation-acceptance>publication',
+	'generation-acceptance>disabled',
+	'notifications>publication',
+	'publication>notifications',
+	'publication>routine',
+	'publication>disabled',
+	'notifications>routine',
+	'routine>notifications',
+	'routine>publication',
+	'routine>disabled',
+]);
 
 const NOTIFICATION_ACCEPTANCE_GATE = 'EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED';
 const NOTIFICATION_ACCEPTANCE_AUTHORIZATION = 'EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_AUTHORIZATION_ID';
@@ -108,11 +137,13 @@ function reviewedBudgetValue(value) {
 	return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-export function validateReviewedModelBudgetVariables(vars) {
+export function validateReviewedModelBudgetVariables(vars, options = {}) {
 	const errors = [];
 	const admission = vars?.MODEL_BUDGET_ADMISSION_ENABLED;
 	if (admission === undefined) return { mode: 'legacy-disabled' };
-	check(errors, admission === 'false', 'MODEL_BUDGET_ADMISSION_ENABLED must remain explicitly false');
+	const expectedAdmission = options.enabled === true ? 'true' : 'false';
+	check(errors, admission === expectedAdmission,
+		`MODEL_BUDGET_ADMISSION_ENABLED must be explicitly ${expectedAdmission}`);
 	const values = Object.fromEntries(MODEL_BUDGET_VARIABLES.map((name) => [name, reviewedBudgetValue(vars?.[name])]));
 	for (const name of MODEL_BUDGET_VARIABLES) {
 		check(errors, values[name] !== null, `${name} must be a canonical positive safe integer`);
@@ -129,7 +160,61 @@ export function validateReviewedModelBudgetVariables(vars) {
 	check(errors, batch === 510000, 'MODEL_BATCH_BUDGET_MICRO_USD must equal 510000');
 	check(errors, daily === 510000, 'MODEL_DAILY_BUDGET_MICRO_USD must equal 510000');
 	if (errors.length) throw new ReleaseSafetyError('Reviewed model-budget configuration is not fail-closed.', errors);
-	return { mode: 'configured-disabled', values };
+	return { mode: options.enabled === true ? 'configured-enabled' : 'configured-disabled', values };
+}
+
+function explicitUtcBoundary(value) {
+	return typeof value === 'string'
+		&& /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)
+		&& Number.isFinite(Date.parse(value));
+}
+
+function automationStage(vars) {
+	const values = Object.fromEntries(CAPABILITY_GATES.map((gate) => [gate, vars?.[gate] ?? 'false']));
+	if (Object.values(values).some((value) => !['true', 'false'].includes(value))) return 'invalid';
+	const generationEnabled = GENERATION_GATES.every((gate) => values[gate] === 'true');
+	const generationDisabled = GENERATION_GATES.every((gate) => values[gate] === 'false');
+	const notifications = values.EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED === 'true';
+	const publication = values.EDITORIAL_AUTOMATED_PUBLICATION_ENABLED === 'true';
+	const hasBoundary = Object.hasOwn(vars ?? {}, ROUTINE_GENERATION_NOT_BEFORE);
+	const validBoundary = explicitUtcBoundary(vars?.[ROUTINE_GENERATION_NOT_BEFORE]);
+	if (generationDisabled && !notifications && !publication && !hasBoundary) return 'disabled';
+	if (generationDisabled && notifications && !publication && !hasBoundary) return 'notifications';
+	if (generationEnabled && notifications && !publication && validBoundary) return 'generation-acceptance';
+	if (generationDisabled && notifications && publication && !hasBoundary) return 'publication';
+	if (generationEnabled && notifications && publication && validBoundary) return 'routine';
+	return 'invalid';
+}
+
+function automationPolicy(vars) {
+	const stage = automationStage(vars);
+	return {
+		stage,
+		routineGenerationNotBefore: ['generation-acceptance', 'routine'].includes(stage)
+			? vars?.[ROUTINE_GENERATION_NOT_BEFORE] ?? null
+			: null,
+	};
+}
+
+function validateAutomationConfiguration(errors, vars, policy, options = {}) {
+	const expected = policy ?? { stage: 'disabled', routineGenerationNotBefore: null };
+	const allowedMissingGates = new Set(options.allowedMissingGates ?? []);
+	for (const gate of CAPABILITY_GATES) {
+		check(errors, Object.hasOwn(vars ?? {}, gate) || allowedMissingGates.has(gate),
+			`${gate} must be explicitly configured`);
+	}
+	check(errors, AUTOMATION_STAGES.has(expected.stage), 'automation capability policy stage is invalid');
+	check(errors, automationStage(vars) === expected.stage,
+		`automation capability gates do not match reviewed ${expected.stage} state`);
+	if (['generation-acceptance', 'routine'].includes(expected.stage)) {
+		check(errors, explicitUtcBoundary(expected.routineGenerationNotBefore),
+			'automation capability policy requires an explicit UTC generation boundary');
+		check(errors, vars?.[ROUTINE_GENERATION_NOT_BEFORE] === expected.routineGenerationNotBefore,
+			'EDITORIAL_ROUTINE_GENERATION_NOT_BEFORE differs from the reviewed boundary');
+	} else {
+		check(errors, !Object.hasOwn(vars ?? {}, ROUTINE_GENERATION_NOT_BEFORE),
+			'EDITORIAL_ROUTINE_GENERATION_NOT_BEFORE is not permitted in this automation state');
+	}
 }
 
 export function validateBaselineTransition(previous, next, contract) {
@@ -183,13 +268,22 @@ export function validateBaselineTransition(previous, next, contract) {
 		check(errors, from === null && to === 'present',
 			`${name} is not an additive null-to-present secret transition`);
 	}
-	for (const gate of ['MODEL_GENERATION_ENABLED', 'EDITORIAL_WORKFLOW_GENERATION_ENABLED', 'IMAGE_GENERATION_ENABLED']) {
-		check(errors, priorVars[gate] === 'false' && nextVars[gate] === 'false', `${gate} must remain false across transition`);
-	}
-	for (const gate of ['EDITORIAL_ROUTINE_IMAGE_PREPARATION_ENABLED', 'EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED',
-		'EDITORIAL_AUTOMATED_PUBLICATION_ENABLED']) {
-		check(errors, (priorVars[gate] === undefined || priorVars[gate] === 'false') && nextVars[gate] === 'false',
-			`${gate} must be introduced or retained as false across transition`);
+	const automationTransition = contract?.automationCapabilityTransition ?? null;
+	const previousAutomation = automationPolicy(priorVars);
+	const targetAutomation = automationPolicy(nextVars);
+	if (automationTransition !== null) {
+		check(errors, AUTOMATION_STAGES.has(automationTransition?.from)
+			&& AUTOMATION_STAGES.has(automationTransition?.to),
+		'automationCapabilityTransition requires reviewed from/to states');
+		check(errors, AUTOMATION_TRANSITIONS.has(`${automationTransition?.from}>${automationTransition?.to}`),
+			'automation capability transition is not an approved staged edge');
+		check(errors, previousAutomation.stage === automationTransition?.from,
+			'automation capability source state differs from the reviewed transition');
+		check(errors, targetAutomation.stage === automationTransition?.to,
+			'automation capability target state differs from the reviewed transition');
+	} else {
+		check(errors, previousAutomation.stage === 'disabled' && targetAutomation.stage === 'disabled',
+			'automation capability gates must remain fully disabled without an explicit transition');
 	}
 	const acceptanceTransition = contract?.notificationAcceptanceTestTransition ?? null;
 	if (acceptanceTransition !== null) {
@@ -214,23 +308,28 @@ export function validateBaselineTransition(previous, next, contract) {
 	}
 	check(errors, priorVars.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '' && nextVars.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '',
 		'image smoke attempt key must remain blank across transition');
-	if (Object.hasOwn(changes ?? {}, 'MODEL_BUDGET_ADMISSION_ENABLED')) {
+	if (Object.hasOwn(changes ?? {}, 'MODEL_BUDGET_ADMISSION_ENABLED') && automationTransition === null) {
 		check(errors, priorVars.MODEL_BUDGET_ADMISSION_ENABLED === undefined,
 			'previous baseline must not already contain MODEL_BUDGET_ADMISSION_ENABLED');
 	}
 	try {
-		validateReviewedModelBudgetVariables(nextVars);
+		validateReviewedModelBudgetVariables(nextVars,
+			{ enabled: ['generation-acceptance', 'routine'].includes(targetAutomation.stage) });
 	} catch (error) {
 		errors.push(error instanceof Error ? error.message : String(error));
 	}
 	if (errors.length) throw new ReleaseSafetyError('Production baseline transition is not exact.', errors);
-	const introducedDisabledGates = DISABLED_GATES.filter((gate) =>
+	const introducedDisabledGates = CAPABILITY_GATES.filter((gate) =>
 		priorVars[gate] === undefined
 		&& nextVars[gate] === 'false'
 		&& changes[gate]?.from === null
 		&& changes[gate]?.to === 'false');
 	return { name: contract.name, changedVariables: actualChanged, changedSecrets: actualSecretChanges,
-		introducedDisabledGates, notificationAcceptanceTest: acceptanceTransition ? {
+		introducedDisabledGates, automationCapabilities: automationTransition ? {
+			transition: `${automationTransition.from}>${automationTransition.to}`,
+			previous: previousAutomation,
+			target: targetAutomation,
+		} : null, notificationAcceptanceTest: acceptanceTransition ? {
 			transition: acceptanceTransition,
 			previous: { mode: acceptanceMode(priorVars), authorizationIdSha256:
 				acceptanceMode(priorVars) === 'enabled' ? sha256(priorVars[NOTIFICATION_ACCEPTANCE_AUTHORIZATION]) : null },
@@ -267,21 +366,17 @@ export function validateGeneratedConfiguration(config, baseline, options = {}) {
 		'generated required secret names must be a unique array');
 	check(errors, same([...(config.secrets?.required ?? [])].sort(), [...baseline.requiredSecrets].sort()),
 		'generated required secret names differ from the reviewed baseline');
-	check(errors, config.vars?.MODEL_GENERATION_ENABLED === 'false', 'model generation gate must be false');
-	check(errors, config.vars?.EDITORIAL_WORKFLOW_GENERATION_ENABLED === 'false', 'workflow generation gate must be false');
-	check(errors, config.vars?.IMAGE_GENERATION_ENABLED === 'false', 'image generation gate must be false');
-	check(errors, config.vars?.EDITORIAL_ROUTINE_IMAGE_PREPARATION_ENABLED === 'false', 'routine image gate must be false');
-	check(errors, config.vars?.EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED === 'false', 'external notification gate must be false');
+	validateAutomationConfiguration(errors, config.vars, options.automationCapabilities);
 	if (Object.hasOwn(baseline.requiredVars ?? {}, NOTIFICATION_ACCEPTANCE_GATE)) {
 		validateAcceptanceConfiguration(errors, config.vars, options.notificationAcceptanceTest);
 	}
-	check(errors, config.vars?.EDITORIAL_AUTOMATED_PUBLICATION_ENABLED === 'false', 'automated publication gate must be false');
 	check(errors, config.vars?.IMAGE_ATTEMPT_BUDGET_MICRO_USD === '50000', 'image attempt ceiling must equal 50000');
 	check(errors, config.vars?.IMAGE_BATCH_BUDGET_MICRO_USD === '150000', 'image batch ceiling must equal 150000');
 	check(errors, config.vars?.IMAGE_DAILY_BUDGET_MICRO_USD === '150000', 'image daily ceiling must equal 150000');
 	check(errors, config.vars?.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '', 'image smoke attempt key must be blank');
 	try {
-		validateReviewedModelBudgetVariables(config.vars ?? {});
+		validateReviewedModelBudgetVariables(config.vars ?? {}, { enabled:
+			['generation-acceptance', 'routine'].includes(options.automationCapabilities?.stage) });
 	} catch (error) {
 		errors.push(error instanceof Error ? error.message : String(error));
 	}
@@ -422,19 +517,18 @@ export function validateLiveSnapshot(snapshot, baseline, options = {}) {
 		? 'live Cron schedules are not fully paused'
 		: 'live Cron schedules differ from baseline');
 	check(errors, same(snapshot.vars ?? {}, baseline.requiredVars), 'live Worker variables differ from baseline');
-	for (const gate of DISABLED_GATES) {
-		const authorizedLegacyAbsence = options.liveState === 'previous'
-			&& options.transition?.introducedDisabledGates?.includes(gate)
-			&& !Object.hasOwn(baseline.requiredVars ?? {}, gate)
-			&& !Object.hasOwn(snapshot.vars ?? {}, gate);
-		check(errors, snapshot.vars?.[gate] === 'false' || authorizedLegacyAbsence, `live ${gate} must be false`);
-	}
+	const allowedMissingGates = options.liveState === 'previous'
+		? options.transition?.introducedDisabledGates ?? []
+		: [];
+	validateAutomationConfiguration(errors, snapshot.vars, options.automationCapabilities,
+		{ allowedMissingGates });
 	check(errors, snapshot.vars?.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '', 'live image smoke attempt key must be blank');
 	if (Object.hasOwn(baseline.requiredVars ?? {}, NOTIFICATION_ACCEPTANCE_GATE)) {
 		validateAcceptanceConfiguration(errors, snapshot.vars, options.notificationAcceptanceTest);
 	}
 	try {
-		validateReviewedModelBudgetVariables(snapshot.vars ?? {});
+		validateReviewedModelBudgetVariables(snapshot.vars ?? {}, { enabled:
+			['generation-acceptance', 'routine'].includes(options.automationCapabilities?.stage) });
 	} catch (error) {
 		errors.push(error instanceof Error ? error.message : String(error));
 	}
@@ -451,6 +545,10 @@ export function validateDisabledVersionSnapshot(snapshot, baseline) {
 	if (snapshot.accountId !== undefined) check(errors, snapshot.accountId === baseline.accountId, 'version belongs to a different account');
 	for (const gate of DISABLED_GATES) {
 		check(errors, version.vars[gate] === 'false', `rollback version has ${gate} enabled`);
+	}
+	if (Object.hasOwn(baseline.requiredVars ?? {}, 'MODEL_BUDGET_ADMISSION_ENABLED')) {
+		check(errors, version.vars.MODEL_BUDGET_ADMISSION_ENABLED === 'false',
+			'rollback version has MODEL_BUDGET_ADMISSION_ENABLED enabled');
 	}
 	check(errors, version.vars.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '', 'rollback version has a nonblank image attempt key');
 	if (Object.hasOwn(baseline.requiredVars ?? {}, 'EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED')) {
@@ -486,6 +584,7 @@ export function validateUploadedVersion(snapshot, baseline, options = {}) {
 	check(errors, version.compatibilityDate === baseline.compatibilityDate, 'uploaded version compatibility date differs');
 	check(errors, same(version.compatibilityFlags, baseline.compatibilityFlags), 'uploaded version compatibility flags differ');
 	check(errors, same(version.vars, baseline.requiredVars), 'uploaded version variables differ from baseline');
+	validateAutomationConfiguration(errors, version.vars, options.automationCapabilities);
 	if (Object.hasOwn(baseline.requiredVars ?? {}, NOTIFICATION_ACCEPTANCE_GATE)) {
 		validateAcceptanceConfiguration(errors, version.vars, options.notificationAcceptanceTest);
 	}

@@ -5,7 +5,11 @@ import {
 } from '../data/d1-review-notification-repository';
 import { D1ResendEmailRepository } from '../data/resend-email-repository';
 import { InternalReviewNotifier } from '../notifications/review-notifier';
-import { CompositeReviewNotifier, DurableExternalReviewNotifier } from '../notifications/durable-external-review-notifier';
+import {
+	CompositeReviewNotifier,
+	DurableExternalReviewNotifier,
+	FinalReviewExternalNotifier,
+} from '../notifications/durable-external-review-notifier';
 import { D1ExternalReviewNotificationRepository } from '../data/external-review-notification-repository';
 import { ResendEmailProvider } from '../notifications/resend-email';
 import { ResendReviewNotificationTransport } from '../notifications/resend-review-notification-transport';
@@ -60,7 +64,7 @@ export function runEditorialReviewReminders(environment: ReviewReminderEnvironme
 	const notifier = externalEnabled(environment.EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED)
 		? new CompositeReviewNotifier([
 			internal,
-			new DurableExternalReviewNotifier(
+			new FinalReviewExternalNotifier(new DurableExternalReviewNotifier(
 				new D1ExternalReviewNotificationRepository(environment.DB),
 				new ResendReviewNotificationTransport(
 					new ResendEditorialEmailService(
@@ -69,7 +73,7 @@ export function runEditorialReviewReminders(environment: ReviewReminderEnvironme
 						resendConfiguration,
 					),
 				),
-			),
+			)),
 		])
 		: internal;
 	return new EditorialReviewReminderService(

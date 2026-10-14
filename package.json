@@ -23,6 +23,7 @@
     "release:operator": "node ./scripts/release/operator.mjs",
     "release:resend-secrets": "powershell -NoProfile -File ./scripts/release/provision-resend-secrets.ps1",
     "release:acceptance:prepare": "pwsh -NoProfile -File ./scripts/release/prepare-notification-acceptance-transition.ps1",
+    "release:automation:prepare": "node ./scripts/release/prepare-automation-transition.mjs",
     "astro": "astro"
   },
   "dependencies": {

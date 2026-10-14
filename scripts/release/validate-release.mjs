@@ -33,16 +33,19 @@ const transition = previousBaseline
 	: null;
 const targetAcceptance = transition?.notificationAcceptanceTest?.target;
 const liveAcceptance = transition?.notificationAcceptanceTest?.[liveState];
+const targetAutomation = transition?.automationCapabilities?.target;
+const liveAutomation = transition?.automationCapabilities?.[liveState];
 const configuration = validateGeneratedConfiguration(config, baseline,
-	{ notificationAcceptanceTest: targetAcceptance });
+	{ notificationAcceptanceTest: targetAcceptance, automationCapabilities: targetAutomation });
 const modules = packageDirectory
 	? await validateDryRunPackage(resolve(configPath, '..'), resolve(packageDirectory), config)
 	: null;
 if (liveSnapshotPath) validateLiveSnapshot(await readJson(resolve(liveSnapshotPath)),
 	liveState === 'previous' ? previousBaseline : baseline,
-	{ paused, liveState, transition, notificationAcceptanceTest: liveAcceptance });
+	{ paused, liveState, transition, notificationAcceptanceTest: liveAcceptance,
+		automationCapabilities: liveAutomation });
 const version = versionSnapshotPath ? validateUploadedVersion(await readJson(resolve(versionSnapshotPath)), baseline,
-	{ notificationAcceptanceTest: targetAcceptance }) : null;
+	{ notificationAcceptanceTest: targetAcceptance, automationCapabilities: targetAutomation }) : null;
 const deployedModules = moduleInventoryPath
 	? await validateDeployedModuleInventory(resolve(configPath, '..'), await readJson(resolve(moduleInventoryPath)))
 	: null;
