@@ -314,7 +314,9 @@ function equalConstantTime(left: string, right: string): boolean {
 async function expectedWebhookSignature(secret: string, signedContent: string): Promise<string> {
 	const encodedSecret = secret.startsWith('whsec_') ? secret.slice(6) : '';
 	const decoded = decodeBase64(encodedSecret);
-	if (decoded.byteLength < 32) throw new ResendWebhookError(401, 'invalid signing secret');
+	// Svix-generated symmetric webhook secrets are 24 decoded bytes. Requiring
+	// 32 bytes rejects valid provider secrets before the HMAC can be checked.
+	if (decoded.byteLength < 24) throw new ResendWebhookError(401, 'invalid signing secret');
 	const keyBytes = new Uint8Array(decoded.byteLength);
 	keyBytes.set(decoded);
 	const key = await crypto.subtle.importKey('raw', keyBytes.buffer,
