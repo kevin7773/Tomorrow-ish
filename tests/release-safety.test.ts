@@ -176,7 +176,7 @@ describe('production release safety', () => {
 	it('allows exactly the reviewed additive Resend secret bindings', () => {
 		const read = (path: string) => JSON.parse(readFileSync(path, 'utf8'));
 		const previous = read('release/production-baseline.pre-resend-secrets.json');
-		const target = read('release/production-baseline.json');
+		const target = read('release/production-baseline.pre-notification-acceptance-test.json');
 		const contract = read('release/resend-secret-baseline-transition.json');
 		const expected = ['EDITORIAL_NOTIFICATION_TO_EMAIL', 'RESEND_API_KEY',
 			'RESEND_WEBHOOK_SIGNING_SECRET', 'REVIEW_NOTIFICATION_EXTERNAL_BEARER_TOKEN'];
@@ -202,6 +202,35 @@ describe('production release safety', () => {
 			.filter((name: string) => name !== 'CLOUDFLARE_AI_API_TOKEN');
 		expect(() => validateBaselineTransition(previous, removedExisting, removalContract))
 			.toThrow(/not an additive/);
+	});
+
+	it('introduces only a disabled, blank notification acceptance-test authorization', () => {
+		const read = (path: string) => JSON.parse(readFileSync(path, 'utf8'));
+		const previous = read('release/production-baseline.pre-notification-acceptance-test.json');
+		const target = read('release/production-baseline.json');
+		const contract = read('release/notification-acceptance-test-baseline-transition.json');
+		expect(validateBaselineTransition(previous, target, contract)).toMatchObject({
+			name: 'phase-4i6-notification-acceptance-test-disabled',
+			changedVariables: [
+				'EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_AUTHORIZATION_ID',
+				'EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED',
+			],
+			changedSecrets: [],
+		});
+		const targetConfig = { ...config(), account_id: target.accountId, name: target.workerName,
+			topLevelName: target.workerName, routes: target.routes, triggers: { crons: target.crons },
+			assets: target.assets, d1_databases: target.d1, r2_buckets: target.r2,
+			vars: target.requiredVars, secrets: { required: target.requiredSecrets } };
+		expect(() => validateGeneratedConfiguration(targetConfig, target)).not.toThrow();
+		for (const vars of [
+			{ ...target.requiredVars, EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED: 'true' },
+			{ ...target.requiredVars, EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_AUTHORIZATION_ID: 'unexpected' },
+		]) expect(() => validateGeneratedConfiguration({ ...targetConfig, vars }, target))
+			.toThrow(/acceptance-test|variables differ/);
+		const unauthorized = structuredClone(contract);
+		delete unauthorized.allowedVariableChanges.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED;
+		expect(() => validateBaselineTransition(previous, target, unauthorized))
+			.toThrow(/actual variable changes differ/);
 	});
 
 	it('requires target generated and live configurations to contain all seven secret names', () => {

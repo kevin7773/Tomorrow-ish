@@ -86,6 +86,9 @@ If creation succeeds but identity or inspection is interrupted, stop. Locate and
 8. Add the four secrets through the protected inactive-version workflow while the capability gate remains false. Do not use `wrangler secret put`, which immediately produces a deployable version outside this inspection contract.
 9. Use Resend's test-mode destination and mocked/non-production environment for acceptance before any real Gmail delivery is authorized.
 
+The separately governed production acceptance-test path is documented in
+[`notification-acceptance-test.md`](notification-acceptance-test.md). It is isolated from routine reminder rows and remains disabled unless a reviewed one-time authorization ID and its dedicated gate are both configured.
+
 The application middleware applies Cloudflare Access identity checks only to `/editorial` and `/editorial/*`. Both machine endpoints live under `/api/internal/*`; the adapter requires its independent bearer secret and the callback requires a valid Resend signature. This permits machine delivery without weakening the protected editorial routes. Before activation, verify the account-level Zero Trust application is likewise scoped to the editorial paths. If it currently covers the whole hostname, add only the narrowly scoped machine-route policy needed for the signed callback; do not create a hostname-wide Access bypass.
 
 ## Investigation and recovery

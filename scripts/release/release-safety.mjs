@@ -139,6 +139,17 @@ export function validateBaselineTransition(previous, next, contract) {
 		check(errors, (priorVars[gate] === undefined || priorVars[gate] === 'false') && nextVars[gate] === 'false',
 			`${gate} must be introduced or retained as false across transition`);
 	}
+	if (Object.hasOwn(nextVars, 'EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED')
+		|| Object.hasOwn(changes ?? {}, 'EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED')) {
+		check(errors, (priorVars.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED === undefined
+			|| priorVars.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED === 'false')
+			&& nextVars.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED === 'false',
+		'EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED must be introduced or retained as false across transition');
+		check(errors, (priorVars.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_AUTHORIZATION_ID === undefined
+			|| priorVars.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_AUTHORIZATION_ID === '')
+			&& nextVars.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_AUTHORIZATION_ID === '',
+		'notification acceptance-test authorization must be introduced or retained blank across transition');
+	}
 	check(errors, priorVars.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '' && nextVars.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '',
 		'image smoke attempt key must remain blank across transition');
 	if (Object.hasOwn(changes ?? {}, 'MODEL_BUDGET_ADMISSION_ENABLED')) {
@@ -193,6 +204,12 @@ export function validateGeneratedConfiguration(config, baseline, options = {}) {
 	check(errors, config.vars?.IMAGE_GENERATION_ENABLED === 'false', 'image generation gate must be false');
 	check(errors, config.vars?.EDITORIAL_ROUTINE_IMAGE_PREPARATION_ENABLED === 'false', 'routine image gate must be false');
 	check(errors, config.vars?.EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED === 'false', 'external notification gate must be false');
+	if (Object.hasOwn(baseline.requiredVars ?? {}, 'EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED')) {
+		check(errors, config.vars?.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED === 'false',
+			'notification acceptance-test gate must be false');
+		check(errors, config.vars?.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_AUTHORIZATION_ID === '',
+			'notification acceptance-test authorization must be blank');
+	}
 	check(errors, config.vars?.EDITORIAL_AUTOMATED_PUBLICATION_ENABLED === 'false', 'automated publication gate must be false');
 	check(errors, config.vars?.IMAGE_ATTEMPT_BUDGET_MICRO_USD === '50000', 'image attempt ceiling must equal 50000');
 	check(errors, config.vars?.IMAGE_BATCH_BUDGET_MICRO_USD === '150000', 'image batch ceiling must equal 150000');
@@ -348,6 +365,12 @@ export function validateLiveSnapshot(snapshot, baseline, options = {}) {
 		check(errors, snapshot.vars?.[gate] === 'false' || authorizedLegacyAbsence, `live ${gate} must be false`);
 	}
 	check(errors, snapshot.vars?.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '', 'live image smoke attempt key must be blank');
+	if (Object.hasOwn(baseline.requiredVars ?? {}, 'EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED')) {
+		check(errors, snapshot.vars?.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED === 'false',
+			'live notification acceptance-test gate must be false');
+		check(errors, snapshot.vars?.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_AUTHORIZATION_ID === '',
+			'live notification acceptance-test authorization must be blank');
+	}
 	try {
 		validateReviewedModelBudgetVariables(snapshot.vars ?? {});
 	} catch (error) {
@@ -368,6 +391,12 @@ export function validateDisabledVersionSnapshot(snapshot, baseline) {
 		check(errors, version.vars[gate] === 'false', `rollback version has ${gate} enabled`);
 	}
 	check(errors, version.vars.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '', 'rollback version has a nonblank image attempt key');
+	if (Object.hasOwn(baseline.requiredVars ?? {}, 'EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED')) {
+		check(errors, version.vars.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED === 'false',
+			'rollback version has notification acceptance testing enabled');
+		check(errors, version.vars.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_AUTHORIZATION_ID === '',
+			'rollback version has a nonblank notification acceptance-test authorization');
+	}
 	if (errors.length) throw new ReleaseSafetyError('Rollback target is not a verified all-generation-disabled version.', errors);
 	return true;
 }

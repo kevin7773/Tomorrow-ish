@@ -18,6 +18,11 @@ export interface EditorialEmail {
 	html: string;
 }
 
+export interface NotificationAcceptanceTestEmailInput {
+	authorizationId: string;
+	idempotencyKey: string;
+}
+
 export interface ResendSubmissionResult {
 	providerEmailId: string;
 	responseStatus: number;
@@ -127,6 +132,35 @@ export function renderEditorialEmail(notification: ReviewNotification, pendingCo
 	return { subject, text, html };
 }
 
+export function renderNotificationAcceptanceTestEmail(
+	input: NotificationAcceptanceTestEmailInput,
+): EditorialEmail {
+	const subject = 'Tomorrow-ish: Notification Delivery Acceptance Test';
+	const text = [
+		'Tomorrow-ish Editorial',
+		'',
+		'TEST MESSAGE — no editorial action is required.',
+		'',
+		'This one-time message verifies governed email submission, signed delivery confirmation, and idempotency.',
+		`Acceptance authorization: ${input.authorizationId}`,
+		'',
+		`Protected editorial dashboard: ${DASHBOARD_URL}`,
+		'',
+		'This email contains no protected draft content.',
+	].join('\n');
+	const html = `<!doctype html><html><body style="margin:0;background:#f4f1ea;color:#172026;font-family:Arial,sans-serif">
+		<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 16px">
+		<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;background:#fff;border:1px solid #d7d0c2;border-radius:12px">
+		<tr><td style="padding:28px"><div style="font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:#7a4b2a">Tomorrow-ish Editorial</div>
+		<h1 style="font-size:24px;margin:12px 0 8px">Notification delivery acceptance test</h1>
+		<p style="font-size:17px;line-height:1.5"><strong>TEST MESSAGE</strong> — no editorial action is required.</p>
+		<p>This one-time message verifies governed email submission, signed delivery confirmation, and idempotency.</p>
+		<p style="font-size:12px;color:#65717a">Acceptance authorization: <code>${escapeHtml(input.authorizationId)}</code></p>
+		<p style="font-size:12px;color:#65717a">Protected drafts and authentication information are not included in this email.</p>
+		</td></tr></table></td></tr></table></body></html>`;
+	return { subject, text, html };
+}
+
 export async function sha256Hex(value: string): Promise<string> {
 	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
 	return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -142,6 +176,23 @@ export function editorialEmailPayloadHash(notification: ReviewNotification, pend
 		message: notification.message,
 		reviewUrl: notification.reviewUrl,
 		pendingCount,
+		toEmail: normalizeEmail(configuration.toEmail),
+		fromEmail: normalizeEmail(configuration.fromEmail),
+		subject: email.subject,
+		text: email.text,
+		html: email.html,
+	}));
+}
+
+export function notificationAcceptanceTestPayloadHash(
+	input: NotificationAcceptanceTestEmailInput,
+	configuration: Pick<ResendEmailConfiguration, 'toEmail' | 'fromEmail'>,
+	email: EditorialEmail,
+): Promise<string> {
+	return sha256Hex(JSON.stringify({
+		purpose: 'ACCEPTANCE_TEST',
+		authorizationId: input.authorizationId,
+		idempotencyKey: input.idempotencyKey,
 		toEmail: normalizeEmail(configuration.toEmail),
 		fromEmail: normalizeEmail(configuration.fromEmail),
 		subject: email.subject,

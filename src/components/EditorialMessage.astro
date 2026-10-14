@@ -36,6 +36,8 @@ const messages: Record<string, string> = {
 	'image-regeneration-requested': 'Another image version was requested. Generate when ready; no paid request was made yet.',
 	'publication-authorized': 'Scheduled publication was authorized for this exact approved story and image.',
 	'notification-reconciled': 'External notification evidence was reconciled. No notification was sent by this action.',
+	'notification-test-pending': 'The one-time test email was accepted by the provider and is awaiting signed delivery evidence.',
+	'notification-test-delivered': 'This one-time test email was already confirmed delivered. No second email was submitted.',
 	'intake-archived': 'The unsuitable intake was archived without changing its suitability or provenance.',
 	'intake-restored': 'The intake was restored to the active queue.',
 	'candidate-archived': 'The rejected candidate was archived without changing its status or provenance.',
@@ -60,6 +62,9 @@ const errors: Record<string, string> = {
 	'image-required': 'An editorially approved image is required before this story can be published.',
 	'image-not-approved': 'The story image must be explicitly approved and attached before publication.',
 	'story-not-approved': 'The story must be approved before publication.',
+	'notification-test-disabled': 'The one-time notification acceptance test is disabled or lacks an exact authorization.',
+	'notification-test-ambiguous': 'The test email outcome is uncertain. It will not be retried automatically; investigate the existing attempt.',
+	'notification-test-failed': 'The test email failed definitively. It will not be retried under this authorization.',
 	'operation-failed': 'The editorial operation could not be completed.',
 };
 const safeCount = typeof count === 'string' && /^\d+$/.test(count) ? count : null;

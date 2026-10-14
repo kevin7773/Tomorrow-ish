@@ -1,15 +1,22 @@
 ---
 import { env } from 'cloudflare:workers';
 import { D1ExternalReviewNotificationRepository } from '../../data/external-review-notification-repository';
+import { D1NotificationAcceptanceTestRepository } from '../../data/notification-acceptance-test-repository';
 import { getReviewNotificationRepository } from '../../data/runtime-review-notification-repository';
+import EditorialMessage from '../../components/EditorialMessage.astro';
 import EditorialLayout from '../../layouts/EditorialLayout.astro';
 
 const notifications = await getReviewNotificationRepository().listDelivered(100);
 const externalDeliveries = await new D1ExternalReviewNotificationRepository(env.DB).listForInvestigation(100);
+const acceptanceTests = await new D1NotificationAcceptanceTestRepository(env.DB).listRecent(20);
 const csrfToken = Astro.locals.csrfToken;
+const acceptanceAuthorization = env.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_AUTHORIZATION_ID?.trim() ?? '';
+const acceptanceEnabled = env.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED === 'true'
+	&& /^[a-z0-9][a-z0-9:_-]{15,199}$/.test(acceptanceAuthorization);
 ---
 
 <EditorialLayout title="Editorial notifications">
+	<EditorialMessage message={Astro.url.searchParams.get('message')} error={Astro.url.searchParams.get('error')} />
 	<div class="editorial-page-header">
 		<div><p class="section-kicker">Internal delivery inbox</p><h1>Editorial notifications</h1><p>Durable review notices delivered by the Tomorrow-ish Worker.</p></div>
 	</div>
@@ -18,6 +25,31 @@ const csrfToken = Astro.locals.csrfToken;
 			{notifications.map((notification) => <article class="editorial-list__item">
 				<div><strong>{notification.message}</strong><p>{new Date(notification.createdAt).toLocaleString('en-US')} · {notification.stage} · {notification.kind}</p></div>
 				{notification.reviewUrl && <a class="editorial-button" href={notification.reviewUrl}>Open review</a>}
+			</article>)}
+		</div>}
+	</section>
+	<section class="editorial-panel">
+		<h2>One-time delivery acceptance test</h2>
+		<p>This governed action is isolated from routine reminders. It sends no draft content and cannot be reused or retried.</p>
+		{acceptanceEnabled ? <form method="post" action="/editorial/actions/notification-acceptance-test">
+			<input type="hidden" name="csrf_token" value={csrfToken} />
+			<input type="hidden" name="action" value="send-acceptance-test" />
+			<input type="hidden" name="authorizationId" value={acceptanceAuthorization} />
+			<input type="hidden" name="returnPath" value="/editorial/notifications" />
+			<p>Authorization: <code>{acceptanceAuthorization}</code></p>
+			<label>Typed confirmation
+				<input required autocomplete="off" name="confirmation" placeholder="SEND ONE TEST EMAIL" />
+			</label>
+			<button class="editorial-button" type="submit">Send one test email</button>
+		</form> : <p><strong>Disabled.</strong> A reviewed one-time authorization must be configured before this action is available.</p>}
+		{acceptanceTests.length > 0 && <div class="editorial-list">
+			{acceptanceTests.map((test) => <article class="editorial-list__item">
+				<div><strong>ACCEPTANCE TEST · {test.status}</strong>
+					<p>Test: {test.id}<br />Authorization: {test.authorizationId}<br />
+						Actor: {test.actorEmail}<br />Provider reference: {test.providerEmailId ?? 'not recorded'}<br />
+						Classification: {test.failureClassification ?? 'none'}<br />
+						Authorized {new Date(test.authorizedAt).toLocaleString('en-US')}</p>
+				</div>
 			</article>)}
 		</div>}
 	</section>

@@ -1,0 +1,14 @@
+{
+  "name": "phase-4i6-notification-acceptance-test-disabled",
+  "allowedVariableChanges": {
+    "EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_AUTHORIZATION_ID": {
+      "from": null,
+      "to": ""
+    },
+    "EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED": {
+      "from": null,
+      "to": "false"
+    }
+  },
+  "allowedSecretChanges": {}
+}
