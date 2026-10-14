@@ -1,0 +1,14 @@
+{
+  "name": "phase-4i8-notification-acceptance-test-enable",
+  "notificationAcceptanceTestTransition": "enable",
+  "allowedVariableChanges": {
+    "EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_AUTHORIZATION_ID": {
+      "from": "",
+      "toSha256": "0de677dbd1ab6c9f7ebfeae5f81cbcea6d36b3df853852603a3fae92ff70634c"
+    },
+    "EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED": {
+      "from": "false",
+      "to": "true"
+    }
+  }
+}

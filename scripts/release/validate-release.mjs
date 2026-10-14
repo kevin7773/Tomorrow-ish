@@ -31,13 +31,18 @@ const previousBaseline = transitionFromPath ? await readJson(resolve(transitionF
 const transition = previousBaseline
 	? validateBaselineTransition(previousBaseline, baseline, await readJson(resolve(transitionContractPath)))
 	: null;
-const configuration = validateGeneratedConfiguration(config, baseline);
+const targetAcceptance = transition?.notificationAcceptanceTest?.target;
+const liveAcceptance = transition?.notificationAcceptanceTest?.[liveState];
+const configuration = validateGeneratedConfiguration(config, baseline,
+	{ notificationAcceptanceTest: targetAcceptance });
 const modules = packageDirectory
 	? await validateDryRunPackage(resolve(configPath, '..'), resolve(packageDirectory), config)
 	: null;
 if (liveSnapshotPath) validateLiveSnapshot(await readJson(resolve(liveSnapshotPath)),
-	liveState === 'previous' ? previousBaseline : baseline, { paused, liveState, transition });
-const version = versionSnapshotPath ? validateUploadedVersion(await readJson(resolve(versionSnapshotPath)), baseline) : null;
+	liveState === 'previous' ? previousBaseline : baseline,
+	{ paused, liveState, transition, notificationAcceptanceTest: liveAcceptance });
+const version = versionSnapshotPath ? validateUploadedVersion(await readJson(resolve(versionSnapshotPath)), baseline,
+	{ notificationAcceptanceTest: targetAcceptance }) : null;
 const deployedModules = moduleInventoryPath
 	? await validateDeployedModuleInventory(resolve(configPath, '..'), await readJson(resolve(moduleInventoryPath)))
 	: null;

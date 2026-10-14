@@ -22,6 +22,7 @@
     "release:cron:restore-config": "node ./scripts/release/cron-config.mjs restore",
     "release:operator": "node ./scripts/release/operator.mjs",
     "release:resend-secrets": "powershell -NoProfile -File ./scripts/release/provision-resend-secrets.ps1",
+    "release:acceptance:prepare": "pwsh -NoProfile -File ./scripts/release/prepare-notification-acceptance-transition.ps1",
     "astro": "astro"
   },
   "dependencies": {

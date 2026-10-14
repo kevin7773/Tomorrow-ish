@@ -1,4 +1,5 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { init, parse } from 'es-module-lexer';
 
@@ -49,6 +50,57 @@ const DISABLED_GATES = [
 	'EDITORIAL_AUTOMATED_PUBLICATION_ENABLED',
 	'IMAGE_GENERATION_ENABLED',
 ];
+
+const NOTIFICATION_ACCEPTANCE_GATE = 'EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED';
+const NOTIFICATION_ACCEPTANCE_AUTHORIZATION = 'EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_AUTHORIZATION_ID';
+const NOTIFICATION_ACCEPTANCE_PATTERN = /^[a-z0-9:_-]{16,200}$/;
+
+function sha256(value) {
+	return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function acceptanceMode(vars) {
+	if (vars?.[NOTIFICATION_ACCEPTANCE_GATE] === 'false'
+		&& vars?.[NOTIFICATION_ACCEPTANCE_AUTHORIZATION] === '') return 'disabled';
+	if (vars?.[NOTIFICATION_ACCEPTANCE_GATE] === 'true'
+		&& NOTIFICATION_ACCEPTANCE_PATTERN.test(vars?.[NOTIFICATION_ACCEPTANCE_AUTHORIZATION] ?? '')) return 'enabled';
+	return 'invalid';
+}
+
+function validateAcceptanceConfiguration(errors, vars, policy) {
+	const expectedMode = policy?.mode ?? 'disabled';
+	check(errors, ['disabled', 'enabled'].includes(expectedMode), 'notification acceptance-test policy mode is invalid');
+	check(errors, acceptanceMode(vars) === expectedMode,
+		expectedMode === 'enabled'
+			? 'notification acceptance-test gate and authorization are not the exact reviewed enabled pair'
+			: 'notification acceptance-test gate must be false and authorization must be blank');
+	if (expectedMode === 'enabled') {
+		check(errors, typeof policy?.authorizationIdSha256 === 'string'
+			&& /^[a-f0-9]{64}$/.test(policy.authorizationIdSha256),
+		'notification acceptance-test policy requires a SHA-256 authorization fingerprint');
+		const authorizationId = vars?.[NOTIFICATION_ACCEPTANCE_AUTHORIZATION];
+		check(errors, typeof authorizationId === 'string'
+			&& sha256(authorizationId) === policy?.authorizationIdSha256,
+		'notification acceptance-test authorization does not match the reviewed fingerprint');
+	}
+}
+
+function reviewedTransitionValue(errors, name, expected, actual, side) {
+	const exactKey = side;
+	const hashKey = `${side}Sha256`;
+	const hasExact = Object.hasOwn(expected ?? {}, exactKey);
+	const hasHash = Object.hasOwn(expected ?? {}, hashKey);
+	check(errors, hasExact !== hasHash, `${name} must review exactly one ${side} value or ${side} fingerprint`);
+	if (hasExact) check(errors, expected[exactKey] === actual,
+		`${name} does not match its reviewed from/to values (${side})`);
+	if (hasHash) {
+		check(errors, typeof actual === 'string' && NOTIFICATION_ACCEPTANCE_PATTERN.test(actual),
+			`${name} ${side} value is not a valid one-use authorization`);
+		check(errors, typeof expected[hashKey] === 'string' && /^[a-f0-9]{64}$/.test(expected[hashKey])
+			&& typeof actual === 'string' && sha256(actual) === expected[hashKey],
+			`${name} does not match its reviewed ${side} fingerprint`);
+	}
+}
 
 function reviewedBudgetValue(value) {
 	if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return null;
@@ -105,8 +157,8 @@ export function validateBaselineTransition(previous, next, contract) {
 		const expected = changes[name];
 		const from = Object.hasOwn(priorVars, name) ? priorVars[name] : null;
 		const to = Object.hasOwn(nextVars, name) ? nextVars[name] : null;
-		check(errors, expected && expected.from === from && expected.to === to,
-			`${name} does not match its reviewed from/to values`);
+		reviewedTransitionValue(errors, name, expected, from, 'from');
+		reviewedTransitionValue(errors, name, expected, to, 'to');
 	}
 	const priorSecrets = new Set(previous.requiredSecrets ?? []);
 	const nextSecrets = new Set(next.requiredSecrets ?? []);
@@ -139,15 +191,25 @@ export function validateBaselineTransition(previous, next, contract) {
 		check(errors, (priorVars[gate] === undefined || priorVars[gate] === 'false') && nextVars[gate] === 'false',
 			`${gate} must be introduced or retained as false across transition`);
 	}
-	if (Object.hasOwn(nextVars, 'EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED')
-		|| Object.hasOwn(changes ?? {}, 'EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED')) {
-		check(errors, (priorVars.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED === undefined
-			|| priorVars.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED === 'false')
-			&& nextVars.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED === 'false',
-		'EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED must be introduced or retained as false across transition');
-		check(errors, (priorVars.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_AUTHORIZATION_ID === undefined
-			|| priorVars.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_AUTHORIZATION_ID === '')
-			&& nextVars.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_AUTHORIZATION_ID === '',
+	const acceptanceTransition = contract?.notificationAcceptanceTestTransition ?? null;
+	if (acceptanceTransition !== null) {
+		check(errors, ['enable', 'disable'].includes(acceptanceTransition),
+			'notificationAcceptanceTestTransition must be enable or disable');
+		check(errors, same(actualChanged, [NOTIFICATION_ACCEPTANCE_AUTHORIZATION, NOTIFICATION_ACCEPTANCE_GATE].sort()),
+			'notification acceptance transition may change only its gate and authorization ID');
+		check(errors, acceptanceMode(priorVars) === (acceptanceTransition === 'enable' ? 'disabled' : 'enabled'),
+			'notification acceptance transition source state is invalid');
+		check(errors, acceptanceMode(nextVars) === (acceptanceTransition === 'enable' ? 'enabled' : 'disabled'),
+			'notification acceptance transition target state is invalid');
+	} else if (Object.hasOwn(nextVars, NOTIFICATION_ACCEPTANCE_GATE)
+		|| Object.hasOwn(changes ?? {}, NOTIFICATION_ACCEPTANCE_GATE)) {
+		check(errors, (priorVars[NOTIFICATION_ACCEPTANCE_GATE] === undefined
+			|| priorVars[NOTIFICATION_ACCEPTANCE_GATE] === 'false')
+			&& nextVars[NOTIFICATION_ACCEPTANCE_GATE] === 'false',
+		`${NOTIFICATION_ACCEPTANCE_GATE} must be introduced or retained as false across transition`);
+		check(errors, (priorVars[NOTIFICATION_ACCEPTANCE_AUTHORIZATION] === undefined
+			|| priorVars[NOTIFICATION_ACCEPTANCE_AUTHORIZATION] === '')
+			&& nextVars[NOTIFICATION_ACCEPTANCE_AUTHORIZATION] === '',
 		'notification acceptance-test authorization must be introduced or retained blank across transition');
 	}
 	check(errors, priorVars.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '' && nextVars.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '',
@@ -168,7 +230,13 @@ export function validateBaselineTransition(previous, next, contract) {
 		&& changes[gate]?.from === null
 		&& changes[gate]?.to === 'false');
 	return { name: contract.name, changedVariables: actualChanged, changedSecrets: actualSecretChanges,
-		introducedDisabledGates };
+		introducedDisabledGates, notificationAcceptanceTest: acceptanceTransition ? {
+			transition: acceptanceTransition,
+			previous: { mode: acceptanceMode(priorVars), authorizationIdSha256:
+				acceptanceMode(priorVars) === 'enabled' ? sha256(priorVars[NOTIFICATION_ACCEPTANCE_AUTHORIZATION]) : null },
+			target: { mode: acceptanceMode(nextVars), authorizationIdSha256:
+				acceptanceMode(nextVars) === 'enabled' ? sha256(nextVars[NOTIFICATION_ACCEPTANCE_AUTHORIZATION]) : null },
+		} : null };
 }
 
 export function validateGeneratedConfiguration(config, baseline, options = {}) {
@@ -204,11 +272,8 @@ export function validateGeneratedConfiguration(config, baseline, options = {}) {
 	check(errors, config.vars?.IMAGE_GENERATION_ENABLED === 'false', 'image generation gate must be false');
 	check(errors, config.vars?.EDITORIAL_ROUTINE_IMAGE_PREPARATION_ENABLED === 'false', 'routine image gate must be false');
 	check(errors, config.vars?.EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED === 'false', 'external notification gate must be false');
-	if (Object.hasOwn(baseline.requiredVars ?? {}, 'EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED')) {
-		check(errors, config.vars?.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED === 'false',
-			'notification acceptance-test gate must be false');
-		check(errors, config.vars?.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_AUTHORIZATION_ID === '',
-			'notification acceptance-test authorization must be blank');
+	if (Object.hasOwn(baseline.requiredVars ?? {}, NOTIFICATION_ACCEPTANCE_GATE)) {
+		validateAcceptanceConfiguration(errors, config.vars, options.notificationAcceptanceTest);
 	}
 	check(errors, config.vars?.EDITORIAL_AUTOMATED_PUBLICATION_ENABLED === 'false', 'automated publication gate must be false');
 	check(errors, config.vars?.IMAGE_ATTEMPT_BUDGET_MICRO_USD === '50000', 'image attempt ceiling must equal 50000');
@@ -232,11 +297,11 @@ export function validateActivationTarget(requestedVersionId, inspectedVersionId)
 	return true;
 }
 
-export function createCronConfiguration(config, baseline, paused) {
-	validateGeneratedConfiguration(config, baseline);
+export function createCronConfiguration(config, baseline, paused, options = {}) {
+	validateGeneratedConfiguration(config, baseline, options);
 	const result = structuredClone(config);
 	result.triggers = { ...(result.triggers ?? {}), crons: paused ? [] : [...baseline.crons] };
-	validateGeneratedConfiguration(result, baseline, { paused });
+	validateGeneratedConfiguration(result, baseline, { ...options, paused });
 	assertOnlyCronDifference(config, result);
 	return result;
 }
@@ -365,11 +430,8 @@ export function validateLiveSnapshot(snapshot, baseline, options = {}) {
 		check(errors, snapshot.vars?.[gate] === 'false' || authorizedLegacyAbsence, `live ${gate} must be false`);
 	}
 	check(errors, snapshot.vars?.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY === '', 'live image smoke attempt key must be blank');
-	if (Object.hasOwn(baseline.requiredVars ?? {}, 'EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED')) {
-		check(errors, snapshot.vars?.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_ENABLED === 'false',
-			'live notification acceptance-test gate must be false');
-		check(errors, snapshot.vars?.EDITORIAL_NOTIFICATION_ACCEPTANCE_TEST_AUTHORIZATION_ID === '',
-			'live notification acceptance-test authorization must be blank');
+	if (Object.hasOwn(baseline.requiredVars ?? {}, NOTIFICATION_ACCEPTANCE_GATE)) {
+		validateAcceptanceConfiguration(errors, snapshot.vars, options.notificationAcceptanceTest);
 	}
 	try {
 		validateReviewedModelBudgetVariables(snapshot.vars ?? {});
@@ -417,13 +479,16 @@ function normalizeVersionSnapshot(snapshot) {
 	};
 }
 
-export function validateUploadedVersion(snapshot, baseline) {
+export function validateUploadedVersion(snapshot, baseline, options = {}) {
 	const version = normalizeVersionSnapshot(snapshot);
 	const errors = [];
 	check(errors, version.handlers.includes('fetch') && version.handlers.includes('scheduled'), 'uploaded version must contain fetch and scheduled handlers');
 	check(errors, version.compatibilityDate === baseline.compatibilityDate, 'uploaded version compatibility date differs');
 	check(errors, same(version.compatibilityFlags, baseline.compatibilityFlags), 'uploaded version compatibility flags differ');
 	check(errors, same(version.vars, baseline.requiredVars), 'uploaded version variables differ from baseline');
+	if (Object.hasOwn(baseline.requiredVars ?? {}, NOTIFICATION_ACCEPTANCE_GATE)) {
+		validateAcceptanceConfiguration(errors, version.vars, options.notificationAcceptanceTest);
+	}
 	check(errors, same([...version.secrets].sort(), [...baseline.requiredSecrets].sort()),
 		'uploaded version secret binding names differ from baseline');
 	const d1 = version.d1.map(({ name, database_id }) => ({ binding: name, database_id }));

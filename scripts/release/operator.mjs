@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { assertOnlyCronDifference, readJson, validateDeployedModuleInventory, validateDisabledVersionSnapshot, validateDryRunPackage,
 	validateActivationTarget, validateBaselineTransition, validateGeneratedConfiguration, validateLiveSnapshot,
@@ -36,7 +36,11 @@ const dirty = (await execute('git', ['status', '--porcelain'])).stdout.trim();
 if (head !== expectedCommit || remote !== expectedCommit || dirty) {
 	throw new Error('Operator action requires clean local and remote main at the approved commit.');
 }
-const baseline = await readJson(resolve('release/production-baseline.json'));
+const canonicalBaselinePath = resolve('release/production-baseline.json');
+const canonicalConfigPath = resolve('dist/server/wrangler.json');
+const baselinePath = resolve(option('--baseline') ?? canonicalBaselinePath);
+const configPath = resolve(option('--config') ?? canonicalConfigPath);
+const baseline = await readJson(baselinePath);
 const transitionFromPath = option('--transition-from-baseline');
 const transitionContractPath = option('--transition-contract');
 const liveState = option('--live-state') ?? 'target';
@@ -47,14 +51,20 @@ if (!['previous', 'target'].includes(liveState)) throw new Error('--live-state m
 if (liveState === 'previous' && !transitionFromPath) {
 	throw new Error('--live-state previous requires an exact reviewed baseline transition.');
 }
+if ((baselinePath !== canonicalBaselinePath || configPath !== canonicalConfigPath) && !transitionFromPath) {
+	throw new Error('A noncanonical baseline or configuration requires an exact reviewed baseline transition.');
+}
 const previousBaseline = transitionFromPath ? await readJson(resolve(transitionFromPath)) : null;
 let transition = null;
 if (previousBaseline) {
 	transition = validateBaselineTransition(previousBaseline, baseline, await readJson(resolve(transitionContractPath)));
 }
-const config = await readJson(resolve('dist/server/wrangler.json'));
-validateGeneratedConfiguration(config, baseline);
-await validateDryRunPackage(resolve('dist/server'), resolve('.release/wrangler-dry-run'), config);
+const targetAcceptance = transition?.notificationAcceptanceTest?.target;
+const liveAcceptance = transition?.notificationAcceptanceTest?.[liveState];
+const config = await readJson(configPath);
+const cronConfigPrefix = configPath.endsWith('.json') ? configPath.slice(0, -'.json'.length) : configPath;
+validateGeneratedConfiguration(config, baseline, { notificationAcceptanceTest: targetAcceptance });
+await validateDryRunPackage(dirname(configPath), resolve('.release/wrangler-dry-run'), config);
 if (process.env.CLOUDFLARE_ACCOUNT_ID !== baseline.accountId) {
 	throw new Error(`CLOUDFLARE_ACCOUNT_ID must explicitly equal ${baseline.accountId}`);
 }
@@ -62,37 +72,42 @@ const liveSnapshot = required('--live-snapshot');
 const expectPaused = ['upload', 'inspect', 'activate', 'cron-restore'].includes(action)
 	|| (action === 'rollback' && process.argv.includes('--cron-paused'));
 validateLiveSnapshot(await readJson(resolve(liveSnapshot)), liveState === 'previous' ? previousBaseline : baseline,
-	{ paused: expectPaused, liveState, transition });
+	{ paused: expectPaused, liveState, transition, notificationAcceptanceTest: liveAcceptance });
 
 if (action === 'upload') {
-	await run(['versions', 'upload', '--config', 'dist/server/wrangler.json', '--strict',
+	await run(['versions', 'upload', '--config', configPath, '--strict',
 		'--tag', required('--tag'), '--message', required('--message')]);
 } else if (action === 'inspect') {
 	await run(['versions', 'view', required('--version'), '--name', baseline.workerName, '--json']);
 } else if (action === 'activate') {
 	const versionId = required('--version');
-	const inspected = validateUploadedVersion(await readJson(resolve(required('--version-snapshot'))), baseline);
+	const inspected = validateUploadedVersion(await readJson(resolve(required('--version-snapshot'))), baseline,
+		{ notificationAcceptanceTest: targetAcceptance });
 	validateActivationTarget(versionId, inspected.versionId);
-	await validateDeployedModuleInventory(resolve('dist/server'), await readJson(resolve(required('--module-inventory'))));
+	await validateDeployedModuleInventory(dirname(configPath), await readJson(resolve(required('--module-inventory'))));
 	await run(['versions', 'deploy', `${versionId}@100%`, '--name', baseline.workerName,
 		'--message', required('--message'), '--yes']);
 } else if (action === 'cron-pause') {
-	const cronConfig = await readJson(resolve('dist/server/wrangler.pause.json'));
-	validateGeneratedConfiguration(cronConfig, baseline, { paused: true });
+	const cronConfigPath = `${cronConfigPrefix}.pause.json`;
+	const cronConfig = await readJson(cronConfigPath);
+	validateGeneratedConfiguration(cronConfig, baseline,
+		{ paused: true, notificationAcceptanceTest: targetAcceptance });
 	assertOnlyCronDifference(config, cronConfig);
-	await run(['triggers', 'deploy', '--config', 'dist/server/wrangler.pause.json']);
+	await run(['triggers', 'deploy', '--config', cronConfigPath]);
 } else if (action === 'cron-restore') {
-	const cronConfig = await readJson(resolve('dist/server/wrangler.restore.json'));
-	validateGeneratedConfiguration(cronConfig, baseline);
+	const cronConfigPath = `${cronConfigPrefix}.restore.json`;
+	const cronConfig = await readJson(cronConfigPath);
+	validateGeneratedConfiguration(cronConfig, baseline, { notificationAcceptanceTest: targetAcceptance });
 	assertOnlyCronDifference(config, cronConfig);
-	await run(['triggers', 'deploy', '--config', 'dist/server/wrangler.restore.json']);
+	await run(['triggers', 'deploy', '--config', cronConfigPath]);
 } else {
 	const versionSnapshot = await readJson(resolve(required('--version-snapshot')));
 	const rollbackBaseline = process.argv.includes('--rollback-to-previous')
 		? previousBaseline
 		: baseline;
 	if (!rollbackBaseline) throw new Error('--rollback-to-previous requires an exact reviewed baseline transition.');
-	validateUploadedVersion(versionSnapshot, rollbackBaseline);
+	validateUploadedVersion(versionSnapshot, rollbackBaseline,
+		{ notificationAcceptanceTest: transition?.notificationAcceptanceTest?.target });
 	validateDisabledVersionSnapshot(versionSnapshot, rollbackBaseline);
 	await run(['versions', 'deploy', `${required('--version')}@100%`, '--name', baseline.workerName,
 		'--message', required('--message'), '--yes']);
