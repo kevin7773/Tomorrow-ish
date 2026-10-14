@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it, vi } from 'vitest';
 import { D1ExternalReviewNotificationRepository } from '../src/data/external-review-notification-repository';
 import { D1ResendEmailRepository } from '../src/data/resend-email-repository';
+import { DurableExternalReviewNotifier } from '../src/notifications/durable-external-review-notifier';
 import { handleResendEmailSubmissionRequest, handleResendWebhookRequest } from '../src/notifications/resend-email-endpoint';
 import {
 	ResendEmailProvider,
@@ -14,6 +15,7 @@ import {
 	type ResendEmailConfiguration,
 } from '../src/notifications/resend-email';
 import type { ReviewNotification } from '../src/notifications/review-notifier';
+import { ResendReviewNotificationTransport } from '../src/notifications/resend-review-notification-transport';
 import { ResendEditorialEmailService } from '../src/services/resend-editorial-email-service';
 
 const NOW = '2026-10-13T18:00:00.000Z';
@@ -57,7 +59,7 @@ function d1Database(sqlite: DatabaseSync): D1Database {
 	} as unknown as D1Database;
 }
 
-async function harness(kind: ReviewNotification['kind'] = 'INITIAL') {
+async function harness(kind: ReviewNotification['kind'] = 'INITIAL', reserveOuter = true) {
 	const sqlite = new DatabaseSync(':memory:');
 	for (const filename of readdirSync(join(process.cwd(), 'migrations')).filter((name) => /^\d+.*\.sql$/.test(name)).sort()) {
 		sqlite.exec(readFileSync(join(process.cwd(), 'migrations', filename), 'utf8'));
@@ -81,8 +83,10 @@ async function harness(kind: ReviewNotification['kind'] = 'INITIAL') {
 		idempotencyKey: `editorial-review:batch-email-1:FINAL_REVIEW:${kind}` };
 	const db = d1Database(sqlite);
 	const external = new D1ExternalReviewNotificationRepository(db);
-	expect(await external.reserve(currentNotification, `external-review:v1:${currentNotification.idempotencyKey}`,
-		'outer-owner', NOW)).toBe('ACQUIRED');
+	if (reserveOuter) {
+		expect(await external.reserve(currentNotification, `external-review:v1:${currentNotification.idempotencyKey}`,
+			'outer-owner', NOW)).toBe('ACQUIRED');
+	}
 	return { sqlite, db, external, currentNotification };
 }
 
@@ -172,6 +176,73 @@ describe('governed Resend editorial email delivery', () => {
 		expect(await test.external.reserve({ ...test.currentNotification,
 			message: '📰 Tomorrow-ish has 2 finished stories ready for final editorial review.' },
 			`external-review:v1:${notification.idempotencyKey}`, 'later-owner', NOW)).toBe('DELIVERED');
+		test.sqlite.close();
+	});
+
+	it('detaches receiver-sensitive Worker fetch before submitting to Resend', async () => {
+		const fetcher = function (this: unknown) {
+			if (this !== undefined) {
+				return Promise.reject(new TypeError('Illegal invocation: function called with incorrect this reference'));
+			}
+			return Promise.resolve(Response.json({ id: 'email_detached_1234' }));
+		} as typeof fetch;
+		const provider = new ResendEmailProvider(configuration, fetcher);
+
+		await expect(provider.submit(notification.idempotencyKey,
+			await sha256Hex(notification.idempotencyKey), renderEditorialEmail(notification, 3)))
+			.resolves.toEqual({ providerEmailId: 'email_detached_1234', responseStatus: 200 });
+	});
+
+	it('persists safe network and timeout diagnostics without retaining sensitive exception text', async () => {
+		for (const testCase of [
+			{ error: new DOMException('secret timeout detail', 'TimeoutError'), category: 'FETCH_TIMEOUT', type: 'TimeoutError' },
+			{ error: new TypeError('network failed with secret recipient'), category: 'FETCH_NETWORK', type: 'TypeError' },
+		] as const) {
+			const test = await harness();
+			const ticks = [100, 137];
+			const fetcher = vi.fn(async () => { throw testCase.error; });
+			const provider = new ResendEmailProvider(configuration, fetcher, 8_000, () => ticks.shift() ?? 137);
+			const service = new ResendEditorialEmailService(new D1ResendEmailRepository(test.db),
+				provider, configuration, () => NOW);
+
+			expect(await service.submit(test.currentNotification)).toMatchObject({
+				deliveryState: 'AMBIGUOUS', classification: 'PROVIDER_AMBIGUOUS',
+			});
+			const row = test.sqlite.prepare(`SELECT failure_classification FROM resend_email_submissions`).get() as Record<string, string>;
+			expect(row.failure_classification).toBe(
+				`PROVIDER_AMBIGUOUS|${testCase.category}|${testCase.type}|SUBMISSION|37MS`,
+			);
+			expect(row.failure_classification).not.toContain('secret');
+			expect(fetcher).toHaveBeenCalledTimes(1);
+			test.sqlite.close();
+		}
+	});
+
+	it('runs routine delivery in-process with one outer reservation and one Resend submission', async () => {
+		const test = await harness('INITIAL', false);
+		const fetcher = vi.fn(async () => Response.json({ id: 'email_in_process_1234' }));
+		const repository = new D1ResendEmailRepository(test.db);
+		const service = new ResendEditorialEmailService(repository,
+			new ResendEmailProvider(configuration, fetcher), configuration, () => NOW);
+		const notifier = new DurableExternalReviewNotifier(test.external,
+			new ResendReviewNotificationTransport(service), () => NOW, () => 'in-process-owner');
+
+		await expect(notifier.send(test.currentNotification)).rejects.toMatchObject({ classification: 'PENDING' });
+		await expect(notifier.send(test.currentNotification)).rejects.toMatchObject({ classification: 'AMBIGUOUS' });
+		expect(fetcher).toHaveBeenCalledTimes(1);
+		expect(test.sqlite.prepare(`SELECT status,provider_request_id FROM external_review_notification_deliveries`).get())
+			.toEqual({ status: 'PENDING', provider_request_id: 'email_in_process_1234' });
+		expect(test.sqlite.prepare(`SELECT status,provider_email_id FROM resend_email_submissions`).get())
+			.toEqual({ status: 'PENDING', provider_email_id: 'email_in_process_1234' });
+
+		await handleResendWebhookRequest(
+			await webhookRequest('email.delivered', 'email_in_process_1234', 'msg_in_process_1234'),
+			service, configuration, () => new Date(NOW),
+		);
+		expect(test.sqlite.prepare(`SELECT status FROM external_review_notification_deliveries`).get())
+			.toEqual({ status: 'DELIVERED' });
+		expect(test.sqlite.prepare(`SELECT status FROM resend_email_submissions`).get())
+			.toEqual({ status: 'DELIVERED' });
 		test.sqlite.close();
 	});
 

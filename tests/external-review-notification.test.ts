@@ -6,6 +6,7 @@ import { D1ExternalReviewNotificationRepository } from '../src/data/external-rev
 import type { ExternalReviewNotificationRepository } from '../src/data/external-review-notification-repository';
 import { DurableExternalReviewNotifier } from '../src/notifications/durable-external-review-notifier';
 import { ReviewNotificationError, WebhookReviewNotifier, type ReviewNotification } from '../src/notifications/review-notifier';
+import { ResendReviewNotificationTransport } from '../src/notifications/resend-review-notification-transport';
 
 const NOW = '2026-10-13T12:00:00.000Z';
 const TOKEN = 'test-secret-token-with-at-least-32-characters';
@@ -40,6 +41,32 @@ function database(): DatabaseSync {
 }
 
 describe('durable external review notification delivery', () => {
+	it('detaches receiver-sensitive fetch in the compatible HTTP transport', async () => {
+		const fetcher = function (this: unknown) {
+			if (this !== undefined) return Promise.reject(new TypeError('Illegal invocation'));
+			return Promise.resolve(Response.json({
+				deliveryState: 'DELIVERED', idempotencyKey: notification.idempotencyKey, deliveryId: 'detached-1',
+			}));
+		} as typeof fetch;
+
+		await expect(new WebhookReviewNotifier('https://notify.example/hooks/editorial', TOKEN, fetcher)
+			.send(notification)).resolves.toMatchObject({ deliveryState: 'DELIVERED', requestId: 'detached-1' });
+	});
+
+	it('uses the existing Resend service in-process without changing acknowledgement semantics', async () => {
+		const service = { submit: vi.fn(async () => ({
+			deliveryState: 'PENDING' as const, idempotencyKey: notification.idempotencyKey,
+			deliveryId: 'email-in-process-1', classification: null,
+		})) };
+		const transport = new ResendReviewNotificationTransport(service);
+
+		expect(await transport.send(notification)).toEqual({
+			status: 202, requestId: 'email-in-process-1', deliveryState: 'PENDING',
+		});
+		expect(service.submit).toHaveBeenCalledOnce();
+		expect(service.submit).toHaveBeenCalledWith(notification);
+	});
+
 	it('admits one concurrent send and records delivery only after a successful response', async () => {
 		const sqlite = database();
 		const repository = new D1ExternalReviewNotificationRepository(d1Database(sqlite));

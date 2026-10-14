@@ -56,7 +56,9 @@ export class WebhookReviewNotifier implements ReviewNotificationTransport {
 		}
 		let response: Response;
 		try {
-			response = await this.fetcher(url, {
+			// Cloudflare's global fetch is receiver-sensitive. Detach it before invocation.
+			const fetcher = this.fetcher;
+			response = await fetcher(url, {
 				method: 'POST',
 				headers: {
 					'authorization': `Bearer ${this.bearerToken.trim()}`,

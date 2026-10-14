@@ -3,22 +3,25 @@ import {
 	D1EditorialNotificationDelivery,
 	D1ReviewNotificationRepository,
 } from '../data/d1-review-notification-repository';
+import { D1ResendEmailRepository } from '../data/resend-email-repository';
 import { InternalReviewNotifier } from '../notifications/review-notifier';
-import { WebhookReviewNotifier } from '../notifications/review-notifier';
 import { CompositeReviewNotifier, DurableExternalReviewNotifier } from '../notifications/durable-external-review-notifier';
 import { D1ExternalReviewNotificationRepository } from '../data/external-review-notification-repository';
+import { ResendEmailProvider } from '../notifications/resend-email';
+import { ResendReviewNotificationTransport } from '../notifications/resend-review-notification-transport';
 import { EditorialReviewReminderService } from '../services/editorial-review-reminder-service';
 import { ReviewNotificationReceiverService } from '../services/review-notification-receiver-service';
+import { ResendEditorialEmailService } from '../services/resend-editorial-email-service';
 
 export interface ReviewReminderEnvironment {
 	DB: D1Database;
-	// Retained for the compatible HTTP adapter; scheduled delivery is in-process.
-	REVIEW_NOTIFICATION_WEBHOOK_URL?: string;
-	REVIEW_NOTIFICATION_EXTERNAL_URL?: string;
-	REVIEW_NOTIFICATION_EXTERNAL_BEARER_TOKEN?: string;
 	EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED?: string;
 	REVIEW_NOTIFICATION_REVIEW_URL?: string;
 	IMAGE_WEBHOOK_ORIGIN?: string;
+	RESEND_API_KEY?: string;
+	RESEND_WEBHOOK_SIGNING_SECRET?: string;
+	EDITORIAL_NOTIFICATION_TO_EMAIL?: string;
+	EDITORIAL_NOTIFICATION_FROM_EMAIL?: string;
 }
 
 function externalEnabled(value: string | undefined): boolean {
@@ -48,14 +51,23 @@ export function runEditorialReviewReminders(environment: ReviewReminderEnvironme
 		new D1EditorialNotificationDelivery(environment.DB),
 	);
 	const internal = new InternalReviewNotifier(receiver, new URL(reviewUrl).origin);
+	const resendConfiguration = {
+		apiKey: environment.RESEND_API_KEY ?? '',
+		webhookSigningSecret: environment.RESEND_WEBHOOK_SIGNING_SECRET ?? '',
+		toEmail: environment.EDITORIAL_NOTIFICATION_TO_EMAIL ?? '',
+		fromEmail: environment.EDITORIAL_NOTIFICATION_FROM_EMAIL ?? '',
+	};
 	const notifier = externalEnabled(environment.EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED)
 		? new CompositeReviewNotifier([
 			internal,
 			new DurableExternalReviewNotifier(
 				new D1ExternalReviewNotificationRepository(environment.DB),
-				new WebhookReviewNotifier(
-					environment.REVIEW_NOTIFICATION_EXTERNAL_URL?.trim() ?? '',
-					environment.REVIEW_NOTIFICATION_EXTERNAL_BEARER_TOKEN?.trim() ?? '',
+				new ResendReviewNotificationTransport(
+					new ResendEditorialEmailService(
+						new D1ResendEmailRepository(environment.DB),
+						new ResendEmailProvider(resendConfiguration),
+						resendConfiguration,
+					),
 				),
 			),
 		])

@@ -67,13 +67,14 @@ export class ResendEditorialEmailService {
 			}
 			const providerError = error instanceof ResendSubmissionError ? error : null;
 			const classification = providerError?.classification ?? 'PROVIDER_AMBIGUOUS';
+			const persistenceClassification = providerError?.persistenceClassification ?? classification;
 			if (classification === 'PROVIDER_REJECTED') {
-				await this.repository.markFailed(notification.idempotencyKey, classification,
+				await this.repository.markFailed(notification.idempotencyKey, persistenceClassification,
 					providerError?.responseStatus ?? null, this.now());
 				return { deliveryState: 'FAILED', idempotencyKey: notification.idempotencyKey,
 					deliveryId: null, classification };
 			}
-			await this.repository.markAmbiguous(notification.idempotencyKey, classification,
+			await this.repository.markAmbiguous(notification.idempotencyKey, persistenceClassification,
 				providerError?.responseStatus ?? null, this.now());
 			return { deliveryState: 'AMBIGUOUS', idempotencyKey: notification.idempotencyKey,
 				deliveryId: null, classification };

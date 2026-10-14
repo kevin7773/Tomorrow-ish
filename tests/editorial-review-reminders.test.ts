@@ -205,6 +205,10 @@ describe('two-phase editorial reminders', () => {
 		expect(runtime).toContain('InternalReviewNotifier');
 		expect(runtime).toContain('EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED');
 		expect(runtime).toContain('DurableExternalReviewNotifier');
+		expect(runtime).toContain('ResendReviewNotificationTransport');
+		expect(runtime).toContain('ResendEditorialEmailService');
+		expect(runtime).not.toContain('WebhookReviewNotifier');
+		expect(runtime).not.toContain('REVIEW_NOTIFICATION_EXTERNAL_URL?.trim()');
 		expect(runtime).not.toContain('fetch(');
 	});
 

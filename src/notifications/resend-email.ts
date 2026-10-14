@@ -51,9 +51,23 @@ export class ResendSubmissionError extends Error {
 	constructor(
 		readonly classification: 'PROVIDER_REJECTED' | 'PROVIDER_AMBIGUOUS' | 'PROVIDER_INVALID_RESPONSE',
 		readonly responseStatus: number | null,
+		readonly diagnostics: ResendTransportDiagnostics | null = null,
 	) {
 		super(`Resend submission failed: ${classification}`);
 	}
+
+	get persistenceClassification(): string {
+		if (!this.diagnostics) return this.classification;
+		return [this.classification, this.diagnostics.failureCategory, this.diagnostics.exceptionType,
+			this.diagnostics.transportStage, `${this.diagnostics.elapsedMs}MS`].join('|');
+	}
+}
+
+export interface ResendTransportDiagnostics {
+	failureCategory: 'FETCH_TIMEOUT' | 'FETCH_RUNTIME' | 'FETCH_NETWORK';
+	exceptionType: 'AbortError' | 'TimeoutError' | 'TypeError' | 'Error' | 'UnknownError';
+	transportStage: 'SUBMISSION';
+	elapsedMs: number;
 }
 
 export class ResendWebhookError extends Error {
@@ -201,18 +215,38 @@ export function notificationAcceptanceTestPayloadHash(
 	}));
 }
 
+function transportDiagnostics(error: unknown, elapsedMs: number): ResendTransportDiagnostics {
+	const rawName = error && typeof error === 'object' && 'name' in error ? String(error.name) : '';
+	const rawMessage = error && typeof error === 'object' && 'message' in error ? String(error.message) : '';
+	const exceptionType: ResendTransportDiagnostics['exceptionType'] =
+		rawName === 'AbortError' ? 'AbortError'
+			: rawName === 'TimeoutError' ? 'TimeoutError'
+				: rawName === 'TypeError' ? 'TypeError'
+					: rawName === 'Error' ? 'Error' : 'UnknownError';
+	const failureCategory: ResendTransportDiagnostics['failureCategory'] =
+		exceptionType === 'AbortError' || exceptionType === 'TimeoutError' ? 'FETCH_TIMEOUT'
+			: /illegal invocation|incorrect this reference|request context/i.test(rawMessage) ? 'FETCH_RUNTIME'
+				: 'FETCH_NETWORK';
+	return { failureCategory, exceptionType, transportStage: 'SUBMISSION', elapsedMs };
+}
+
 export class ResendEmailProvider {
 	constructor(
 		private readonly configuration: ResendEmailConfiguration,
 		private readonly fetcher: typeof fetch = fetch,
 		private readonly timeoutMs = 8_000,
+		private readonly nowMs: () => number = () => Date.now(),
 	) {}
 
 	async submit(idempotencyKey: string, idempotencyHash: string, email: EditorialEmail): Promise<ResendSubmissionResult> {
 		const configuration = validateResendConfiguration(this.configuration);
+		const startedAt = this.nowMs();
 		let response: Response;
 		try {
-			response = await this.fetcher(RESEND_EMAILS_URL, {
+			// Cloudflare's global fetch is receiver-sensitive. Detach it from this provider
+			// before invocation so it is not called with the provider instance as `this`.
+			const fetcher = this.fetcher;
+			response = await fetcher(RESEND_EMAILS_URL, {
 				method: 'POST',
 				headers: {
 					Authorization: `Bearer ${configuration.apiKey}`,
@@ -229,8 +263,9 @@ export class ResendEmailProvider {
 				}),
 				signal: AbortSignal.timeout(this.timeoutMs),
 			});
-		} catch {
-			throw new ResendSubmissionError('PROVIDER_AMBIGUOUS', null);
+		} catch (error) {
+			throw new ResendSubmissionError('PROVIDER_AMBIGUOUS', null,
+				transportDiagnostics(error, Math.max(0, Math.round(this.nowMs() - startedAt))));
 		}
 		if (!response.ok) {
 			let providerErrorName = '';

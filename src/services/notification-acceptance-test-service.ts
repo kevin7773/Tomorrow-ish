@@ -119,13 +119,16 @@ export class NotificationAcceptanceTestService {
 			}
 			const providerError = error instanceof ResendSubmissionError ? error : null;
 			const classification = providerError?.classification ?? 'PROVIDER_AMBIGUOUS';
+			const persistenceClassification = providerError?.persistenceClassification ?? classification;
 			if (classification === 'PROVIDER_REJECTED') {
-				await this.repository.markFailed({ idempotencyKey, eventId: this.createId(), classification,
+				await this.repository.markFailed({ idempotencyKey, eventId: this.createId(),
+					classification: persistenceClassification,
 					responseStatus: providerError?.responseStatus ?? null, at: this.now() });
 				return { deliveryState: 'FAILED', testId, idempotencyKey,
 					deliveryId: null, classification };
 			}
-			await this.repository.markAmbiguous({ idempotencyKey, eventId: this.createId(), classification,
+			await this.repository.markAmbiguous({ idempotencyKey, eventId: this.createId(),
+				classification: persistenceClassification,
 				responseStatus: providerError?.responseStatus ?? null, at: this.now() });
 			return { deliveryState: 'AMBIGUOUS', testId, idempotencyKey,
 				deliveryId: null, classification };
