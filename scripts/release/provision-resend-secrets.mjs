@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process';
-import { readFile, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { createAndInspectInactiveResendSecretVersion } from './resend-secret-provisioning.mjs';
+import { readProtectedJsonInput } from './protected-stdin.mjs';
 import { readJson, validateBaselineTransition, validateDryRunPackage, validateGeneratedConfiguration,
 	validateLiveSnapshot } from './release-safety.mjs';
 
@@ -43,7 +44,7 @@ await validateDryRunPackage(resolve('dist/server'), resolve('.release/wrangler-d
 validateLiveSnapshot(await readJson(resolve(required('--live-snapshot'))), previous,
 	{ liveState: 'previous', transition });
 
-const protectedInput = JSON.parse(await readFile(0, 'utf8'));
+const protectedInput = readProtectedJsonInput();
 const evidence = await createAndInspectInactiveResendSecretVersion({
 	secrets: protectedInput,
 	baseline,

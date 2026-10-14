@@ -331,8 +331,9 @@ describe('production release safety', () => {
 	});
 
 	it('validates the exact old-to-new budget baseline without weakening unrelated fields', () => {
-		const { EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED: _externalGate,
-			MODEL_BUDGET_ADMISSION_ENABLED: _budgetGate, ...previousRequiredVars } = baseline.requiredVars;
+		const previousRequiredVars: Record<string, string> = { ...baseline.requiredVars };
+		delete previousRequiredVars.EDITORIAL_EXTERNAL_NOTIFICATIONS_ENABLED;
+		delete previousRequiredVars.MODEL_BUDGET_ADMISSION_ENABLED;
 		const previous = { ...structuredClone(baseline),
 			requiredVars: { ...previousRequiredVars, MODEL_DAILY_BUDGET_MICRO_USD: '1000000' } };
 		const next = { ...structuredClone(baseline), requiredVars: {

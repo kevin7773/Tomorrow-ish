@@ -1,4 +1,7 @@
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import {
 	createAndInspectInactiveResendSecretVersion,
@@ -7,6 +10,15 @@ import {
 	redactSecretText,
 	validateProvisioningSecrets,
 } from '../scripts/release/resend-secret-provisioning.mjs';
+
+function readThroughNodeStdin(input: string) {
+	const moduleUrl = pathToFileURL(resolve('scripts/release/protected-stdin.mjs')).href;
+	const program = `import { readProtectedJsonInput } from ${JSON.stringify(moduleUrl)}; process.stdout.write(JSON.stringify(readProtectedJsonInput()));`;
+	return spawnSync(process.execPath, ['--input-type=module', '--eval', program], {
+		input,
+		encoding: 'utf8',
+	});
+}
 
 const secrets = {
 	EDITORIAL_NOTIFICATION_TO_EMAIL: 'editor@example.test',
@@ -50,6 +62,26 @@ function versionSnapshot(id = '12345678-1234-4123-8123-123456789abc') {
 }
 
 describe('protected Resend secret provisioning', () => {
+	it('reads the complete protected payload from descriptor zero on Node 24', () => {
+		expect(process.versions.node.split('.')[0]).toBe('24');
+		const payload = JSON.stringify(secrets);
+		const result = readThroughNodeStdin(payload);
+		expect(result.status).toBe(0);
+		expect(JSON.parse(result.stdout)).toEqual(secrets);
+		expect(result.stderr).toBe('');
+	});
+
+	it.each([
+		['missing', ''],
+		['invalid', 'not-json'],
+		['truncated', `{"RESEND_API_KEY":"${secrets.RESEND_API_KEY}`],
+	] as const)('fails closed on %s protected stdin without disclosing its contents', (_name, payload) => {
+		const result = readThroughNodeStdin(payload);
+		expect(result.status).not.toBe(0);
+		expect(result.stderr).toMatch(/Protected secret input (?:is empty|is not valid JSON)/);
+		for (const value of Object.values(secrets)) expect(result.stderr).not.toContain(value);
+	});
+
 	it('accepts only the exact four reviewed inputs', () => {
 		expect(validateProvisioningSecrets(secrets)).toBe(true);
 		expect(() => validateProvisioningSecrets({ ...secrets, EXTRA: 'no' })).toThrow(/exact reviewed secret set/);
@@ -59,6 +91,15 @@ describe('protected Resend secret provisioning', () => {
 			.toThrow(/exact reviewed secret set/);
 		expect(() => validateProvisioningSecrets({ ...secrets, REVIEW_NOTIFICATION_EXTERNAL_BEARER_TOKEN: 'short' }))
 			.toThrow(/at least 32/);
+	});
+
+	it('never invokes the provider executor for incomplete validated input', async () => {
+		const execute = vi.fn();
+		const { RESEND_WEBHOOK_SIGNING_SECRET: _missing, ...incomplete } = secrets;
+		await expect(createAndInspectInactiveResendSecretVersion({
+			secrets: incomplete, baseline, tag: 'reviewed', message: 'reviewed', execute,
+		})).rejects.toThrow(/exact reviewed secret set/);
+		expect(execute).not.toHaveBeenCalled();
 	});
 
 	it('uses only the inactive version secret-bulk command', () => {
