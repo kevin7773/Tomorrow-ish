@@ -51,7 +51,7 @@ function imageService(target: EditorialSmokeTarget | null, routine?: {
 	return new ArticleImageService(getEditorialRepository(), repository, getImageProvider(), assets, {
 		createWebhookUrl: getImageWebhookUrl,
 		processStoredWebhook: (imageId) => asyncService.processStoredWebhook(imageId).then(() => undefined),
-		smokeTarget: target,
+		...(target === null ? {} : { smokeTarget: target }),
 		attemptKey: routine
 			? `routine-image:v1:${routine.batchId}:${routine.intakeId}:${routine.storyId}`
 			: env.EDITORIAL_IMAGE_SMOKE_ATTEMPT_KEY,
