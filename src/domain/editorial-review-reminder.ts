@@ -12,6 +12,15 @@ export interface ReviewReminderBatch {
 	resolvedAt: string | null;
 }
 
+export interface ReviewReminderStatus {
+	pendingCount: number;
+	selectedCount: number;
+	readyCount: number;
+	failedCount: number;
+	generationSettled: boolean;
+	routineAdmission: boolean;
+}
+
 export interface ClaimedReviewReminder {
 	batchId: string;
 	stage: EditorialReminderStage;

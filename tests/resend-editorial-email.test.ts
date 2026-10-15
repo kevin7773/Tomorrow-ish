@@ -133,7 +133,10 @@ describe('governed Resend editorial email delivery', () => {
 			.toBe('Tomorrow-ish: Editorial Review Reminder — 6 Hours');
 		expect(renderEditorialEmail({ ...notification, kind: 'FINAL' }, 1).subject)
 			.toBe('Tomorrow-ish: Final Editorial Reminder — 24 Hours');
-		expect(renderEditorialEmail(notification, 3).text).not.toContain(notification.message);
+		expect(renderEditorialEmail(notification, 3).text).toContain(notification.message);
+		expect(renderEditorialEmail({ ...notification,
+			message: 'Batch generation finished: 1 selected item; 0 articles ready; 1 terminal generation failure.' }, 0).subject)
+			.toBe('Tomorrow-ish: Editorial Batch Requires Attention');
 	});
 
 	it('accepts a provider-standard 24-byte signing secret and delivers only after a signed callback', async () => {
@@ -147,7 +150,7 @@ describe('governed Resend editorial email delivery', () => {
 				tags: [{ name: 'notification_key', value: expect.stringMatching(/^[a-f0-9]{64}$/) }],
 			});
 			expect(body.html).toContain('https://tomorrow-ish.news/editorial');
-			expect(body.html).not.toContain('finished stories ready');
+			expect(body.html).toContain('finished stories ready');
 			return Response.json({ id: 'email_12345678' });
 		});
 		const repository = new D1ResendEmailRepository(test.db);

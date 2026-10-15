@@ -14,13 +14,25 @@ export class D1RoutineBatchAdmissionRepository implements RoutineBatchAdmissionR
 		WHERE batch.created_at >= ? AND batch.item_count = 3
 		AND (SELECT COUNT(*) FROM editorial_batch_items AS item WHERE item.batch_id = batch.id) = 3
 		AND (SELECT COUNT(*) FROM editorial_batch_items AS item
-			WHERE item.batch_id = batch.id AND item.workflow_state = 'SELECTED') = 3
+			WHERE item.batch_id = batch.id AND item.workflow_state IN ('SELECTED', 'REJECTED')) = 3
+		AND (SELECT COUNT(*) FROM editorial_batch_items AS item
+			WHERE item.batch_id = batch.id AND item.workflow_state = 'SELECTED') BETWEEN 1 AND 3
 		AND (SELECT COUNT(*) FROM editorial_batch_items AS item
 			WHERE item.batch_id = batch.id AND EXISTS (
 				SELECT 1 FROM editorial_workflow_events AS event
 				WHERE event.batch_id = item.batch_id AND event.source_intake_id = item.source_intake_id
 				AND event.event_kind = 'INTAKE_SELECTED' AND event.detail = ?
-			)) = 3
+			)) = (SELECT COUNT(*) FROM editorial_batch_items AS selected
+				WHERE selected.batch_id = batch.id AND selected.workflow_state = 'SELECTED')
+		AND (SELECT COUNT(*) FROM editorial_batch_items AS item
+			WHERE item.batch_id = batch.id AND item.workflow_state = 'REJECTED' AND EXISTS (
+				SELECT 1 FROM editorial_workflow_events AS event
+				WHERE event.batch_id = item.batch_id AND event.source_intake_id = item.source_intake_id
+				AND event.event_kind = 'INTAKE_REJECTED'
+			)) = (SELECT COUNT(*) FROM editorial_batch_items AS rejected
+				WHERE rejected.batch_id = batch.id AND rejected.workflow_state = 'REJECTED')
+		AND NOT EXISTS (SELECT 1 FROM routine_generation_batch_admissions AS existing
+			WHERE existing.batch_id = batch.id)
 		ORDER BY batch.created_at, batch.id LIMIT 1`)
 			.bind(record.operatingDate, record.timeZone, record.actorEmail, record.admittedAt,
 				record.batchNotBefore, ROUTINE_GENERATION_POLICY).run();

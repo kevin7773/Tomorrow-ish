@@ -1,12 +1,22 @@
 import type { ReviewReminderRepository } from '../data/editorial-review-reminder-repository';
-import type { ReviewReminderBatch, ReviewReminderKind } from '../domain/editorial-review-reminder';
+import type { ReviewReminderBatch, ReviewReminderKind, ReviewReminderStatus } from '../domain/editorial-review-reminder';
 import { ReviewNotificationError, type ReviewNotifier } from '../notifications/review-notifier';
 
 const SIX_HOURS_MS = 6 * 60 * 60 * 1_000;
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1_000;
 const CLAIM_LEASE_MS = 10 * 60 * 1_000;
 
-function message(stage: ReviewReminderBatch['stage'], kind: ReviewReminderKind, count: number): string {
+function message(stage: ReviewReminderBatch['stage'], kind: ReviewReminderKind, status: ReviewReminderStatus): string {
+	const count = status.pendingCount;
+	if (stage === 'FINAL_REVIEW' && status.routineAdmission) {
+		const readyCount = kind === 'INITIAL' ? status.readyCount : status.pendingCount;
+		const ready = `${readyCount} article${readyCount === 1 ? '' : 's'} ready for final editorial review`;
+		const failed = `${status.failedCount} terminal generation failure${status.failedCount === 1 ? '' : 's'}`;
+		const prefix = kind === 'INITIAL' ? '📰 Tomorrow-ish batch generation finished:'
+			: kind === 'SIX_HOUR' ? '📰 Reminder: Tomorrow-ish final review remains open:'
+				: '📰 Final reminder: Tomorrow-ish final review remains open:';
+		return `${prefix} ${status.selectedCount} selected item${status.selectedCount === 1 ? '' : 's'}; ${ready}; ${failed}.`;
+	}
 	const subject = stage === 'TRIAGE'
 		? `${count} new intake${count === 1 ? '' : 's'} ready for editorial triage`
 		: `${count} finished ${count === 1 ? 'story is' : 'stories are'} ready for final editorial review`;
@@ -48,16 +58,17 @@ export class EditorialReviewReminderService {
 		const now = this.now();
 		const nowIso = now.toISOString();
 		for (const batch of await this.repository.listUnresolved(limit)) {
-			const pendingCount = await this.repository.countPending(batch.batchId, batch.stage);
-			if (pendingCount === 0) {
+			const status = await this.repository.status(batch.batchId, batch.stage);
+			const notifyTerminalFailure = batch.stage === 'FINAL_REVIEW'
+				&& !batch.initialSentAt && status.routineAdmission && status.generationSettled;
+			if (status.pendingCount === 0 && !notifyTerminalFailure) {
 				if (await this.repository.resolve(batch.batchId, batch.stage, nowIso, this.createId())) {
 					report.resolved += 1;
 					console.log('[editorial-review-reminder] phase resolved', { batchId: batch.batchId, stage: batch.stage });
 				}
 				continue;
 			}
-			if (batch.stage === 'FINAL_REVIEW' && !batch.initialSentAt
-				&& (batch.itemCount !== 3 || pendingCount !== 3)) continue;
+			if (batch.stage === 'FINAL_REVIEW' && !batch.initialSentAt && !status.generationSettled) continue;
 			const kind = dueKind(batch, now.getTime());
 			if (!kind) continue;
 			const claim = await this.repository.claim(
@@ -65,7 +76,10 @@ export class EditorialReviewReminderService {
 				new Date(now.getTime() - CLAIM_LEASE_MS).toISOString(),
 			);
 			if (!claim) continue;
-			if (await this.repository.countPending(batch.batchId, batch.stage) === 0) {
+			const claimedStatus = await this.repository.status(batch.batchId, batch.stage);
+			const sendFailureOnlyInitial = batch.stage === 'FINAL_REVIEW' && kind === 'INITIAL'
+				&& claimedStatus.routineAdmission && claimedStatus.generationSettled;
+			if (claimedStatus.pendingCount === 0 && !sendFailureOnlyInitial) {
 				if (await this.repository.resolve(batch.batchId, batch.stage, nowIso, this.createId())) {
 					report.resolved += 1;
 					console.log('[editorial-review-reminder] phase resolved', { batchId: batch.batchId, stage: batch.stage });
@@ -78,7 +92,7 @@ export class EditorialReviewReminderService {
 					: null;
 				await this.notifier.send({
 					batchId: batch.batchId, stage: batch.stage, kind,
-					message: message(batch.stage, kind, pendingCount), reviewUrl,
+					message: message(batch.stage, kind, claimedStatus), reviewUrl,
 					idempotencyKey: `editorial-review:${batch.batchId}:${batch.stage}:${kind}`,
 				});
 				if (await this.repository.complete(claim, nowIso, this.createId())) {

@@ -422,16 +422,55 @@ export class D1EditorialWorkflowRepository implements EditorialWorkflowRepositor
 	async ensureFinalReminder(batchId: string, at: string, eventId: string): Promise<boolean> {
 		const results = await this.db.batch([
 			this.db.prepare(`INSERT OR IGNORE INTO editorial_stage_reminders (batch_id, stage, created_at)
-				SELECT ?, 'FINAL_REVIEW', ? WHERE EXISTS (SELECT 1 FROM editorial_batches
-					WHERE id = ? AND item_count = 3)
-				AND (SELECT COUNT(*) FROM editorial_batch_items
-					WHERE batch_id = ? AND workflow_state = 'READY_FOR_REVIEW') = 3
-				AND (SELECT COUNT(*) FROM editorial_batch_items WHERE batch_id = ?) = 3`)
-				.bind(batchId, at, batchId, batchId, batchId),
+				SELECT ?, 'FINAL_REVIEW', ? WHERE (
+					EXISTS (SELECT 1 FROM editorial_batches AS batch
+						JOIN routine_generation_batch_admissions AS admission ON admission.batch_id = batch.id
+						WHERE batch.id = ? AND batch.item_count = 3)
+					AND (SELECT COUNT(DISTINCT selected.source_intake_id)
+						FROM editorial_workflow_events AS selected
+						WHERE selected.batch_id = ? AND selected.event_kind = 'INTAKE_SELECTED'
+						AND selected.detail = ?) BETWEEN 1 AND 3
+					AND (SELECT COUNT(*) FROM editorial_batch_items AS item
+						WHERE item.batch_id = ? AND EXISTS (
+							SELECT 1 FROM editorial_workflow_events AS selected
+							WHERE selected.batch_id = item.batch_id
+							AND selected.source_intake_id = item.source_intake_id
+							AND selected.event_kind = 'INTAKE_SELECTED' AND selected.detail = ?)
+						AND ((item.workflow_state = 'READY_FOR_REVIEW' AND EXISTS (
+							SELECT 1 FROM editorial_workflow_events AS ready
+							WHERE ready.batch_id = item.batch_id AND ready.source_intake_id = item.source_intake_id
+							AND ready.event_kind = 'ARTICLE_READY_FOR_REVIEW'))
+						OR (item.workflow_state = 'FAILED' AND EXISTS (
+							SELECT 1 FROM editorial_workflow_events AS failed
+							WHERE failed.batch_id = item.batch_id AND failed.source_intake_id = item.source_intake_id
+							AND failed.event_kind = 'GENERATION_FAILED'))))
+					= (SELECT COUNT(DISTINCT selected.source_intake_id)
+						FROM editorial_workflow_events AS selected
+						WHERE selected.batch_id = ? AND selected.event_kind = 'INTAKE_SELECTED'
+						AND selected.detail = ?)
+				) OR (
+					NOT EXISTS (SELECT 1 FROM routine_generation_batch_admissions WHERE batch_id = ?)
+					AND EXISTS (SELECT 1 FROM editorial_batches WHERE id = ? AND item_count = 3)
+					AND (SELECT COUNT(*) FROM editorial_batch_items
+						WHERE batch_id = ? AND workflow_state = 'READY_FOR_REVIEW') = 3
+					AND (SELECT COUNT(*) FROM editorial_batch_items WHERE batch_id = ?) = 3
+				)`)
+				.bind(batchId, at, batchId, batchId, ROUTINE_GENERATION_POLICY,
+					batchId, ROUTINE_GENERATION_POLICY, batchId, ROUTINE_GENERATION_POLICY,
+					batchId, batchId, batchId, batchId),
 			this.db.prepare(`INSERT INTO editorial_workflow_events
-				(id, batch_id, event_kind, created_at)
-				SELECT ?, ?, 'FINAL_REVIEW_PHASE_CREATED', ? WHERE changes() > 0`)
-				.bind(eventId, batchId, at),
+				(id, batch_id, event_kind, detail, created_at)
+				SELECT ?, ?, 'FINAL_REVIEW_PHASE_CREATED',
+					CASE WHEN EXISTS (SELECT 1 FROM routine_generation_batch_admissions WHERE batch_id = ?)
+					THEN 'selected=' || (SELECT COUNT(DISTINCT source_intake_id) FROM editorial_workflow_events
+						WHERE batch_id = ? AND event_kind = 'INTAKE_SELECTED' AND detail = ?)
+						|| ';ready=' || (SELECT COUNT(DISTINCT source_intake_id) FROM editorial_workflow_events
+						WHERE batch_id = ? AND event_kind = 'ARTICLE_READY_FOR_REVIEW' AND created_at <= ?)
+						|| ';failed=' || (SELECT COUNT(DISTINCT source_intake_id) FROM editorial_workflow_events
+						WHERE batch_id = ? AND event_kind = 'GENERATION_FAILED' AND created_at <= ?)
+					ELSE NULL END, ? WHERE changes() > 0`)
+				.bind(eventId, batchId, batchId, batchId, ROUTINE_GENERATION_POLICY,
+					batchId, at, batchId, at, at),
 		]);
 		return results[0].meta.changes === 1;
 	}

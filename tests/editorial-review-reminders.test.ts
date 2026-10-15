@@ -20,12 +20,22 @@ function reminder(stage: EditorialReminderStage, overrides: Partial<ReviewRemind
 		initialSentAt: null, sixHourSentAt: null, finalSentAt: null, resolvedAt: null, ...overrides };
 }
 
-function harness(stage: EditorialReminderStage, pending = 3, now = START, fail = false) {
+function harness(stage: EditorialReminderStage, pending = 3, now = START, fail = false,
+	statusOverride?: Partial<import('../src/domain/editorial-review-reminder').ReviewReminderStatus>) {
 	let stored = reminder(stage); let count = pending; let clock = now; let claim: ClaimedReviewReminder | null = null;
 	const sent: ReviewNotification[] = [];
 	const repository: ReviewReminderRepository = {
 		listUnresolved: vi.fn(async () => stored.resolvedAt ? [] : [{ ...stored }]),
 		countPending: vi.fn(async () => count),
+		status: vi.fn(async () => ({
+			pendingCount: count,
+			selectedCount: stage === 'FINAL_REVIEW' ? 3 : 0,
+			readyCount: stage === 'FINAL_REVIEW' ? count : 0,
+			failedCount: 0,
+			generationSettled: stage === 'FINAL_REVIEW' && count === 3,
+			routineAdmission: false,
+			...statusOverride,
+		})),
 		resolve: vi.fn(async (_batchId, _stage, at) => { if (count !== 0) return false; stored = { ...stored, resolvedAt: at }; return true; }),
 		claim: vi.fn(async (batchId, claimedStage, kind, claimToken) => {
 			if (claim) return null; claim = { batchId, stage: claimedStage, kind, claimToken }; return claim;
@@ -128,6 +138,30 @@ describe('two-phase editorial reminders', () => {
 		expect(intake.sent[0].idempotencyKey).toContain(':TRIAGE:');
 	});
 
+	it('announces an admitted partial batch only after every selected item is ready or terminally failed', async () => {
+		const test = harness('FINAL_REVIEW', 1, START, false, {
+			selectedCount: 2, readyCount: 1, failedCount: 1,
+			generationSettled: true, routineAdmission: true,
+		});
+		await test.service.process();
+		expect(test.sent).toHaveLength(1);
+		expect(test.sent[0].message).toBe('📰 Tomorrow-ish batch generation finished: 2 selected items; 1 article ready for final editorial review; 1 terminal generation failure.');
+		await test.service.process();
+		expect(test.sent).toHaveLength(1);
+	});
+
+	it('sends one initial notice for a failure-only admitted manifest, then resolves it', async () => {
+		const test = harness('FINAL_REVIEW', 0, START, false, {
+			selectedCount: 1, readyCount: 0, failedCount: 1,
+			generationSettled: true, routineAdmission: true,
+		});
+		await test.service.process();
+		expect(test.sent).toHaveLength(1);
+		expect(test.sent[0].message).toContain('0 articles ready for final editorial review; 1 terminal generation failure');
+		await test.service.process();
+		expect(test.get().resolvedAt).toBe(START.toISOString());
+	});
+
 	it('keeps final review pending through edits or image regeneration until publish/reject removes every ready item', async () => {
 		const test = harness('FINAL_REVIEW', 2); await test.service.process();
 		test.setPending(2); await test.service.process(); expect(test.get().resolvedAt).toBeNull();
@@ -152,6 +186,11 @@ describe('two-phase editorial reminders', () => {
 		const repository: ReviewReminderRepository = {
 			listUnresolved: vi.fn(async () => batches),
 			countPending: vi.fn(async () => 3),
+			status: vi.fn(async (_batchId, stage) => ({
+				pendingCount: 3, selectedCount: stage === 'FINAL_REVIEW' ? 3 : 0,
+				readyCount: stage === 'FINAL_REVIEW' ? 3 : 0, failedCount: 0,
+				generationSettled: stage === 'FINAL_REVIEW', routineAdmission: false,
+			})),
 			resolve: vi.fn(async () => false),
 			claim: vi.fn(async (batchId, stage, kind, claimToken) => ({ batchId, stage, kind, claimToken })),
 			complete: vi.fn(async (claim) => { completed.push(claim.batchId); return true; }),

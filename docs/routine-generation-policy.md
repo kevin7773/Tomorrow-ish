@@ -30,6 +30,8 @@ An existing valid governed selection is respected. Conflicting selection or prov
 
 Routine text packages may enter `READY_FOR_REVIEW` without an image. This grants no approval or publication authority; the existing publication predicate still requires an APPROVED story, an explicitly APPROVED image, and an exact matching `og_image_key`.
 
-A batch receives a final-review reminder only when it contains exactly three workflow items and all three are `READY_FOR_REVIEW`. Partial, failed, rejected, or mixed batches fail closed without a final-review notification.
+A routine admission still requires exactly three intake records, but every record must first have an explicit triage decision. The immutable admitted manifest consists of the one to three items carrying an `INTAKE_SELECTED` event marked `routine-generation:v1`; explicitly rejected siblings are never claimed or generated.
+
+The initial final-review notification is created only after every item in that admitted selection manifest has either reached `READY_FOR_REVIEW` with its readiness event or `FAILED` with an explicit terminal generation-failure event. Notification copy reports the selected, reviewable, and failed counts and never describes a one- or two-item manifest as a completed three-article batch.
 
 Every story remains in `REVIEW` until a human editor explicitly approves or rejects it. Publication remains a separate governed action.

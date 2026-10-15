@@ -106,22 +106,29 @@ function stageName(stage: ReviewNotification['stage']): string {
 }
 
 export function renderEditorialEmail(notification: ReviewNotification, pendingCount: number): EditorialEmail {
-	if (!Number.isInteger(pendingCount) || pendingCount < 1 || pendingCount > 3) {
+	const validPendingCount = Number.isInteger(pendingCount) && pendingCount <= 3
+		&& (pendingCount >= 1 || (pendingCount === 0 && notification.stage === 'FINAL_REVIEW'));
+	if (!validPendingCount) {
 		throw new ResendConfigurationError('The editorial email requires between one and three pending decisions.');
 	}
 	const subject = notification.kind === 'SIX_HOUR'
 		? 'Tomorrow-ish: Editorial Review Reminder — 6 Hours'
 		: notification.kind === 'FINAL'
 			? 'Tomorrow-ish: Final Editorial Reminder — 24 Hours'
+			: notification.stage === 'FINAL_REVIEW' && pendingCount === 0
+				? 'Tomorrow-ish: Editorial Batch Requires Attention'
 			: notification.stage === 'FINAL_REVIEW'
 				? `Tomorrow-ish: ${pendingCount} Article${pendingCount === 1 ? '' : 's'} Awaiting Review`
 				: `Tomorrow-ish: ${pendingCount} Intake${pendingCount === 1 ? '' : 's'} Awaiting Review`;
 	const noun = notification.stage === 'TRIAGE' ? 'intake' : 'article';
-	const countLine = `${pendingCount} ${noun}${pendingCount === 1 ? '' : 's'} await${pendingCount === 1 ? 's' : ''} an editorial decision.`;
+	const countLine = pendingCount === 0
+		? 'No completed articles currently await an editorial decision.'
+		: `${pendingCount} ${noun}${pendingCount === 1 ? '' : 's'} await${pendingCount === 1 ? 's' : ''} an editorial decision.`;
 	const text = [
 		'Tomorrow-ish Editorial',
 		'',
 		countLine,
+		notification.message,
 		`Stage: ${stageName(notification.stage)}`,
 		`Reminder: ${notification.kind}`,
 		`Batch: ${notification.batchId}`,
@@ -136,6 +143,7 @@ export function renderEditorialEmail(notification: ReviewNotification, pendingCo
 		<tr><td style="padding:28px"><div style="font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:#7a4b2a">Tomorrow-ish Editorial</div>
 		<h1 style="font-size:24px;margin:12px 0 8px">${escapeHtml(subject.replace('Tomorrow-ish: ', ''))}</h1>
 		<p style="font-size:17px;line-height:1.5">${escapeHtml(countLine)}</p>
+		<p style="font-size:15px;line-height:1.5">${escapeHtml(notification.message)}</p>
 		<table role="presentation" cellspacing="0" cellpadding="4" style="font-size:14px;color:#44515a">
 		<tr><td><strong>Stage</strong></td><td>${escapeHtml(stageName(notification.stage))}</td></tr>
 		<tr><td><strong>Reminder</strong></td><td>${escapeHtml(notification.kind)}</td></tr>

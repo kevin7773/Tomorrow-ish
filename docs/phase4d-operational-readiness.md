@@ -4,9 +4,9 @@ This document describes the local, disabled-by-default design checkpoint. It is 
 
 ## Routine batch admission
 
-Routine generation is limited to one batch of exactly three selected intakes per `America/New_York` calendar day. Migration `0022_operational_admission_and_notification_reconciliation.sql` adds an immutable admission row keyed by operating date. Concurrent processors reuse the same admitted batch. Failed or incomplete work retains that day's admission and cannot cause a replacement batch to start.
+Routine generation is limited to one batch of exactly three triaged intake records per `America/New_York` calendar day. One to three records may be explicitly selected; every remaining record must be explicitly rejected. Migration `0022_operational_admission_and_notification_reconciliation.sql` adds an immutable admission row keyed by operating date, while immutable selection events define the admitted item manifest. Concurrent processors reuse the same admitted batch. Failed or incomplete work retains that day's admission and cannot cause a replacement batch to start.
 
-Only batches created at or after the explicit UTC `EDITORIAL_ROUTINE_GENERATION_NOT_BEFORE` boundary are eligible. Every item must remain `SELECTED` and have an `INTAKE_SELECTED` event marked `routine-generation:v1`. Missing or malformed activation configuration, a non-three-item batch, historical work, or no eligible work is a fail-closed no-op. The processor claims work only from the admitted batch.
+Only batches created at or after the explicit UTC `EDITORIAL_ROUTINE_GENERATION_NOT_BEFORE` boundary are eligible. Every selected item must have an `INTAKE_SELECTED` event marked `routine-generation:v1`, every rejected item must have an `INTAKE_REJECTED` event, and no item may remain undecided. Missing or malformed activation configuration, a non-three-record batch, historical work, or no eligible work is a fail-closed no-op. The processor claims only selected manifest items from the admitted batch.
 
 ## External notification contract
 

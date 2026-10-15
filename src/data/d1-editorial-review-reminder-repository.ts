@@ -1,5 +1,5 @@
 import type { ReviewReminderRepository } from './editorial-review-reminder-repository';
-import type { ClaimedReviewReminder, EditorialReminderStage, ReviewReminderBatch, ReviewReminderKind } from '../domain/editorial-review-reminder';
+import type { ClaimedReviewReminder, EditorialReminderStage, ReviewReminderBatch, ReviewReminderKind, ReviewReminderStatus } from '../domain/editorial-review-reminder';
 
 interface BatchRow {
 	batch_id: string; stage: EditorialReminderStage; item_count: number; created_at: string;
@@ -37,6 +37,51 @@ export class D1EditorialReviewReminderRepository implements ReviewReminderReposi
 		const row = await this.db.prepare(`SELECT COUNT(*) AS count FROM editorial_batch_items
 			WHERE batch_id = ? AND ${predicate}`).bind(batchId).first<{ count: number }>();
 		return row?.count ?? 0;
+	}
+
+	async status(batchId: string, stage: EditorialReminderStage): Promise<ReviewReminderStatus> {
+		const row = await this.db.prepare(`SELECT batch.item_count,
+			EXISTS (SELECT 1 FROM routine_generation_batch_admissions AS admission
+				WHERE admission.batch_id = batch.id) AS routine_admission,
+			(SELECT COUNT(*) FROM editorial_batch_items AS item
+				WHERE item.batch_id = batch.id AND item.workflow_state = 'INGESTED') AS triage_pending,
+			(SELECT COUNT(DISTINCT event.source_intake_id) FROM editorial_workflow_events AS event
+				WHERE event.batch_id = batch.id AND event.event_kind = 'INTAKE_SELECTED'
+				AND event.detail = 'routine-generation:v1') AS selected_count,
+			(SELECT COUNT(DISTINCT event.source_intake_id) FROM editorial_workflow_events AS event
+				JOIN editorial_stage_reminders AS reminder ON reminder.batch_id = event.batch_id
+					AND reminder.stage = 'FINAL_REVIEW'
+				WHERE event.batch_id = batch.id AND event.event_kind = 'ARTICLE_READY_FOR_REVIEW'
+				AND event.created_at <= reminder.created_at) AS ready_count,
+			(SELECT COUNT(DISTINCT event.source_intake_id) FROM editorial_workflow_events AS event
+				JOIN editorial_stage_reminders AS reminder ON reminder.batch_id = event.batch_id
+					AND reminder.stage = 'FINAL_REVIEW'
+				WHERE event.batch_id = batch.id AND event.event_kind = 'GENERATION_FAILED'
+				AND event.created_at <= reminder.created_at) AS failed_count,
+			(SELECT COUNT(*) FROM editorial_batch_items AS item
+				WHERE item.batch_id = batch.id AND item.workflow_state = 'READY_FOR_REVIEW') AS review_pending
+			FROM editorial_batches AS batch WHERE batch.id = ?`).bind(batchId).first<{
+			item_count: number; routine_admission: number; triage_pending: number;
+			selected_count: number; ready_count: number; failed_count: number; review_pending: number;
+		}>();
+		if (!row) return { pendingCount: 0, selectedCount: 0, readyCount: 0, failedCount: 0,
+			generationSettled: false, routineAdmission: false };
+		if (stage === 'TRIAGE') return {
+			pendingCount: row.triage_pending, selectedCount: 0, readyCount: 0, failedCount: 0,
+			generationSettled: false, routineAdmission: Boolean(row.routine_admission),
+		};
+		const routineAdmission = Boolean(row.routine_admission);
+		const selectedCount = routineAdmission ? row.selected_count : row.item_count;
+		return {
+			pendingCount: row.review_pending,
+			selectedCount,
+			readyCount: row.ready_count,
+			failedCount: row.failed_count,
+			generationSettled: routineAdmission
+				? selectedCount >= 1 && selectedCount <= 3 && row.ready_count + row.failed_count === selectedCount
+				: row.item_count === 3 && row.ready_count === 3 && row.failed_count === 0,
+			routineAdmission,
+		};
 	}
 
 	async resolve(batchId: string, stage: EditorialReminderStage, resolvedAt: string, eventId: string): Promise<boolean> {

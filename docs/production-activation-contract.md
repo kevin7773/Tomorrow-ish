@@ -54,10 +54,11 @@ The command writes:
 - `dist/server/wrangler.automation.restore.json`
 
 Every changed value, including the UTC boundary, is exact in the generated contract. Review the
-redacted preparation summary and the three IDs in the governed batch manifest before authorizing
-an upload. The manifest remains D1-governed selection evidence: exactly three `SELECTED` items,
-each with `INTAKE_SELECTED` detail `routine-generation:v1`, in one batch created at or after the
-boundary. It is never inferred from historical `SELECTED` or `FAILED` rows.
+redacted preparation summary and the three triaged intake IDs before authorizing an upload. The
+generation manifest remains D1-governed selection evidence: one to three `SELECTED` items, each
+with `INTAKE_SELECTED` detail `routine-generation:v1`; every remaining batch item must be explicitly
+`REJECTED`. The three-record batch must be created at or after the boundary. Eligibility is never
+inferred from historical `SELECTED` or `FAILED` rows.
 
 Validate the observed source state with `--live-state previous`, then upload and inspect the target
 using the generated target baseline and configuration. After activation, validate with
@@ -77,8 +78,8 @@ release operator. Never use direct `wrangler deploy` or a root-config upload.
 
 1. `disabled -> notifications`: enables final-review email only. Reverse with
    `notifications -> disabled`.
-2. `notifications -> generation-acceptance`: requires an exact UTC boundary and reviewed
-   three-intake manifest. After the bounded provider window, use
+2. `notifications -> generation-acceptance`: requires an exact UTC boundary and a reviewed,
+   fully triaged three-intake batch containing one to three selected manifest items. After the bounded provider window, use
    `generation-acceptance -> notifications`; emergency rollback may use
    `generation-acceptance -> disabled`.
 3. `generation-acceptance -> publication`: disables every generation gate, removes the boundary,
